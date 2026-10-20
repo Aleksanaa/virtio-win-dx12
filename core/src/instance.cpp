@@ -88,8 +88,6 @@ static void probe_physical_device(Instance::Impl& in, VkPhysicalDevice pd)
             d.missing.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
     }
     const bool has_heap_ext = has_extension(exts, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
-    if (!has_heap_ext)
-        d.missing.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
 
     if (d.api_version >= VK_API_VERSION_1_3) {
         VkPhysicalDeviceDescriptorHeapFeaturesEXT heap{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
@@ -112,7 +110,7 @@ static void probe_physical_device(Instance::Impl& in, VkPhysicalDevice pd)
         if (!v13.synchronization2) d.missing.push_back("synchronization2");
         if (!v13.dynamicRendering) d.missing.push_back("dynamicRendering");
         if ((is_1_4 || phys.needs_maintenance5_ext) && !m5.maintenance5) d.missing.push_back("maintenance5");
-        if (has_heap_ext && !heap.descriptorHeap) d.missing.push_back("descriptorHeap");
+        d.descriptor_heap = has_heap_ext && heap.descriptorHeap;
     }
 
     in.vk.vkGetPhysicalDeviceMemoryProperties(pd, &phys.memory);

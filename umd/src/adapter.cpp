@@ -2,9 +2,12 @@
 // OpenAdapter12 and the adapter function table. Device creation is the next milestone; for now every
 // runtime query is logged so the first guest run shows exactly what the runtime asks of us.
 #include "wdk.h"
+#include "caps.h"
+#include "device.h"
 #include "log.h"
 #include "viogpu_abi.h"
 
+#include <cstring>
 #include <new>
 
 namespace vgd::umd {
@@ -22,17 +25,19 @@ struct Adapter {
     static Adapter* from(D3D12DDI_HADAPTER h) { return static_cast<Adapter*>(h.pDrvPrivate); }
 };
 
-SIZE_T APIENTRY calc_private_device_size(D3D12DDI_HADAPTER, const D3D12DDIARG_CALCPRIVATEDEVICESIZE* args)
+SIZE_T APIENTRY ddi_calc_private_device_size(D3D12DDI_HADAPTER, const D3D12DDIARG_CALCPRIVATEDEVICESIZE* args)
 {
     VGD_TRACE("CalcPrivateDeviceSize interface=0x%x version=0x%x flags=0x%x", args->Interface, args->Version,
               args->Flags);
-    return 64;
+    return device_private_size();
 }
 
-HRESULT APIENTRY create_device(D3D12DDI_HADAPTER, const D3D12DDIARG_CREATEDEVICE_0003* args)
+HRESULT APIENTRY ddi_create_device(D3D12DDI_HADAPTER, const D3D12DDIARG_CREATEDEVICE_0003* args)
 {
-    VGD_WARN("CreateDevice interface=0x%x version=0x%x: not implemented yet", args->Interface, args->Version);
-    return E_NOTIMPL;
+    if (!args || !args->hDrvDevice.pDrvPrivate)
+        return E_INVALIDARG;
+    VGD_TRACE("CreateDevice interface=0x%x version=0x%x", args->Interface, args->Version);
+    return create_device(*args);
 }
 
 HRESULT APIENTRY close_adapter(D3D12DDI_HADAPTER h)
@@ -55,10 +60,13 @@ HRESULT APIENTRY get_supported_versions(D3D12DDI_HADAPTER, UINT32* entries, UINT
     return S_OK;
 }
 
-HRESULT APIENTRY get_caps(D3D12DDI_HADAPTER, const D3D12DDIARG_GETCAPS* args)
+HRESULT APIENTRY ddi_get_caps(D3D12DDI_HADAPTER, const D3D12DDIARG_GETCAPS* args)
 {
-    VGD_TRACE("GetCaps type=%d size=%u info=%p", static_cast<int>(args->Type), args->DataSize, args->pInfo);
-    return E_NOTIMPL;
+    if (!args)
+        return E_INVALIDARG;
+    HRESULT hr = get_caps(*args);
+    VGD_TRACE("GetCaps type=%d size=%u -> 0x%08lx", static_cast<int>(args->Type), args->DataSize, hr);
+    return hr;
 }
 
 HRESULT APIENTRY get_optional_ddi_tables(D3D12DDI_HADAPTER, UINT32* entries, D3D12DDI_TABLE_REQUEST*)
@@ -68,17 +76,18 @@ HRESULT APIENTRY get_optional_ddi_tables(D3D12DDI_HADAPTER, UINT32* entries, D3D
     return S_OK;
 }
 
-HRESULT APIENTRY fill_ddi_table(D3D12DDI_HADAPTER, D3D12DDI_TABLE_TYPE type, void*, SIZE_T size, UINT version,
-                                D3D12DDI_HRTTABLE)
+HRESULT APIENTRY ddi_fill_ddi_table(D3D12DDI_HADAPTER, D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size,
+                                    UINT version, D3D12DDI_HRTTABLE rt_table)
 {
-    VGD_TRACE("FillDDITable type=%d size=%llu version=0x%x", static_cast<int>(type), static_cast<unsigned long long>(size),
-              version);
-    return E_NOTIMPL;
+    if (!table)
+        return E_INVALIDARG;
+    return fill_ddi_table(type, table, size, version, rt_table);
 }
 
-void APIENTRY destroy_device(D3D12DDI_HDEVICE)
+void APIENTRY ddi_destroy_device(D3D12DDI_HDEVICE device)
 {
     VGD_TRACE("DestroyDevice");
+    destroy_device(device);
 }
 
 } // namespace
@@ -119,8 +128,8 @@ extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter12(D3D12DDIARG_OPEN
     }
 
     *args->pAdapterFuncs = {
-        calc_private_device_size, create_device, close_adapter, get_supported_versions,
-        get_caps, get_optional_ddi_tables, fill_ddi_table, destroy_device,
+        ddi_calc_private_device_size, ddi_create_device, close_adapter, get_supported_versions,
+        ddi_get_caps, get_optional_ddi_tables, ddi_fill_ddi_table, ddi_destroy_device,
     };
     args->hAdapter.pDrvPrivate = adapter;
     return S_OK;

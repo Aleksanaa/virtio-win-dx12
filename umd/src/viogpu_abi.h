@@ -13,7 +13,6 @@ constexpr unsigned kCapsetVirgl = 1;
 constexpr unsigned kCapsetVirgl2 = 2;
 constexpr unsigned kCapsetVenus = 4;
 
-#pragma pack(push, 1)
 struct AdapterInfo {
     ULONGLONG IamVioGPU;
     struct {
@@ -28,8 +27,8 @@ struct AdapterInfo {
     } Flags;
     ULONGLONG SupportedCapsetIDs;   // bit n set: capset id n is supported
 };
-#pragma pack(pop)
 
-static_assert(sizeof(AdapterInfo) == 20, "must match viogpum.h VIOGPU_ADAPTERINFO");
+// Natural alignment: viogpum.h's pack(1) blocks do not cover this struct (8 + 4 + 4 padding + 8).
+static_assert(sizeof(AdapterInfo) == 24, "must match viogpum.h VIOGPU_ADAPTERINFO");
 
 } // namespace vgd::viogpu

@@ -111,13 +111,16 @@ HRESULT Instance::create_device(size_t adapter_index, std::unique_ptr<Device>* o
         queue_infos.push_back(q);
     }
 
-    std::vector<const char*> exts = {VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME};
+    std::vector<const char*> exts;
+    if (phys.desc.descriptor_heap)
+        exts.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
     if (phys.needs_maintenance5_ext)
         exts.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
 
     VkPhysicalDeviceDescriptorHeapFeaturesEXT heap{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
     heap.descriptorHeap = VK_TRUE;
-    VkPhysicalDeviceMaintenance5FeaturesKHR m5{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR, &heap};
+    VkPhysicalDeviceMaintenance5FeaturesKHR m5{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR,
+                                               phys.desc.descriptor_heap ? &heap : nullptr};
     m5.maintenance5 = VK_TRUE;
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &m5};
     v13.synchronization2 = VK_TRUE;

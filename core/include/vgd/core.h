@@ -28,6 +28,9 @@ struct AdapterDesc {
     std::string driver_info;
     uint64_t device_local_bytes = 0;
     uint64_t host_visible_bytes = 0;
+    // VK_EXT_descriptor_heap. Required for descriptors and root signatures, but not for bring-up of devices,
+    // memory, copies and fences, so it is reported rather than required (Venus needs virglrenderer >= 2a671dbf).
+    bool descriptor_heap = false;
     // Features this driver requires but the Vulkan device lacks. Empty means the adapter is usable.
     std::vector<std::string> missing;
     bool usable() const { return missing.empty(); }
