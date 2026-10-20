@@ -92,7 +92,7 @@ HRESULT APIENTRY set_extended_feature_callbacks(D3D12DDI_HDEVICE, D3D12DDI_TABLE
 
 SIZE_T device_private_size() { return sizeof(Device); }
 
-HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args)
+HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandListTables& tables)
 {
     if ((args.Version >> 16) != kBuildVersion) {
         VGD_WARN("CreateDevice: runtime picked build %u, we only fill tables for %u", args.Version >> 16, kBuildVersion);
@@ -100,6 +100,7 @@ HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args)
     }
     auto* d = new (args.hDrvDevice.pDrvPrivate) Device;
     d->rt_device = args.hRTDevice;
+    d->command_list_tables = &tables;
     d->kt_callbacks = args.pKTCallbacks;
     d->um_callbacks = args.p12UMCallbacks_0062;
 
@@ -118,7 +119,8 @@ void destroy_device(D3D12DDI_HDEVICE h)
         d->~Device();
 }
 
-HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT version, D3D12DDI_HRTTABLE)
+HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT index, D3D12DDI_HRTTABLE rt_table,
+                       CommandListTables& tables)
 {
     HRESULT hr = E_NOTIMPL;
     switch (type) {
@@ -138,6 +140,13 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         auto& t = *static_cast<T*>(table);
         VGD_FILL_STUBS(t, "cmdlist", VGD_SLOTS_COMMAND_LIST_3D_0092);
         fill_command_list_ddi(t);
+        if (index < CommandListTables::kMax) {
+            tables.rt[index] = rt_table;
+            if (index >= tables.count)
+                tables.count = index + 1;
+        } else {
+            VGD_WARN("FillDDITable: command list table %u beyond the %u we keep", index, CommandListTables::kMax);
+        }
         break;
     }
     case D3D12DDI_TABLE_TYPE_COMMAND_QUEUE_3D: {
@@ -171,8 +180,8 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
     default:
         break;
     }
-    VGD_TRACE("FillDDITable type=%d size=%llu version=0x%x -> 0x%08lx", static_cast<int>(type),
-              static_cast<unsigned long long>(size), version, hr);
+    VGD_TRACE("FillDDITable type=%d size=%llu index=%u rt_table=%p -> 0x%08lx", static_cast<int>(type),
+              static_cast<unsigned long long>(size), index, rt_table.handle, hr);
     return hr;
 }
 

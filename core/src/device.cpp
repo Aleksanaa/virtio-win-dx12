@@ -145,7 +145,10 @@ HRESULT Instance::create_device(size_t adapter_index, std::unique_ptr<Device>* o
     const auto gdpa = impl_->vk.vkGetDeviceProcAddr;
 #define VGD_VK_GLOBAL(n)
 #define VGD_VK_INSTANCE(n)
-#define VGD_VK_DEVICE(n) vk.n = reinterpret_cast<PFN_##n>(gdpa(impl->device, #n));
+#define VGD_VK_DEVICE(n)                                                                                   \
+    vk.n = reinterpret_cast<PFN_##n>(gdpa(impl->device, #n));                                             \
+    if (!vk.n)                                                                                             \
+        log(LogLevel::warn, "device entry point %s is missing", #n);
 #include "vk_procs.inc"
 #undef VGD_VK_GLOBAL
 #undef VGD_VK_INSTANCE

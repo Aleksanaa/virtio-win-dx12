@@ -14,6 +14,8 @@
 
 namespace vgd::umd {
 
+struct Device;
+
 template <class T, class H>
 T* object(H handle)
 {
@@ -47,6 +49,35 @@ struct DepthStencilStateObject {
 struct PipelineStateObject {
     std::unique_ptr<vgd::PipelineState> pso;
 };
+
+struct CommandListObject {
+    Device* device;
+    D3D12DDI_HRTCOMMANDLIST rt;
+    D3D12_COMMAND_LIST_TYPE type;
+    std::unique_ptr<vgd::CommandList> list;
+
+    void error(HRESULT hr) const;
+};
+
+// CreateHeapAndResource gives the heap and the resource separate storage. A committed resource is both at once: the
+// heap owns the core resource and the resource handle refers to it. Placed resources and textures come later.
+struct HeapObject {
+    std::unique_ptr<vgd::Resource> buffer;
+};
+
+struct ResourceObject {
+    HeapObject* heap;
+    vgd::Resource* buffer;
+};
+
+// The runtime owns D3D12 fences (kernel monitored fences it signals and waits on our queues' contexts); the driver
+// only learns their GPU addresses, which it needs only for multi-adapter.
+struct FenceObject {
+    D3D12DDI_FENCE fence;
+};
+
+// Heaps, resources, mapping and fences (resource_ddi.cpp).
+void fill_resource_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
 
 // Shader, state and pipeline DDIs (pipeline_ddi.cpp).
 void fill_pipeline_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);

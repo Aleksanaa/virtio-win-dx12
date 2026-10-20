@@ -262,6 +262,7 @@ void fill_device_core(D3D12DDI_DEVICE_FUNCS_CORE_0088& t)
     t.pfnEvict = evict;
     fill_pipeline_ddi(t);
     fill_command_ddi(t);
+    fill_resource_ddi(t);
 }
 
 } // namespace vgd::umd

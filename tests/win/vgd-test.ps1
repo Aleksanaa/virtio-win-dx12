@@ -15,7 +15,9 @@ param(
     #   Add-WindowsCapability -Online -Name Tools.Graphics.DirectX~~~~0.0.1.0)
     [switch]$DebugLayer,
     # Probe only: VGD_VERBOSE=1, logging every format-support and MSAA answer
-    [switch]$Trace
+    [switch]$Trace,
+    # Probe only: also run the buffer copy test (upload -> default -> readback, fence) on each device
+    [switch]$Copy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -101,7 +103,10 @@ switch ($Action) {
         $env:VGD_LOG = $log
         $env:VGD_VERBOSE = if ($Trace) { '1' } else { '' }
         Write-Host "== d3dprobe ($exe)"
-        if ($DebugLayer) { & $exe --debug } else { & $exe }
+        $probeArgs = @()
+        if ($DebugLayer) { $probeArgs += '--debug' }
+        if ($Copy) { $probeArgs += '--copy' }
+        & $exe @probeArgs
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"
         if (Test-Path $log) { Get-Content $log } else { Write-Host '(no log: vgd3d12.dll was not loaded)' }

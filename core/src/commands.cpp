@@ -135,6 +135,11 @@ void CommandList::resource_barrier(std::span<const D3D12_RESOURCE_BARRIER> barri
         return;
     // First version: every legacy barrier batch is a full memory dependency. Image layouts and split
     // barriers come with textures.
+    global_barrier();
+}
+
+void CommandList::global_barrier()
+{
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -181,18 +186,41 @@ HRESULT CommandQueue::Impl::submit(std::span<const VkCommandBufferSubmitInfo> cm
     return hresult_from_vk(r);
 }
 
-HRESULT CommandQueue::execute_command_lists(std::span<CommandList* const> lists)
+HRESULT CommandQueue::capture(std::span<CommandList* const> lists, CommandBatch* out)
+{
+    out->buffers.clear();
+    out->buffers.reserve(lists.size());
+    for (CommandList* l : lists) {
+        if (!l || l->impl().open || !l->impl().cmd)
+            return E_INVALIDARG;
+        out->buffers.push_back(l->impl().cmd);
+    }
+    return S_OK;
+}
+
+HRESULT CommandQueue::execute_command_lists(std::span<CommandList* const> lists, Fence* signal, uint64_t value)
+{
+    CommandBatch batch;
+    HRESULT hr = capture(lists, &batch);
+    return FAILED(hr) ? hr : submit(batch, signal, value);
+}
+
+HRESULT CommandQueue::submit(const CommandBatch& batch, Fence* signal, uint64_t value)
 {
     std::vector<VkCommandBufferSubmitInfo> cmds;
-    cmds.reserve(lists.size());
-    for (CommandList* l : lists) {
-        if (!l || l->impl().open)
-            return E_INVALIDARG;
+    cmds.reserve(batch.buffers.size());
+    for (VkCommandBuffer cmd : batch.buffers) {
         VkCommandBufferSubmitInfo ci{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-        ci.commandBuffer = l->impl().cmd;
+        ci.commandBuffer = cmd;
         cmds.push_back(ci);
     }
-    return impl_->submit(cmds, nullptr);
+    if (!signal)
+        return impl_->submit(cmds, nullptr);
+    VkSemaphoreSubmitInfo s{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    s.semaphore = signal->impl().timeline;
+    s.value = value;
+    s.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    return impl_->submit(cmds, &s);
 }
 
 HRESULT CommandQueue::signal(Fence& fence, uint64_t value)

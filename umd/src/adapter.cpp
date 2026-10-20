@@ -21,6 +21,7 @@ struct Adapter {
     D3D12DDI_HRTADAPTER rt_adapter{};
     const D3DDDI_ADAPTERCALLBACKS* callbacks = nullptr;
     viogpu::AdapterInfo info{};
+    CommandListTables command_list_tables;
 
     static Adapter* from(D3D12DDI_HADAPTER h) { return static_cast<Adapter*>(h.pDrvPrivate); }
 };
@@ -32,12 +33,12 @@ SIZE_T APIENTRY ddi_calc_private_device_size(D3D12DDI_HADAPTER, const D3D12DDIAR
     return device_private_size();
 }
 
-HRESULT APIENTRY ddi_create_device(D3D12DDI_HADAPTER, const D3D12DDIARG_CREATEDEVICE_0003* args)
+HRESULT APIENTRY ddi_create_device(D3D12DDI_HADAPTER h, const D3D12DDIARG_CREATEDEVICE_0003* args)
 {
     if (!args || !args->hDrvDevice.pDrvPrivate)
         return E_INVALIDARG;
     VGD_TRACE("CreateDevice interface=0x%x version=0x%x", args->Interface, args->Version);
-    return create_device(*args);
+    return create_device(*args, Adapter::from(h)->command_list_tables);
 }
 
 HRESULT APIENTRY close_adapter(D3D12DDI_HADAPTER h)
@@ -76,12 +77,12 @@ HRESULT APIENTRY get_optional_ddi_tables(D3D12DDI_HADAPTER, UINT32* entries, D3D
     return S_OK;
 }
 
-HRESULT APIENTRY ddi_fill_ddi_table(D3D12DDI_HADAPTER, D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size,
-                                    UINT version, D3D12DDI_HRTTABLE rt_table)
+HRESULT APIENTRY ddi_fill_ddi_table(D3D12DDI_HADAPTER h, D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size,
+                                    UINT index, D3D12DDI_HRTTABLE rt_table)
 {
     if (!table)
         return E_INVALIDARG;
-    return fill_ddi_table(type, table, size, version, rt_table);
+    return fill_ddi_table(type, table, size, index, rt_table, Adapter::from(h)->command_list_tables);
 }
 
 void APIENTRY ddi_destroy_device(D3D12DDI_HDEVICE device)

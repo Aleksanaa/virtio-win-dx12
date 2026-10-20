@@ -140,6 +140,8 @@ public:
     void copy_buffer_region(Resource& dst, uint64_t dst_offset, Resource& src, uint64_t src_offset, uint64_t bytes);
     // Legacy D3D12 transition barriers on buffers become one global memory dependency.
     void resource_barrier(std::span<const D3D12_RESOURCE_BARRIER> barriers);
+    // A full memory dependency between everything recorded before and after.
+    void global_barrier();
 
     struct Impl;
     Impl& impl() { return *impl_; }
@@ -149,10 +151,20 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// What closed command lists recorded, captured at ExecuteCommandLists time. D3D12 lets an application reset a list
+// right after executing it, so work that is submitted later (by the UMD's queue thread) must not read the lists.
+struct CommandBatch {
+    std::vector<VkCommandBuffer> buffers;
+};
+
 class CommandQueue {
 public:
     ~CommandQueue();
-    HRESULT execute_command_lists(std::span<CommandList* const> lists);
+    // Fails if a list is still open.
+    static HRESULT capture(std::span<CommandList* const> lists, CommandBatch* out);
+    HRESULT submit(const CommandBatch& batch, Fence* signal = nullptr, uint64_t value = 0);
+    // With `signal`, the same submission also signals that fence to `value` when the lists complete.
+    HRESULT execute_command_lists(std::span<CommandList* const> lists, Fence* signal = nullptr, uint64_t value = 0);
     HRESULT signal(Fence& fence, uint64_t value);
     HRESULT wait(Fence& fence, uint64_t value);
 

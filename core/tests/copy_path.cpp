@@ -68,8 +68,7 @@ static bool copy_path(vgd::Device& dev)
 
         CHECK_HR(direct_queue->wait(*fence, base + 1));
         cl = direct_list.get();
-        CHECK_HR(direct_queue->execute_command_lists({&cl, 1}));
-        CHECK_HR(direct_queue->signal(*fence, base + 2));
+        CHECK_HR(direct_queue->execute_command_lists({&cl, 1}, fence.get(), base + 2));   // one submission
 
         CHECK(fence->completed_value() < base + 1);
         CHECK_HR(gate->signal(base + 1));

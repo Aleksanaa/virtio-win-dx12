@@ -38,6 +38,22 @@ struct Stub<Table, Slot, R(APIENTRY*)(A...)> {
     }
 };
 
+// A silent no-op for void state-setting slots the runtime calls on every list reset to restore default state. They
+// only matter once draws or dispatches exist, and those still log as unimplemented.
+template <class F>
+struct NoOp;
+
+template <class... A>
+struct NoOp<void(APIENTRY*)(A...)> {
+    static void APIENTRY call(A...) {}
+};
+
+template <class F>
+void set_noop(F& slot)
+{
+    slot = &NoOp<F>::call;
+}
+
 // Assigns a stub to a table member if the member is a function pointer (reserved void* members stay null).
 template <Name Table, Name Slot, class F>
 void set_stub(F& slot)
