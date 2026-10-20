@@ -1,0 +1,47 @@
+; SPDX-License-Identifier: MIT
+; Extension package: adds our D3D12 UMD to yttrium's viogpu3d display device without touching its base package.
+; The base INF writes UserModeDriverName with three D3D9/10/11 slots; we restate them and fill the 4th (D3D12).
+; Uninstalling this extension makes PnP reapply the base package's value.
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Extension
+ClassGuid   = {e2f84ce7-8efa-411c-aa69-97454ca4cb57}
+ExtensionId = {e6eb91c4-82d6-49e5-bb39-81ea7ddae195}
+Provider    = %Provider%
+DriverVer   = 10/21/2026,0.1.0.0
+CatalogFile = vgd3d12.cat
+PnpLockdown = 1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+vgd3d12.dll = 1
+
+[DestinationDirs]
+VGD_Files = 13   ; DriverStore (DCH)
+
+[Manufacturer]
+%Provider% = VGD, NTamd64.10.0...22000
+
+[VGD.NTamd64.10.0...22000]
+; Same hardware ID as yttrium's viogpu3d.inf (experimental 2026-09-27).
+%Device.Desc% = VGD_Inst, PCI\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01
+
+[VGD_Inst.NT]
+CopyFiles = VGD_Files
+AddReg    = VGD_AddReg
+
+[VGD_Files]
+vgd3d12.dll
+
+[VGD_AddReg]
+; Slots: D3D9, D3D10, D3D11 (yttrium, System32 as its base INF installs them), D3D12 (ours, DriverStore).
+HKR,, UserModeDriverName, %REG_MULTI_SZ%, %11%\viogpu_d3d10.dll, %11%\viogpu_d3d10.dll, %11%\viogpu_d3d10.dll, %13%\vgd3d12.dll
+
+[Strings]
+Provider     = "vgd3d12 project"
+DiskName     = "vgd3d12 install disk"
+Device.Desc  = "D3D12 user-mode driver for VirtIO GPU (Venus)"
+REG_MULTI_SZ = 0x00010000
