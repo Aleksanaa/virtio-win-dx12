@@ -3,6 +3,7 @@
 #include "ddi_slots.h"
 #include "device_core.h"
 #include "log.h"
+#include "objects.h"
 #include "stubs.h"
 #include "vulkan_icd.h"
 
@@ -134,14 +135,18 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         using T = D3D12DDI_COMMAND_LIST_FUNCS_3D_0092;
         if (FAILED(hr = check_table_size<T>(type, size)))
             break;
-        VGD_FILL_STUBS(*static_cast<T*>(table), "cmdlist", VGD_SLOTS_COMMAND_LIST_3D_0092);
+        auto& t = *static_cast<T*>(table);
+        VGD_FILL_STUBS(t, "cmdlist", VGD_SLOTS_COMMAND_LIST_3D_0092);
+        fill_command_list_ddi(t);
         break;
     }
     case D3D12DDI_TABLE_TYPE_COMMAND_QUEUE_3D: {
         using T = D3D12DDI_COMMAND_QUEUE_FUNCS_CORE_0001;
         if (FAILED(hr = check_table_size<T>(type, size)))
             break;
-        VGD_FILL_STUBS(*static_cast<T*>(table), "queue", VGD_SLOTS_COMMAND_QUEUE_CORE_0001);
+        auto& t = *static_cast<T*>(table);
+        VGD_FILL_STUBS(t, "queue", VGD_SLOTS_COMMAND_QUEUE_CORE_0001);
+        fill_command_queue_ddi(t);
         break;
     }
     case D3D12DDI_TABLE_TYPE_DXGI: {

@@ -10,7 +10,12 @@
 param(
     [Parameter(Mandatory = $true, Position = 0)]
     [ValidateSet('Install', 'Probe', 'Uninstall', 'Status')]
-    [string]$Action
+    [string]$Action,
+    # Probe only: enable the D3D12 debug layer (needs Graphics Tools:
+    #   Add-WindowsCapability -Online -Name Tools.Graphics.DirectX~~~~0.0.1.0)
+    [switch]$DebugLayer,
+    # Probe only: VGD_VERBOSE=1, logging every format-support and MSAA answer
+    [switch]$Trace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -90,11 +95,13 @@ switch ($Action) {
     'Probe' {
         $log = Join-Path $Work 'vgd.log'
         Remove-Item $log -ErrorAction SilentlyContinue
-        $exe = Join-Path $Work 'd3dprobe.exe'
-        if (-not (Test-Path $exe)) { $exe = Find-BuildFile 'tests\win\d3dprobe.exe' }
+        # Prefer the probe next to this script (the fresh build); C:\vgd holds the copy Install made.
+        $exe = $null
+        try { $exe = Find-BuildFile 'tests\win\d3dprobe.exe' } catch { $exe = Join-Path $Work 'd3dprobe.exe' }
         $env:VGD_LOG = $log
+        $env:VGD_VERBOSE = if ($Trace) { '1' } else { '' }
         Write-Host "== d3dprobe ($exe)"
-        & $exe
+        if ($DebugLayer) { & $exe --debug } else { & $exe }
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"
         if (Test-Path $log) { Get-Content $log } else { Write-Host '(no log: vgd3d12.dll was not loaded)' }

@@ -1,0 +1,11 @@
+$$ WinDbg script: log every D3DKMT kernel call the process makes, with its NTSTATUS, next to vgd3d12's own
+$$ debug output (OutputDebugString lines appear in the same log).
+$$ Usage (admin PowerShell):
+$$   WinDbgX.exe -c '$<Z:\win\kmt-trace.wds' Z:\win\tests\win\d3dprobe.exe
+$$ then type g in WinDbg. When the process has exited: .logclose, and read C:\vgd\kmt.log.
+$$ A status other than 00000000 (or 00000103, STATUS_PENDING) is a failure.
+$$ (WinDbgX stops a command file at the first "g", so the script only arms the breakpoints.)
+.logopen C:\vgd\kmt.log
+.symfix
+.reload
+bm win32u!NtGdiDdDDI* ".printf \"%y\", @rip; gu; .printf \" -> %08x\\n\", @eax; g"

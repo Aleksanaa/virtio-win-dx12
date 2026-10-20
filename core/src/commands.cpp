@@ -95,6 +95,17 @@ HRESULT Device::create_command_list(D3D12_COMMAND_LIST_TYPE type, CommandAllocat
     return S_OK;
 }
 
+HRESULT Device::create_command_list(D3D12_COMMAND_LIST_TYPE type, std::unique_ptr<CommandList>* out)
+{
+    if (!out)
+        return E_INVALIDARG;
+    auto l = std::make_unique<CommandList::Impl>();
+    l->device = impl_.get();
+    l->type = type;
+    out->reset(new CommandList(std::move(l)));
+    return S_OK;
+}
+
 HRESULT CommandList::close()
 {
     if (!impl_->open)

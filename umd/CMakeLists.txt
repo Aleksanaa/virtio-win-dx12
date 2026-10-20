@@ -22,6 +22,8 @@ add_library(vgd3d12 SHARED
     src/caps.cpp
     src/device.cpp
     src/device_core.cpp
+    src/pipeline_ddi.cpp
+    src/command_ddi.cpp
     src/log.cpp
     src/vulkan_icd.cpp)
 set_target_properties(vgd3d12 PROPERTIES PREFIX "")

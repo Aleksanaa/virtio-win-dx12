@@ -158,8 +158,14 @@ HRESULT Instance::create_device(size_t adapter_index, std::unique_ptr<Device>* o
     }
     for (const auto& q : queue_infos)
         impl->families.push_back(q.queueFamilyIndex);
-    log(LogLevel::info, "device on %s: direct family %u, compute %u, copy %u", phys.desc.name.c_str(),
-        fam.direct, fam.compute, fam.copy);
+    {
+        VkFormatProperties2 d24{VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+        impl_->vk.vkGetPhysicalDeviceFormatProperties2(phys.handle, VK_FORMAT_D24_UNORM_S8_UINT, &d24);
+        impl->d24s8_supported =
+            d24.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    }
+    log(LogLevel::info, "device on %s: direct family %u, compute %u, copy %u, d24s8 %d", phys.desc.name.c_str(),
+        fam.direct, fam.compute, fam.copy, impl->d24s8_supported);
 
     out->reset(new Device(std::move(impl)));
     return S_OK;
@@ -168,6 +174,45 @@ HRESULT Instance::create_device(size_t adapter_index, std::unique_ptr<Device>* o
 Device::Device(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Device::~Device() = default;
 const AdapterDesc& Device::adapter() const { return impl_->physical->desc; }
+
+VkFormat Device::Impl::resolve_format(DXGI_FORMAT format) const
+{
+    const VkFormat vk = vk_format(format);
+    if (vk == VK_FORMAT_D24_UNORM_S8_UINT && !d24s8_supported)
+        return VK_FORMAT_D32_SFLOAT_S8_UINT;
+    return vk;
+}
+
+FormatFeatures Device::format_features(DXGI_FORMAT format) const
+{
+    FormatFeatures out;
+    const VkFormat vk = impl_->resolve_format(format);
+    if (vk == VK_FORMAT_UNDEFINED)
+        return out;
+    VkFormatProperties3 p3{VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
+    VkFormatProperties2 p2{VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, &p3};
+    impl_->ivk->vkGetPhysicalDeviceFormatProperties2(impl_->physical->handle, vk, &p2);
+    out.optimal = p3.optimalTilingFeatures;
+    out.buffer = p3.bufferFeatures;
+
+    VkImageUsageFlags usage = 0;
+    if (out.optimal & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT)
+        usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    else if (out.optimal & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT)
+        usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    out.samples = VK_SAMPLE_COUNT_1_BIT;
+    if (usage) {
+        VkPhysicalDeviceImageFormatInfo2 info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2};
+        info.format = vk;
+        info.type = VK_IMAGE_TYPE_2D;
+        info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        info.usage = usage;
+        VkImageFormatProperties2 props{VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
+        if (impl_->ivk->vkGetPhysicalDeviceImageFormatProperties2(impl_->physical->handle, &info, &props) == VK_SUCCESS)
+            out.samples = props.imageFormatProperties.sampleCounts;
+    }
+    return out;
+}
 
 // --- Resources ---------------------------------------------------------------------------------------------
 

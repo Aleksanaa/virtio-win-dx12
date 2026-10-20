@@ -4,6 +4,7 @@
 #pragma once
 
 #include <vgd/d3d12.h>
+#include <vgd/formats.h>
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -62,6 +63,8 @@ class Device {
 public:
     ~Device();
     const AdapterDesc& adapter() const;
+    // Vulkan features of the format a DXGI format is stored as (all zero if we do not map it).
+    FormatFeatures format_features(DXGI_FORMAT format) const;
 
     // Committed buffer: its own heap of the given type, like ID3D12Device::CreateCommittedResource with a buffer desc.
     HRESULT create_committed_buffer(D3D12_HEAP_TYPE heap_type, uint64_t size, D3D12_RESOURCE_FLAGS flags,
@@ -72,6 +75,8 @@ public:
     // The list starts open, recording into `allocator`, as in D3D12.
     HRESULT create_command_list(D3D12_COMMAND_LIST_TYPE type, CommandAllocator& allocator,
                                 std::unique_ptr<CommandList>* out);
+    // A closed list with no allocator yet; reset() opens it (the DDI creates lists before giving them a pool).
+    HRESULT create_command_list(D3D12_COMMAND_LIST_TYPE type, std::unique_ptr<CommandList>* out);
 
     struct Impl;
     Impl& impl() { return *impl_; }

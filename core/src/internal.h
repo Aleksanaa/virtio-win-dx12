@@ -70,6 +70,10 @@ struct Device::Impl {
 
     QueueSlot& slot_for(D3D12_COMMAND_LIST_TYPE type);
     uint32_t find_memory_type(uint32_t type_bits, D3D12_HEAP_TYPE heap_type) const;
+    // The Vulkan format this device stores a DXGI format as: vk_format() plus device-specific substitutions
+    // (D24S8 becomes D32S8 where the GPU lacks it, e.g. AMD).
+    VkFormat resolve_format(DXGI_FORMAT format) const;
+    bool d24s8_supported = false;
 };
 
 struct Resource::Impl {

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-foreach(t copy_path)
+foreach(t copy_path formats root_signature pipeline)
   add_executable(${t} ${t}.cpp)
   target_link_libraries(${t} PRIVATE vgd-core ${CMAKE_DL_LIBS})
   add_test(NAME ${t} COMMAND ${t})

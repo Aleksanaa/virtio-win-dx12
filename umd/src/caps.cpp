@@ -97,10 +97,15 @@ HRESULT get_caps(const D3D12DDIARG_GETCAPS& r)
         return S_OK;
     }
     case D3D12DDICAPS_TYPE_MEMORY_ARCHITECTURE: {
-        // Through Venus the guest sees separate device memory and host-visible blobs: a discrete-style adapter.
+        // Must agree with the KMD: yttrium describes only aperture (system memory) segments, no local video memory,
+        // so Windows sees a UMA adapter. CacheCoherent stays FALSE: upload heaps are write-combined, not CPU cached.
         auto* d = payload<D3D12DDI_MEMORY_ARCHITECTURE_CAPS_0041>(r);
         if (!d || !node_zero(r)) return E_INVALIDARG;
         *d = {};
+        d->UMA = TRUE;
+        // Required by the runtime (CacheHeapCaps throws without it). True for us: every host-visible memory type
+        // core uses is HOST_COHERENT, so CPU and GPU see each other's writes without explicit cache maintenance.
+        d->IOCoherent = TRUE;
         d->HeapSerializationTier = D3D12DDI_HEAP_SERIALIZATION_TIER_0041_0;
         d->ResourceSerializationTier = D3D12DDI_RESOURCE_SERIALIZATION_TIER_0041_0;
         return S_OK;
@@ -119,9 +124,20 @@ HRESULT get_caps(const D3D12DDIARG_GETCAPS& r)
         return S_OK;
     }
     case D3D12DDICAPS_TYPE_TEXTURE_LAYOUT_SETS: {
+        // *pInfo = UINT[2] {D3D12DDI_TL_ROW_MAJOR, functional unit}. The runtime (CDevice::CacheHeapCaps) requires
+        // SubCaps[0].MaxElementSize != 0 and power-of-two alignments. Row-major data moves through Vulkan
+        // buffer-image copies, which need texel alignment only: one entry for every element size, alignment 1,
+        // the same for every unit (also what Microsoft's CosUmd12 sample answers).
         auto* d = payload<D3D12DDI_ROW_MAJOR_LAYOUT_CAPS>(r);
         if (!d) return E_INVALIDARG;
+        const UINT* key = static_cast<const UINT*>(r.pInfo);
+        if (!key || key[0] != D3D12DDI_TL_ROW_MAJOR) return E_INVALIDARG;
         *d = {};
+        d->SubCaps[0].MaxElementSize = 0xFFFF;
+        d->SubCaps[0].BaseOffsetAlignment = 1;
+        d->SubCaps[0].PitchAlignment = 1;
+        d->SubCaps[0].DepthPitchAlignment = 1;
+        d->Flags = D3D12DDI_ROW_MAJOR_LAYOUT_FLAG_NONE;
         return S_OK;
     }
     case D3D12DDICAPS_TYPE_0022_SWIZZLE_PATTERN:

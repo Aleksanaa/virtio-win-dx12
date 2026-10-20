@@ -13,6 +13,7 @@ namespace {
 
 std::mutex g_lock;
 FILE* g_file = nullptr;
+bool g_verbose = false;
 
 void sink(LogLevel level, const char* msg) { logf(level, "core: %s", msg); }
 
@@ -27,8 +28,12 @@ void log_init()
     const DWORD len = GetEnvironmentVariableA("VGD_LOG", path, sizeof(path));
     if (len > 0 && len < sizeof(path))
         g_file = std::fopen(path, "a");
+    char v[8];
+    g_verbose = GetEnvironmentVariableA("VGD_VERBOSE", v, sizeof(v)) > 0 && v[0] == '1';
     set_log_sink(sink);
 }
+
+bool verbose() { return g_verbose; }
 
 void logf(LogLevel level, const char* fmt, ...)
 {
