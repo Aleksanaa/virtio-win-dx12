@@ -109,6 +109,13 @@ HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandLi
         d->~Device();
         return hr;
     }
+    // GetTimestampFrequency comes from the KMD, and yttrium's has no GPU clock: it reports the performance counter.
+    // Resolved timestamps are rescaled to match.
+    LARGE_INTEGER qpf;
+    QueryPerformanceFrequency(&qpf);
+    d->core->set_timestamp_frequency(static_cast<uint64_t>(qpf.QuadPart));
+    VGD_TRACE("CreateDevice: GPU timestamps at %llu Hz, reported at %lld Hz",
+              static_cast<unsigned long long>(d->core->timestamp_frequency()), static_cast<long long>(qpf.QuadPart));
     VGD_TRACE("CreateDevice: ok on %s (flags 0x%x)", d->core->adapter().name.c_str(), static_cast<unsigned>(args.Flags));
     return S_OK;
 }
@@ -140,6 +147,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         auto& t = *static_cast<T*>(table);
         VGD_FILL_STUBS(t, "cmdlist", VGD_SLOTS_COMMAND_LIST_3D_0092);
         fill_command_list_ddi(t);
+        fill_query_list_ddi(t);
         if (index < CommandListTables::kMax) {
             tables.rt[index] = rt_table;
             if (index >= tables.count)

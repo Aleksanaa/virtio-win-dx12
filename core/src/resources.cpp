@@ -150,7 +150,7 @@ HRESULT Device::Impl::create_init_objects()
     return hresult_from_vk(vk.vkCreateSemaphore(device, &sci, nullptr, &init_timeline));
 }
 
-HRESULT Device::Impl::init_image(VkImage image, VkImageAspectFlags aspects)
+HRESULT Device::Impl::init_submit(const std::function<void(VkCommandBuffer)>& record)
 {
     std::lock_guard g(init_lock);
     uint64_t completed = 0;
@@ -175,19 +175,7 @@ HRESULT Device::Impl::init_image(VkImage image, VkImageAspectFlags aspects)
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vk.vkBeginCommandBuffer(cmd, &bi);
-    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = image;
-    b.subresourceRange = {aspects, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &b;
-    vk.vkCmdPipelineBarrier2(cmd, &dep);
+    record(cmd);
     VkResult r = vk.vkEndCommandBuffer(cmd);
     if (r != VK_SUCCESS)
         return hresult_from_vk(r);
@@ -215,6 +203,25 @@ HRESULT Device::Impl::init_image(VkImage image, VkImageAspectFlags aspects)
             v = value;
     init_value.store(value);
     return S_OK;
+}
+
+HRESULT Device::Impl::init_image(VkImage image, VkImageAspectFlags aspects)
+{
+    return init_submit([&](VkCommandBuffer cmd) {
+        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = image;
+        b.subresourceRange = {aspects, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &b;
+        vk.vkCmdPipelineBarrier2(cmd, &dep);
+    });
 }
 
 // --- Resources ---------------------------------------------------------------------------------------------

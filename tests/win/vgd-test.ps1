@@ -25,7 +25,9 @@ param(
     # Probe only: also draw with depth/stencil tests and 4x MSAA with a resolve
     [switch]$Depth,
     # Probe only: also clear UAVs and dispatch a compute shader on a compute queue
-    [switch]$Compute
+    [switch]$Compute,
+    # Probe only: also run occlusion, pipeline statistics and timestamp queries
+    [switch]$Queries
 )
 
 $ErrorActionPreference = 'Stop'
@@ -118,6 +120,7 @@ switch ($Action) {
         if ($Textured) { $probeArgs += '--textured' }
         if ($Depth) { $probeArgs += '--depth' }
         if ($Compute) { $probeArgs += '--compute' }
+        if ($Queries) { $probeArgs += '--queries' }
         & $exe @probeArgs
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"

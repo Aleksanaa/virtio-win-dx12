@@ -123,6 +123,7 @@ class CommandList;
 class CommandQueue;
 class Fence;
 class DescriptorHeap;
+class QueryHeap;
 
 class Instance {
 public:
@@ -177,6 +178,14 @@ public:
     void write_descriptor(Descriptor* dst, const Descriptor& value);
     // CopyDescriptors: `count` descriptors from `src` (a CPU-only heap, as D3D12 requires) to `dst`.
     void copy_descriptors(Descriptor* dst, const Descriptor* src, uint32_t count);
+    // Occlusion, timestamp and pipeline statistics heaps (no stream output, copy queue timestamps or mesh shader
+    // statistics). Every query starts out available: zero, or for timestamps some time before creation.
+    HRESULT create_query_heap(const D3D12_QUERY_HEAP_DESC& desc, std::unique_ptr<QueryHeap>* out);
+    // The rate GPU timestamps tick at, per second.
+    uint64_t timestamp_frequency() const;
+    // The rate ResolveQueryData reports timestamps in, when that is not the GPU's: on Windows the KMD decides what
+    // GetTimestampFrequency returns. 0 (the default) keeps the GPU's. Applies to resolves recorded afterwards.
+    void set_timestamp_frequency(uint64_t hz);
     HRESULT create_fence(uint64_t initial_value, std::unique_ptr<Fence>* out);
     HRESULT create_command_queue(const D3D12_COMMAND_QUEUE_DESC& desc, std::unique_ptr<CommandQueue>* out);
     HRESULT create_command_allocator(D3D12_COMMAND_LIST_TYPE type, std::unique_ptr<CommandAllocator>* out);
@@ -230,6 +239,20 @@ public:
 private:
     friend class Device;
     explicit DescriptorHeap(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+};
+
+class QueryHeap {
+public:
+    ~QueryHeap();
+    D3D12_QUERY_HEAP_TYPE type() const;
+    uint32_t count() const;
+
+    struct Impl;
+    Impl& impl() { return *impl_; }
+private:
+    friend class Device;
+    explicit QueryHeap(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;
 };
 
@@ -313,6 +336,15 @@ public:
     // ResolveSubresource: a multisampled color subresource into a single-sampled one.
     void resolve_subresource(Resource& dst, uint32_t dst_subresource, Resource& src, uint32_t src_subresource,
                              DXGI_FORMAT format);
+    // Queries. Occlusion and pipeline statistics queries need a direct list, and a list ends the ones still active
+    // when it closes. Each begin (and each timestamp) ends the current rendering: Vulkan resets queries outside it.
+    void begin_query(QueryHeap& heap, D3D12_QUERY_TYPE type, uint32_t index);
+    void end_query(QueryHeap& heap, D3D12_QUERY_TYPE type, uint32_t index);
+    // Results as 64-bit values (pipeline statistics: D3D12_QUERY_DATA_PIPELINE_STATISTICS each) at `offset`, a
+    // multiple of 8. Binary occlusion results and rescaled timestamps are fixed up by a compute shader, which copy
+    // lists cannot run: there timestamps stay in GPU ticks.
+    void resolve_query_data(QueryHeap& heap, D3D12_QUERY_TYPE type, uint32_t start, uint32_t count, Resource& dst,
+                            uint64_t offset);
     void draw_instanced(uint32_t vertex_count, uint32_t instance_count, uint32_t start_vertex, uint32_t start_instance);
     void draw_indexed_instanced(uint32_t index_count, uint32_t instance_count, uint32_t start_index,
                                 int32_t base_vertex, uint32_t start_instance);

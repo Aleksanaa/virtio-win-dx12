@@ -37,6 +37,7 @@ Device::Impl::~Impl()
 {
     if (device) {
         vk.vkDeviceWaitIdle(device);
+        query_fixup.reset();
         for (auto& [key, s] : samplers)
             vk.vkDestroySampler(device, s, nullptr);
         if (resource_set_layout)
@@ -212,7 +213,7 @@ HRESULT Instance::create_device(size_t adapter_index, std::unique_ptr<Device>* o
     return S_OK;
 }
 
-Device::Device(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Device::Device(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) { impl_->self = this; }
 Device::~Device() = default;
 const AdapterDesc& Device::adapter() const { return impl_->physical->desc; }
 

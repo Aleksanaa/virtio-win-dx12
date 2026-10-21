@@ -116,6 +116,7 @@ HRESULT CommandList::close()
     if (!impl_->open)
         return E_FAIL;
     impl_->end_rendering();
+    impl_->end_active_queries();
     impl_->open = false;
     VkResult r = impl_->device->vk.vkEndCommandBuffer(impl_->cmd);
     return FAILED(impl_->error) ? impl_->error : hresult_from_vk(r);
@@ -315,6 +316,7 @@ void CommandList::Impl::reset_state()
     num_rtvs = 0;
     dsv = {};
     rendering = false;
+    active_queries.clear();
 }
 
 void CommandList::Impl::fail(HRESULT hr)

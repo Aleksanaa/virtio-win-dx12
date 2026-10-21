@@ -7,6 +7,7 @@
 //   --textured  on each device created, sample a texture through descriptor heaps and tables, check pixels.
 //   --depth  on each device created, draw with depth/stencil tests and 4x MSAA with a resolve, check pixels.
 //   --compute  on each device created, clear UAVs and dispatch on a compute queue, check the values.
+//   --queries  on each device created, run occlusion, pipeline statistics and timestamp queries, check results.
 #include <windows.h>
 #include <dxgi1_4.h>
 #include <dxgidebug.h>
@@ -1183,6 +1184,246 @@ out:
     return ok;
 }
 
+// Queries, the same work as core/tests/queries.cpp: occlusion and binary occlusion of scissored draws passing and
+// failing the depth test, an unused query, pipeline statistics of one draw, and timestamps across a CPU sleep,
+// checked against GetTimestampFrequency.
+bool queries_test(ID3D12Device* device)
+{
+    constexpr UINT kSize = 64, kResults = 32;
+    constexpr UINT kOcclusion = 0, kStatistics = 8, kTimestamps = 20;
+    auto step = [](const char* what, HRESULT hr) {
+        std::printf("  queries: %-27s 0x%08lx %s\n", what, hr, SUCCEEDED(hr) ? "ok" : "FAIL");
+        print_messages();
+        return SUCCEEDED(hr);
+    };
+
+    ID3DBlob *rs_blob = nullptr, *rs_error = nullptr;
+    ID3D12RootSignature* rs = nullptr;
+    ID3D12PipelineState* pso = nullptr;
+    ID3D12Resource *target = nullptr, *depth = nullptr, *results = nullptr;
+    ID3D12DescriptorHeap *rtv_heap = nullptr, *dsv_heap = nullptr;
+    ID3D12QueryHeap *occlusion = nullptr, *statistics = nullptr, *timestamps = nullptr;
+    ID3D12CommandQueue* queue = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    bool ok = false;
+
+    D3D12_ROOT_PARAMETER1 params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants = {0, 0, 1};
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants = {1, 0, 4};
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsd{D3D_ROOT_SIGNATURE_VERSION_1_1};
+    rsd.Desc_1_1 = {2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+    pd.VS = {k_vs_flat, sizeof(k_vs_flat)};
+    pd.PS = {k_ps_flat, sizeof(k_ps_flat)};
+    for (auto& rt : pd.BlendState.RenderTarget)
+        rt = {FALSE, FALSE, D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, D3D12_BLEND_ONE, D3D12_BLEND_ZERO,
+              D3D12_BLEND_OP_ADD, D3D12_LOGIC_OP_NOOP, D3D12_COLOR_WRITE_ENABLE_ALL};
+    pd.SampleMask = UINT_MAX;
+    pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pd.RasterizerState.DepthClipEnable = TRUE;
+    pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pd.NumRenderTargets = 1;
+    pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pd.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pd.SampleDesc.Count = 1;
+    pd.DepthStencilState.DepthEnable = TRUE;
+    pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pd.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+
+    D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT}, readback_heap{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC target_desc{};
+    target_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    target_desc.Width = target_desc.Height = kSize;
+    target_desc.DepthOrArraySize = 1;
+    target_desc.MipLevels = 1;
+    target_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    target_desc.SampleDesc.Count = 1;
+    target_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_RESOURCE_DESC depth_desc = target_desc;
+    depth_desc.Format = DXGI_FORMAT_D32_FLOAT;
+    depth_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    D3D12_RESOURCE_DESC rb_desc{};
+    rb_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rb_desc.Width = kResults * 8;
+    rb_desc.Height = 1;
+    rb_desc.DepthOrArraySize = 1;
+    rb_desc.MipLevels = 1;
+    rb_desc.SampleDesc.Count = 1;
+    rb_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_hd{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1}, dsv_hd{D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1};
+    D3D12_QUERY_HEAP_DESC occlusion_hd{D3D12_QUERY_HEAP_TYPE_OCCLUSION, 5},
+        statistics_hd{D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, 1}, timestamp_hd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 3};
+    D3D12_COMMAND_QUEUE_DESC qd{D3D12_COMMAND_LIST_TYPE_DIRECT};
+    UINT64 fence_value = 0, frequency = 0, gpu_clock = 0, cpu_clock = 0;
+    LARGE_INTEGER qpf;
+    QueryPerformanceFrequency(&qpf);
+    D3D12_RANGE none{0, 0};
+    const float color[4] = {1, 0, 0, 1};
+    const D3D12_VIEWPORT viewport{0, 0, kSize, kSize, 0, 1};
+    const D3D12_RECT scissor{8, 8, 24, 16};   // 16 x 8 = 128 samples
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv{}, dsv{};
+    const UINT64* r = nullptr;
+    void* mapped = nullptr;
+
+    auto draw = [&](float z) {
+        list->SetGraphicsRoot32BitConstants(0, 1, &z, 0);
+        list->SetGraphicsRoot32BitConstants(1, 4, color, 0);
+        list->DrawInstanced(3, 1, 0, 0);
+    };
+    auto run = [&]() {
+        if (!step("close list", list->Close()))
+            return false;
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+        if (!step("signal fence", queue->Signal(fence, ++fence_value)) ||
+            !step("set event", fence->SetEventOnCompletion(fence_value, event)))
+            return false;
+        if (WaitForSingleObject(event, 5000) != WAIT_OBJECT_0) {
+            std::printf("  queries: fence did not reach %llu within 5 s\n", static_cast<unsigned long long>(fence_value));
+            return false;
+        }
+        return true;
+    };
+    auto expect = [&](const char* what, UINT64 got, UINT64 lo, UINT64 hi) {
+        const bool good = got >= lo && got <= hi;
+        std::printf("  queries: %-26s %llu %s (expected %llu..%llu)\n", what, static_cast<unsigned long long>(got),
+                    good ? "ok  " : "FAIL", static_cast<unsigned long long>(lo), static_cast<unsigned long long>(hi));
+        return good;
+    };
+
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&rsd, &rs_blob, &rs_error);
+    if (!step("serialize root signature", hr) ||
+        !step("root signature", device->CreateRootSignature(0, rs_blob->GetBufferPointer(), rs_blob->GetBufferSize(),
+                                                            IID_PPV_ARGS(&rs))))
+        goto out;
+    pd.pRootSignature = rs;
+    if (!step("pipeline", device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso))) ||
+        !step("render target", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &target_desc,
+                                                               D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+                                                               IID_PPV_ARGS(&target))) ||
+        !step("depth", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
+                                                       D3D12_RESOURCE_STATE_DEPTH_WRITE, nullptr,
+                                                       IID_PPV_ARGS(&depth))) ||
+        !step("results buffer", device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &rb_desc,
+                                                                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                                IID_PPV_ARGS(&results))) ||
+        !step("rtv heap", device->CreateDescriptorHeap(&rtv_hd, IID_PPV_ARGS(&rtv_heap))) ||
+        !step("dsv heap", device->CreateDescriptorHeap(&dsv_hd, IID_PPV_ARGS(&dsv_heap))) ||
+        !step("occlusion query heap", device->CreateQueryHeap(&occlusion_hd, IID_PPV_ARGS(&occlusion))) ||
+        !step("statistics query heap", device->CreateQueryHeap(&statistics_hd, IID_PPV_ARGS(&statistics))) ||
+        !step("timestamp query heap", device->CreateQueryHeap(&timestamp_hd, IID_PPV_ARGS(&timestamps))) ||
+        !step("command queue", device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue))) ||
+        !step("command allocator",
+              device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
+        !step("command list", device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr,
+                                                        IID_PPV_ARGS(&list))) ||
+        !step("fence", device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))) ||
+        !step("timestamp frequency", queue->GetTimestampFrequency(&frequency)) ||
+        !step("clock calibration", queue->GetClockCalibration(&gpu_clock, &cpu_clock)))
+        goto out;
+    std::printf("  queries: timestamp frequency %llu Hz (QueryPerformanceFrequency %lld), clocks gpu %llu cpu %llu\n",
+                static_cast<unsigned long long>(frequency), static_cast<long long>(qpf.QuadPart),
+                static_cast<unsigned long long>(gpu_clock), static_cast<unsigned long long>(cpu_clock));
+
+    rtv_heap->GetCPUDescriptorHandleForHeapStart(&rtv);   // the MinGW form of the struct-returning method
+    dsv_heap->GetCPUDescriptorHandleForHeapStart(&dsv);
+    device->CreateRenderTargetView(target, nullptr, rtv);
+    device->CreateDepthStencilView(depth, nullptr, dsv);
+    print_messages();
+
+    {
+        list->EndQuery(timestamps, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+        list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 0.5f, 0, 0, nullptr);
+        list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+        list->RSSetViewports(1, &viewport);
+        list->RSSetScissorRects(1, &scissor);
+        list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        list->SetGraphicsRootSignature(rs);
+        list->SetPipelineState(pso);
+        const struct { D3D12_QUERY_TYPE type; float z; } draws[4] = {
+            {D3D12_QUERY_TYPE_OCCLUSION, 0.25f},
+            {D3D12_QUERY_TYPE_BINARY_OCCLUSION, 0.25f},
+            {D3D12_QUERY_TYPE_BINARY_OCCLUSION, 0.75f},
+            {D3D12_QUERY_TYPE_OCCLUSION, 0.75f},
+        };
+        for (UINT i = 0; i < 4; i++) {
+            list->BeginQuery(occlusion, draws[i].type, i);
+            draw(draws[i].z);
+            list->EndQuery(occlusion, draws[i].type, i);
+        }
+        list->BeginQuery(statistics, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
+        draw(0.25f);
+        list->EndQuery(statistics, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
+        list->EndQuery(timestamps, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+        // Query 4 of the occlusion heap was never used.
+        list->ResolveQueryData(occlusion, D3D12_QUERY_TYPE_OCCLUSION, 0, 1, results, kOcclusion * 8);
+        list->ResolveQueryData(occlusion, D3D12_QUERY_TYPE_BINARY_OCCLUSION, 1, 2, results, (kOcclusion + 1) * 8);
+        list->ResolveQueryData(occlusion, D3D12_QUERY_TYPE_OCCLUSION, 3, 2, results, (kOcclusion + 3) * 8);
+        list->ResolveQueryData(statistics, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0, 1, results, kStatistics * 8);
+        std::printf("  queries: recorded first list\n");
+        if (!run())
+            goto out;
+        Sleep(100);
+        if (!step("reset allocator", alloc->Reset()) || !step("reset list", list->Reset(alloc, nullptr)))
+            goto out;
+        list->EndQuery(timestamps, D3D12_QUERY_TYPE_TIMESTAMP, 2);
+        list->ResolveQueryData(timestamps, D3D12_QUERY_TYPE_TIMESTAMP, 0, 3, results, kTimestamps * 8);
+        if (!run())
+            goto out;
+    }
+
+    {
+        D3D12_RANGE all{0, kResults * 8};
+        if (!step("map results", results->Map(0, &all, &mapped)))
+            goto out;
+        r = static_cast<const UINT64*>(mapped);
+        ok = true;
+        ok &= expect("occlusion, passing", r[kOcclusion + 0], 128, 128);
+        ok &= expect("binary occlusion, passing", r[kOcclusion + 1], 1, 1);
+        ok &= expect("binary occlusion, failing", r[kOcclusion + 2], 0, 0);
+        ok &= expect("occlusion, failing", r[kOcclusion + 3], 0, 0);
+        ok &= expect("occlusion, never used", r[kOcclusion + 4], 0, 0);
+        D3D12_QUERY_DATA_PIPELINE_STATISTICS s;
+        std::memcpy(&s, r + kStatistics, sizeof(s));
+        ok &= expect("IAVertices", s.IAVertices, 3, 3);
+        ok &= expect("IAPrimitives", s.IAPrimitives, 1, 1);
+        ok &= expect("VSInvocations", s.VSInvocations, 1, 3);
+        ok &= expect("GSInvocations", s.GSInvocations, 0, 0);
+        ok &= expect("CInvocations", s.CInvocations, 1, 1);
+        ok &= expect("PSInvocations", s.PSInvocations, 1, 4 * 128);
+        ok &= expect("HSInvocations", s.HSInvocations, 0, 0);
+        ok &= expect("DSInvocations", s.DSInvocations, 0, 0);
+        ok &= expect("CSInvocations", s.CSInvocations, 0, 0);
+        ok &= expect("timestamps in order", r[kTimestamps + 1], r[kTimestamps + 0], UINT64_MAX);
+        // 100 ms of sleep, in ticks of GetTimestampFrequency; less than 5 s.
+        const UINT64 slept = r[kTimestamps + 2] - r[kTimestamps + 1];
+        ok &= expect("ticks across a 100 ms sleep", slept, frequency / 10 * 9 / 10, frequency * 5);
+        std::printf("  queries: the sleep took %.1f ms of GPU time\n", frequency ? slept * 1e3 / frequency : 0.0);
+        results->Unmap(0, &none);
+    }
+out:
+    if (rs_error)
+        std::printf("  queries: root signature error: %.*s\n", static_cast<int>(rs_error->GetBufferSize()),
+                    static_cast<const char*>(rs_error->GetBufferPointer()));
+    std::printf("  queries test: %s\n", ok ? "PASS" : "FAIL");
+    for (IUnknown* u : std::initializer_list<IUnknown*>{fence, list, alloc, queue, timestamps, statistics, occlusion,
+                                                         dsv_heap, rtv_heap, results, depth, target, pso, rs, rs_error,
+                                                         rs_blob})
+        if (u)
+            u->Release();
+    CloseHandle(event);
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -1194,7 +1435,7 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; i++)
         std::printf(" %s", argv[i]);
     std::printf("\n");
-    bool copy = false, triangle = false, textured = false, depth = false, compute = false;
+    bool copy = false, triangle = false, textured = false, depth = false, compute = false, queries = false;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--debug"))
             enable_debug_layer();
@@ -1206,6 +1447,8 @@ int main(int argc, char** argv)
             textured = true;
         else if (!std::strcmp(argv[i], "--depth"))
             depth = true;
+        else if (!std::strcmp(argv[i], "--queries"))
+            queries = true;
         else if (!std::strcmp(argv[i], "--compute"))
             compute = true;
     }
@@ -1239,6 +1482,8 @@ int main(int argc, char** argv)
             if (textured && !textured_test(device))
                 failures++;
             if (depth && !depth_test(device))
+                failures++;
+            if (queries && !queries_test(device))
                 failures++;
             if (compute && !compute_test(device))
                 failures++;

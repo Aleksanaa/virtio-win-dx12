@@ -84,6 +84,10 @@ struct DescriptorHeapObject {
     std::unique_ptr<vgd::DescriptorHeap> heap;
 };
 
+struct QueryHeapObject {
+    std::unique_ptr<vgd::QueryHeap> heap;
+};
+
 // The runtime owns D3D12 fences (kernel monitored fences it signals and waits on our queues' contexts); the driver
 // only learns their GPU addresses, which it needs only for multi-adapter.
 struct FenceObject {
@@ -95,6 +99,10 @@ void fill_descriptor_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
 
 // Heaps, resources, mapping and fences (resource_ddi.cpp).
 void fill_resource_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
+
+// Query heaps and queries (query_ddi.cpp).
+void fill_query_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
+void fill_query_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& table);
 
 // Shader, state and pipeline DDIs (pipeline_ddi.cpp).
 void fill_pipeline_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);

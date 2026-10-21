@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <cstdarg>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
@@ -103,6 +104,8 @@ struct Device::Impl {
     std::vector<std::pair<VkCommandBuffer, uint64_t>> init_cmds;   // reused once their value has passed
     HRESULT create_init_objects();
     HRESULT init_image(VkImage image, VkImageAspectFlags aspects);
+    // Records `record` into an initialization command buffer and submits it the same way (query heaps use it too).
+    HRESULT init_submit(const std::function<void(VkCommandBuffer)>& record);
 
     // Bindless descriptors (null layouts without mutable descriptors). Every pipeline layout starts with these
     // two sets: the CBV/SRV/UAV heap at set 0 and the sampler heap at set 1, one binding each, sized per heap.
@@ -132,6 +135,14 @@ struct Device::Impl {
     // (D24S8 becomes D32S8 where the GPU lacks it, e.g. AMD).
     VkFormat resolve_format(DXGI_FORMAT format) const;
     bool d24s8_supported = false;
+
+    Device* self = nullptr;   // the API object, for building internal pipelines with the public calls
+    // Queries (queries.cpp): the rate resolved timestamps are reported in (0: the GPU's), and the compute pipeline
+    // that fixes up resolved results, built on first use.
+    std::atomic<uint64_t> timestamp_target{0};
+    std::mutex internal_lock;
+    std::unique_ptr<PipelineState> query_fixup;
+    const PipelineState* get_query_fixup();
 };
 
 // A view of an image, keyed by everything that distinguishes the Vulkan image views we create.
@@ -173,6 +184,15 @@ struct Resource::Impl {
     {
         return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize;
     }
+};
+
+struct QueryHeap::Impl {
+    Device::Impl* device = nullptr;
+    D3D12_QUERY_HEAP_TYPE type{};
+    uint32_t count = 0;
+    VkQueryPool pool = VK_NULL_HANDLE;
+    uint32_t stride = 8;   // bytes per result
+    ~Impl();
 };
 
 struct Fence::Impl {
@@ -282,6 +302,8 @@ struct CommandList::Impl {
     DepthStencilView dsv{};   // dsv.view is VK_NULL_HANDLE when none is bound
     bool rendering = false;
     const PipelineState* rendering_pso = nullptr;   // the pipeline whose attachments the rendering has
+    std::vector<std::pair<VkQueryPool, uint32_t>> active_queries;   // begun and not yet ended
+    void end_active_queries();
 
     HRESULT begin(CommandAllocator& allocator);
     void reset_state();
