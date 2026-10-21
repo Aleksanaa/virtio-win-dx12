@@ -36,6 +36,8 @@ struct AdapterDesc {
     bool bindless = false;
     // VK_KHR_external_memory_fd with VK_EXT_external_memory_dma_buf: presentable textures (create_presentable_texture).
     bool external_memory = false;
+    // VK_EXT_image_drm_format_modifier as well: presentable textures are declared external (LINEAR modifier).
+    bool drm_format_modifier = false;
     // Features this driver requires but the Vulkan device lacks. Empty means the adapter is usable.
     std::vector<std::string> missing;
     bool usable() const { return missing.empty(); }

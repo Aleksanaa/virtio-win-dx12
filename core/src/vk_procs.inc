@@ -48,6 +48,7 @@ VGD_VK_DEVICE(vkResetCommandBuffer)
 VGD_VK_DEVICE(vkCreateImage)
 VGD_VK_DEVICE(vkDestroyImage)
 VGD_VK_DEVICE(vkGetImageMemoryRequirements)
+VGD_VK_DEVICE(vkGetImageMemoryRequirements2)
 VGD_VK_DEVICE(vkGetImageSubresourceLayout)
 VGD_VK_DEVICE(vkGetMemoryFdKHR)              // VK_KHR_external_memory_fd, when enabled
 VGD_VK_DEVICE(vkGetDeviceImageMemoryRequirements)

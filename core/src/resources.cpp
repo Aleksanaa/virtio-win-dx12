@@ -423,8 +423,10 @@ HRESULT Device::create_presentable_texture(const D3D12_RESOURCE_DESC& in_desc, c
 
     // The layout contract with the importers (yttrium's D3D10 UMD in the compositor, and its Vulkan WSI): a linear
     // image of the same size and format, bound at offset 0 of the imported memory, whose layout they query from
-    // their own image. Like yttrium's own shared images, the image itself is not declared external: RADV offers
-    // dma-buf images only with DRM format modifiers, while exporting the memory of a linear image works.
+    // their own plain linear image. Memory that is exported must back an image declared external, and RADV offers
+    // dma-buf images only with DRM format modifiers; so with VK_EXT_image_drm_format_modifier ours is a LINEAR
+    // modifier image whose row pitch is given explicitly as that of the plain linear image. Without it, it is a
+    // plain linear image like yttrium's own shared images (which drivers accept but validation flags).
     VkImageFormatProperties2 props{VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
     VkPhysicalDeviceImageFormatInfo2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, info.ci.pNext};
     query.format = info.ci.format;
@@ -438,6 +440,54 @@ HRESULT Device::create_presentable_texture(const D3D12_RESOURCE_DESC& in_desc, c
             info.ci.format, info.ci.usage, info.ci.flags, r);
         return E_NOTIMPL;
     }
+    VkSubresourceLayout linear{};
+    {
+        VkImage probe = VK_NULL_HANDLE;
+        r = d.vk.vkCreateImage(d.device, &info.ci, nullptr, &probe);
+        if (r != VK_SUCCESS) {
+            log(LogLevel::warn, "presentable texture: vkCreateImage failed: %d", r);
+            return hresult_from_vk(r);
+        }
+        const VkImageSubresource sub{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+        d.vk.vkGetImageSubresourceLayout(d.device, probe, &sub, &linear);
+        d.vk.vkDestroyImage(d.device, probe, nullptr);
+    }
+
+    constexpr uint64_t kDrmFormatModLinear = 0;
+    VkExternalMemoryImageCreateInfo external{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, info.ci.pNext};
+    external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    const VkSubresourceLayout plane{0, 0, linear.rowPitch, 0, 0};
+    VkImageDrmFormatModifierExplicitCreateInfoEXT modifier{
+        VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT, &external};
+    modifier.drmFormatModifier = kDrmFormatModLinear;
+    modifier.drmFormatModifierPlaneCount = 1;
+    modifier.pPlaneLayouts = &plane;
+    bool declared_external = false, dedicated = false;
+    if (d.physical->desc.drm_format_modifier) {
+        VkPhysicalDeviceExternalImageFormatInfo ext_query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
+                                                          info.ci.pNext};
+        ext_query.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        VkPhysicalDeviceImageDrmFormatModifierInfoEXT mod_query{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT, &ext_query};
+        mod_query.drmFormatModifier = kDrmFormatModLinear;
+        mod_query.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        query.pNext = &mod_query;
+        query.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+        VkExternalImageFormatProperties ext_props{VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+        props.pNext = &ext_props;
+        r = d.ivk->vkGetPhysicalDeviceImageFormatProperties2(d.physical->handle, &query, &props);
+        const VkExternalMemoryFeatureFlags features = ext_props.externalMemoryProperties.externalMemoryFeatures;
+        declared_external = r == VK_SUCCESS && (features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT);
+        dedicated = features & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
+        if (!declared_external)
+            log(LogLevel::info, "presentable texture: format %d has no exportable LINEAR modifier image (%d, 0x%x); "
+                "using a plain linear image", info.ci.format, r, features);
+    }
+    if (declared_external) {
+        info.ci.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+        info.ci.pNext = &modifier;
+    }
+
     auto res = std::make_unique<Resource::Impl>();
     res->device = &d;
     res->desc = desc;
@@ -448,11 +498,20 @@ HRESULT Device::create_presentable_texture(const D3D12_RESOURCE_DESC& in_desc, c
         log(LogLevel::warn, "presentable texture: vkCreateImage failed: %d", r);
         return hresult_from_vk(r);
     }
-    VkMemoryRequirements req;
-    d.vk.vkGetImageMemoryRequirements(d.device, res->image, &req);
+    // Drivers may require external images (RADV: those with modifiers) to have memory of their own.
+    VkMemoryDedicatedRequirements dedicated_req{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+    VkMemoryRequirements2 req2{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, &dedicated_req};
+    const VkImageMemoryRequirementsInfo2 req_info{VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2, nullptr,
+                                                  res->image};
+    d.vk.vkGetImageMemoryRequirements2(d.device, &req_info, &req2);
+    const VkMemoryRequirements& req = req2.memoryRequirements;
     res->size = req.size;
+    dedicated = dedicated || dedicated_req.requiresDedicatedAllocation;
 
-    VkExportMemoryAllocateInfo export_info{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
+    VkMemoryDedicatedAllocateInfo dedicated_info{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+    dedicated_info.image = res->image;
+    VkExportMemoryAllocateInfo export_info{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                           dedicated ? &dedicated_info : nullptr};
     export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
     VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &export_info};
     mai.allocationSize = req.size;
@@ -466,12 +525,14 @@ HRESULT Device::create_presentable_texture(const D3D12_RESOURCE_DESC& in_desc, c
     if (r != VK_SUCCESS)
         return hresult_from_vk(r);
 
-    VkImageSubresource sub{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+    const VkImageSubresource sub{declared_external ? VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT : VK_IMAGE_ASPECT_COLOR_BIT,
+                                 0, 0};
     VkSubresourceLayout layout{};
     d.vk.vkGetImageSubresourceLayout(d.device, res->image, &sub, &layout);
-    if (layout.offset != 0 || layout.rowPitch > UINT32_MAX) {
-        log(LogLevel::warn, "presentable texture: unexpected layout (offset %llu, pitch %llu)",
-            static_cast<unsigned long long>(layout.offset), static_cast<unsigned long long>(layout.rowPitch));
+    if (layout.offset != 0 || layout.rowPitch != linear.rowPitch || layout.rowPitch > UINT32_MAX) {
+        log(LogLevel::warn, "presentable texture: unexpected layout (offset %llu, pitch %llu, linear pitch %llu)",
+            static_cast<unsigned long long>(layout.offset), static_cast<unsigned long long>(layout.rowPitch),
+            static_cast<unsigned long long>(linear.rowPitch));
         return E_NOTIMPL;
     }
 

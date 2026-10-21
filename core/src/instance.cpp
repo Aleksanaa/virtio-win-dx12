@@ -158,6 +158,7 @@ static void probe_physical_device(Instance::Impl& in, VkPhysicalDevice pd)
     const bool has_heap_ext = has_extension(exts, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
     d.external_memory = has_extension(exts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
                         has_extension(exts, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+    d.drm_format_modifier = d.external_memory && has_extension(exts, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
 
     if (d.api_version >= VK_API_VERSION_1_3) {
         VkPhysicalDeviceDescriptorHeapFeaturesEXT heap{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
