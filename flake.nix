@@ -9,6 +9,12 @@
       pkgs = nixpkgs.legacyPackages.${system};
       mingw = pkgs.pkgsCross.mingwW64;
       mcfg = mingw.windows.mcfgthreads;
+      # vkd3d-proton generates its D3D12 headers from IDL with widl. nixpkgs ships widl only with Wine: expose just
+      # that binary, so wine itself stays off PATH.
+      widl = pkgs.runCommand "widl" { } ''
+        mkdir -p $out/bin
+        ln -s ${pkgs.wine64Packages.minimal}/bin/widl $out/bin/widl
+      '';
     in {
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
@@ -18,6 +24,8 @@
           # Mesa (icd/build.sh): meson and its Python code generators.
           meson bison flex
           (python3.withPackages (p: [ p.mako p.pyyaml p.packaging ]))
+          # vkd3d-proton (third_party/vkd3d-proton): IDL headers and its internal GLSL shaders.
+          widl glslang
           mingw.buildPackages.gcc
           mingw.buildPackages.binutils
         ];
