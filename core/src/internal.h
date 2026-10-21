@@ -86,9 +86,10 @@ struct Device::Impl {
     ~Impl();
 
     // Buffers by GPU virtual address, for the D3D12 commands that take addresses where Vulkan wants buffers
-    // (vertex and index buffers).
+    // (vertex and index buffers). Placed buffers may overlap (aliasing), even start at the same address.
     std::shared_mutex va_lock;
-    std::map<VkDeviceAddress, Resource::Impl*> buffers_by_va;
+    std::multimap<VkDeviceAddress, Resource::Impl*> buffers_by_va;
+    uint64_t largest_buffer = 0;   // bounds find_buffer's walk back from an address
     void register_buffer(Resource::Impl* r);
     void unregister_buffer(Resource::Impl* r);
     // The buffer containing `va`, with the offset of `va` in it and the bytes from there to its end;
@@ -164,6 +165,7 @@ struct Resource::Impl {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageAspectFlags aspects = 0;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    bool owns_memory = true;   // false for placed resources: the heap has it, and its mapping
     uint64_t size = 0;
     VkDeviceAddress address = 0;
     void* mapped = nullptr;
@@ -184,6 +186,16 @@ struct Resource::Impl {
     {
         return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize;
     }
+};
+
+struct Heap::Impl {
+    Device::Impl* device = nullptr;
+    D3D12_HEAP_TYPE type = D3D12_HEAP_TYPE_DEFAULT;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    uint32_t memory_type = 0;
+    uint64_t size = 0;
+    void* mapped = nullptr;
+    ~Impl();
 };
 
 struct QueryHeap::Impl {

@@ -44,6 +44,7 @@ struct AdapterDesc {
 };
 
 class Device;
+class Heap;
 class Resource;
 class PipelineState;
 class RootSignature;
@@ -165,6 +166,14 @@ public:
     // Committed resource of any dimension. Textures live in DEFAULT heaps only.
     HRESULT create_committed_resource(D3D12_HEAP_TYPE heap_type, const D3D12_RESOURCE_DESC& desc,
                                       std::unique_ptr<Resource>* out);
+    // A heap resources are placed in (ID3D12Device::CreateHeap). `flags` may deny buffers or texture categories
+    // (D3D12_HEAP_FLAG_DENY_*); the memory type is one every resource the heap allows can use.
+    HRESULT create_heap(D3D12_HEAP_TYPE heap_type, uint64_t size, D3D12_HEAP_FLAGS flags, std::unique_ptr<Heap>* out);
+    // A resource in `heap` at `offset` (CreatePlacedResource): a multiple of the alignment resource_allocation_info
+    // reports, with the resource_allocation_info size fitting in the heap. The heap must outlive it. Placed resources
+    // may overlap (aliasing); textures start with undefined contents.
+    HRESULT create_placed_resource(Heap& heap, uint64_t offset, const D3D12_RESOURCE_DESC& desc,
+                                   std::unique_ptr<Resource>* out);
     // A texture another process reads, such as a swapchain buffer the compositor shows: one 2D mip, linear, on
     // its own memory exported as a dma-buf. `castable` lists other formats views may use (the sRGB sibling).
     // The fd belongs to the caller; on Windows our ICD build (icd/) returns the NT handle value instead.
@@ -177,6 +186,13 @@ public:
     HRESULT create_presentable_texture(const D3D12_RESOURCE_DESC& desc, const DXGI_FORMAT* castable,
                                        uint32_t castable_count, std::unique_ptr<Resource>* out,
                                        ExportedTexture* exported);
+    // The reverse: a texture on memory another process exported (a texture another driver shares, such as the
+    // canvas of a browser's compositor), as a linear image of `desc` the way create_presentable_texture makes one,
+    // which is the layout yttrium's shared images have. `size` is the exported memory's. The contents are kept in
+    // practice (see finish_shared_image).
+    // On success the fd belongs to the resource; on failure it is still the caller's unless *fd_consumed.
+    HRESULT import_texture(const D3D12_RESOURCE_DESC& desc, const DXGI_FORMAT* castable, uint32_t castable_count,
+                           int fd, uint64_t size, std::unique_ptr<Resource>* out, bool* fd_consumed);
     // What a texture needs from a heap (GetResourceAllocationInfo); buffers need their size at 64 KiB alignment.
     HRESULT resource_allocation_info(const D3D12_RESOURCE_DESC& desc, uint64_t* size, uint64_t* alignment) const;
     // A view of a texture for OMSetRenderTargets / ClearRenderTargetView. `desc` may be null (whole mip 0).
@@ -224,6 +240,22 @@ public:
 private:
     friend class Instance;
     explicit Device(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+};
+
+class Heap {
+public:
+    ~Heap();
+    D3D12_HEAP_TYPE type() const;
+    uint64_t size() const;
+    // Persistent CPU pointer to offset 0 for UPLOAD/READBACK heaps; nullptr for DEFAULT.
+    void* cpu_pointer() const;
+
+    struct Impl;
+    Impl& impl() { return *impl_; }
+private:
+    friend class Device;
+    explicit Heap(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;
 };
 

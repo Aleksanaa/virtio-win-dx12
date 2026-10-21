@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Plan Phase 3 milestone 5: presentable textures. For each swapchain format, a linear texture on exported memory is
 // rendered to through its RTV (clear, then a clear of a rectangle, through the sRGB view where there is one), and
-// read back twice: through D3D12's copy path, and through the exported dma-buf mapped on the CPU at the reported
-// row pitch, which is how another process (the compositor) sees it.
+// read back three times: through D3D12's copy path, through the exported dma-buf mapped on the CPU at the reported
+// row pitch, which is how another process (the compositor) sees it, and through an image importing that dma-buf.
 #include "test_util.h"
 
 #include <linux/dma-buf.h>
@@ -132,6 +132,27 @@ bool present_format(vgd::Device& dev, const Case& c)
         munmap(map, exported.size);
         CHECK(ok);
     }
+
+    // The importer's side (as for a texture another driver shares with us): the same memory under an imported
+    // image, read through D3D12's copy path. The import takes its fd.
+    std::unique_ptr<vgd::Resource> imported;
+    bool consumed = false;
+    const int dup_fd = dup(exported.fd);
+    CHECK(dup_fd >= 0);
+    const HRESULT ihr = dev.import_texture(td, &c.srgb, c.srgb != DXGI_FORMAT_UNKNOWN ? 1 : 0, dup_fd, exported.size,
+                                           &imported, &consumed);
+    if (!consumed)
+        close(dup_fd);
+    CHECK_HR(ihr);
+    std::memset(readback->cpu_pointer(), 0, kCopyPitch * kHeight);
+    CHECK_HR(alloc->reset());
+    CHECK_HR(list->reset(*alloc));
+    src.resource = imported.get();
+    list->copy_texture_region(dst, 0, 0, 0, src, nullptr);
+    CHECK_HR(list->close());
+    CHECK_HR(queue->execute_command_lists({&cl, 1}, fence.get(), 2));
+    CHECK(fence->wait(2, 5'000'000'000ull) == S_OK);
+    CHECK(verify("import", static_cast<const uint8_t*>(readback->cpu_pointer()), kCopyPitch));
     close(exported.fd);
     return true;
 }
