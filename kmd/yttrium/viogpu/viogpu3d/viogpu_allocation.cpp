@@ -90,6 +90,8 @@ VioGpuAllocation::VioGpuAllocation(VioGpuAdapter *adapter, VIOGPU_CREATE_ALLOCAT
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
     m_adapter = adapter;
+    m_refs = 1;
+    m_alias_source = NULL;
     m_Id = m_adapter->resourceIdr.GetId();
     memcpy(&m_options, &exchange->ResourceOptions, sizeof(VIOGPU_RESOURCE_OPTIONS));
     m_options.bind = VIRGL_BIND_FOR_TARGET(m_options.target, m_options.bind);
@@ -289,6 +291,15 @@ VioGpuAllocation::~VioGpuAllocation(void)
     ASSERT(m_busy == 0);
     ExWaitForRundownProtectionRelease(&m_blob_create_rundown);
 
+    if (m_alias_source)
+    {
+        // The host resource and its id belong to the source; an alias never maps or creates anything.
+        DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s alias of res_id=0x%x released\n", __FUNCTION__, m_Id));
+        m_alias_source->Release();
+        m_alias_source = NULL;
+        return;
+    }
+
     ExAcquireFastMutex(&m_blob_map_mutex);
     if (!IsListEmpty(&m_blob_map_list))
     {
@@ -363,6 +374,40 @@ VioGpuAllocation::~VioGpuAllocation(void)
     m_adapter->resourceIdr.PutId(m_Id);
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+}
+
+NTSTATUS VioGpuAllocation::MakeAliasOf(VioGpuAllocation *source)
+{
+    PAGED_CODE();
+
+    // An alias of an alias shares the same host resource; keep the one that owns it.
+    while (source->m_alias_source)
+    {
+        source = source->m_alias_source;
+    }
+    if (!source->m_is_blob || !source->m_blob_created)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("%s source res_id=0x%x is not a created blob (blob=%u created=%u)\n",
+                  __FUNCTION__, source->m_Id, source->m_is_blob, source->m_blob_created));
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // Give back the id the constructor took; this allocation names the source's resource.
+    m_adapter->resourceIdr.PutId(m_Id);
+    source->AddRef();
+    m_alias_source = source;
+    m_Id = source->m_Id;
+    m_is_blob = true;
+    m_blob_size = source->m_blob_size;
+    m_blob_id = source->m_blob_id;
+    m_blob_mem = source->m_blob_mem;
+    m_blob_flags = source->m_blob_flags & ~VIRTGPU_BLOB_FLAG_USE_MAPPABLE;
+    m_blob_created = true;
+    m_blob_create_status = STATUS_SUCCESS;
+    m_blob_create_state = 2;
+    m_resource_created = 1;
+    return STATUS_SUCCESS;
 }
 
 void VioGpuAllocation::AttachBacking(MDL *pMDL, size_t pageCount, size_t pageOffset)
@@ -813,11 +858,42 @@ NTSTATUS VioGpuAllocation::DxgkCreateAllocation(VioGpuAdapter *adapter, DXGKARG_
                   resourceExchange,
                   min(resourceExchangeSize, sizeof(localExchange)));
 
+    // VIOGPU_CREATE_ALLOCATION_ALIAS: share an existing blob's host resource (see viogpum.h).
+    VIOGPU_CREATE_ALLOCATION_ALIAS alias = {};
+    bool is_alias = false;
+    if (resourceExchangeSize >= sizeof(alias))
+    {
+        RtlCopyMemory(&alias, resourceExchange, sizeof(alias));
+        is_alias = alias.Magic == VIOGPU_ALLOCATION_ALIAS_MAGIC;
+    }
+    if (is_alias && !localExchange.BlobMem)
+    {
+        // Never let the constructor create a classic resource for an alias.
+        localExchange.BlobMem = VIRTIO_GPU_BLOB_MEM_HOST3D;
+    }
+
     VioGpuAllocation *allocation = new (NonPagedPoolNx) VioGpuAllocation(adapter, &localExchange);
     if (!allocation->IsValid())
     {
         delete allocation;
         return STATUS_UNSUCCESSFUL;
+    }
+    if (is_alias)
+    {
+        VioGpuAllocationReference source(adapter, alias.SourceAllocation);
+        NTSTATUS status = source.Get() ? allocation->MakeAliasOf(source.Get()) : STATUS_INVALID_HANDLE;
+        if (!NT_SUCCESS(status))
+        {
+            DbgPrint(TRACE_LEVEL_ERROR,
+                     ("<--- %s alias of handle 0x%x failed status=0x%x\n",
+                      __FUNCTION__, alias.SourceAllocation, status));
+            delete allocation;
+            return status;
+        }
+        DbgPrint(TRACE_LEVEL_INFORMATION,
+                 ("%s alias of handle 0x%x res_id=0x%x %ux%u format=%u stride=%u\n",
+                  __FUNCTION__, alias.SourceAllocation, allocation->GetId(), localExchange.ResourceOptions.width,
+                  localExchange.ResourceOptions.height, localExchange.ResourceOptions.format, localExchange.Stride));
     }
     const bool is_blob = allocation->IsBlob();
     if (is_blob && (!adapter->GetShmemLen()))

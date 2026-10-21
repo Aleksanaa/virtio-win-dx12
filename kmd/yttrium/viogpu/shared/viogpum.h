@@ -58,7 +58,8 @@ typedef struct _VIOGPU_ADAPTERINFO
         UINT has_resource_assign_uuid : 1;
         UINT has_context_init : 1;
         UINT requires_explicit_residency : 1;
-        UINT Reserved : 25;
+        UINT supports_allocation_alias : 1; // VIOGPU_CREATE_ALLOCATION_ALIAS is understood
+        UINT Reserved : 24;
     } Flags;
     ULONGLONG SupportedCapsetIDs;
 } VIOGPU_ADAPTERINFO;
@@ -238,6 +239,25 @@ typedef struct _VIOGPU_CREATE_ALLOCATION_EXCHANGE
     ULONG Stride;
     ULONG ScanoutOffset;
 } VIOGPU_CREATE_ALLOCATION_EXCHANGE;
+#pragma pack()
+
+// An allocation that shares the host resource of an existing blob allocation instead of creating one: the
+// allocation private data is this struct with Magic == VIOGPU_ALLOCATION_ALIAS_MAGIC. SourceAllocation is an
+// allocation handle of the creating process (for example one opened from another component's shared handle)
+// whose blob resource exists. Exchange describes the new allocation (format, size, bind, stride) for openers and
+// for scanout. Its Blob* fields create nothing but reach openers unchanged, so they should describe a blob
+// (BlobMem non-zero: yttrium's D3D10 UMD treats BlobMem 0 as a classic resource). The host resource lives
+// until the source and all its aliases are destroyed. Openers that read only VIOGPU_CREATE_ALLOCATION_EXCHANGE
+// see an ordinary blob allocation.
+#define VIOGPU_ALLOCATION_ALIAS_MAGIC 0x53414756 // "VGAS"
+
+#pragma pack(1)
+typedef struct _VIOGPU_CREATE_ALLOCATION_ALIAS
+{
+    VIOGPU_CREATE_ALLOCATION_EXCHANGE Exchange;
+    ULONG Magic;
+    D3DKMT_HANDLE SourceAllocation;
+} VIOGPU_CREATE_ALLOCATION_ALIAS;
 #pragma pack()
 
 // ================= COMMAND BUFFER

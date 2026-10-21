@@ -24,6 +24,24 @@ class VioGpuAllocation
     VioGpuAllocation(VioGpuAdapter *adapter, VIOGPU_CREATE_ALLOCATION_EXCHANGE *exchange);
     ~VioGpuAllocation(void);
 
+    // Allocations are reference counted: an alias (VIOGPU_CREATE_ALLOCATION_ALIAS) keeps its source, and with it
+    // the host resource, alive past the source's DxgkDdiDestroyAllocation. Release() replaces delete.
+    void AddRef()
+    {
+        InterlockedIncrement(&m_refs);
+    }
+    void Release()
+    {
+        if (InterlockedDecrement(&m_refs) == 0)
+        {
+            delete this;
+        }
+    }
+    bool IsAlias() const
+    {
+        return m_alias_source != NULL;
+    }
+
     UINT GetId(void)
     {
         return m_Id;
@@ -131,6 +149,7 @@ class VioGpuAllocation
 
   private:
     static void BlobCreateCompleteCB(void *ctx_void);
+    NTSTATUS MakeAliasOf(VioGpuAllocation *source);
     void WaitForPendingBlobCreate();
     struct BlobUserMapping
     {
@@ -146,6 +165,8 @@ class VioGpuAllocation
     BlobUserMapping *FindBlobMappingLocked(HANDLE process_id, PEPROCESS process);
 
     VioGpuAdapter *m_adapter;
+    volatile LONG m_refs;
+    VioGpuAllocation *m_alias_source; // referenced; owns the host resource m_Id names
 
     VIOGPU_RESOURCE_OPTIONS m_options;
     UINT m_Id;

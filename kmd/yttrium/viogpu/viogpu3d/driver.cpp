@@ -765,7 +765,8 @@ VioGpu3DDestroyAllocation(_In_ CONST HANDLE hAdapter, _In_ CONST DXGKARG_DESTROY
             VIOGPU_RES_BUSY_REQ resBusy;
             resBusy.Wait = 1;
             allocation->EscapeResourceBusy(&resBusy);
-            delete allocation;
+            // Aliases may still hold the allocation and its host resource.
+            allocation->Release();
         }
     }
 

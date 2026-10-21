@@ -8,4 +8,6 @@ Kept: `viogpu/common`, `viogpu/shared`, `viogpu/viogpu3d` (sources, INX, resourc
 `VirtIO` (without the WDF variant), `build/VirtIOTestCert.*` (yttrium's test-signing certificate) and the license files.
 Dropped: MSBuild projects, batch scripts, packaging tools and the other virtio-win drivers.
 
-License: BSD-3-Clause (see the LICENSE files), as upstream.
+License, as upstream, per file: the virtio-win parts (`VirtIO`, `viogpu/common`, `viogpum.h`, ...) are BSD-3-Clause
+(see the LICENSE files); yttrium's own viogpu3d files carry `SPDX-License-Identifier: MPL-2.0` headers. Our changes
+to MPL files stay under MPL-2.0.
