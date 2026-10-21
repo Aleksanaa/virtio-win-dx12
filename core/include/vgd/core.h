@@ -110,6 +110,14 @@ struct alignas(kDescriptorStride) Descriptor {
 };
 static_assert(sizeof(Descriptor) == kDescriptorStride);
 
+// An ExecuteIndirect command signature. Supported so far: one draw, indexed draw or dispatch argument per command, the
+// arguments laid out as D3D12 (and Vulkan) define them; no root argument or vertex/index buffer changes.
+struct CommandSignature {
+    D3D12_INDIRECT_ARGUMENT_TYPE type{};
+    uint32_t stride = 0;   // bytes between commands
+    static HRESULT create(const D3D12_COMMAND_SIGNATURE_DESC& desc, CommandSignature* out);
+};
+
 // One side of CopyTextureRegion: a texture subresource, or a placed footprint in a buffer.
 struct TextureCopyLocation {
     Resource* resource = nullptr;
@@ -348,6 +356,11 @@ public:
     void draw_instanced(uint32_t vertex_count, uint32_t instance_count, uint32_t start_vertex, uint32_t start_instance);
     void draw_indexed_instanced(uint32_t index_count, uint32_t instance_count, uint32_t start_index,
                                 int32_t base_vertex, uint32_t start_instance);
+    // ExecuteIndirect: up to `max_count` commands from `args`, or as many as the 32-bit value in `count` says when
+    // that is fewer. Draws use the current graphics state, dispatches the compute state. Dispatches take no count
+    // buffer yet.
+    void execute_indirect(const CommandSignature& signature, uint32_t max_count, Resource& args, uint64_t args_offset,
+                          Resource* count, uint64_t count_offset);
 
     struct Impl;
     Impl& impl() { return *impl_; }

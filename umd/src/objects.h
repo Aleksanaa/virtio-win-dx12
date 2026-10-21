@@ -88,6 +88,10 @@ struct QueryHeapObject {
     std::unique_ptr<vgd::QueryHeap> heap;
 };
 
+struct CommandSignatureObject {
+    vgd::CommandSignature signature;
+};
+
 // The runtime owns D3D12 fences (kernel monitored fences it signals and waits on our queues' contexts); the driver
 // only learns their GPU addresses, which it needs only for multi-adapter.
 struct FenceObject {
@@ -103,6 +107,10 @@ void fill_resource_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
 // Query heaps and queries (query_ddi.cpp).
 void fill_query_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
 void fill_query_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& table);
+
+// Command signatures and ExecuteIndirect (indirect_ddi.cpp).
+void fill_indirect_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
+void fill_indirect_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& table);
 
 // Shader, state and pipeline DDIs (pipeline_ddi.cpp).
 void fill_pipeline_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);

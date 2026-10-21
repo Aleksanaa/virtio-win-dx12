@@ -894,6 +894,96 @@ void CommandList::draw_indexed_instanced(uint32_t index_count, uint32_t instance
         l.device->vk.vkCmdDrawIndexed(l.cmd, index_count, instance_count, start_index, base_vertex, start_instance);
 }
 
+// --- Indirect ----------------------------------------------------------------------------------------------
+
+HRESULT CommandSignature::create(const D3D12_COMMAND_SIGNATURE_DESC& desc, CommandSignature* out)
+{
+    if (desc.NumArgumentDescs != 1 || !desc.pArgumentDescs) {
+        log(LogLevel::warn, "command signature with %u arguments: only single draw/dispatch arguments are supported",
+            desc.NumArgumentDescs);
+        return E_NOTIMPL;
+    }
+    uint32_t size;
+    switch (desc.pArgumentDescs[0].Type) {
+    case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW: size = sizeof(D3D12_DRAW_ARGUMENTS); break;
+    case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED: size = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS); break;
+    case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH: size = sizeof(D3D12_DISPATCH_ARGUMENTS); break;
+    default:
+        log(LogLevel::warn, "command signature argument type %d is not supported",
+            static_cast<int>(desc.pArgumentDescs[0].Type));
+        return E_NOTIMPL;
+    }
+    if (desc.ByteStride < size || desc.ByteStride % 4)
+        return E_INVALIDARG;
+    out->type = desc.pArgumentDescs[0].Type;
+    out->stride = desc.ByteStride;
+    return S_OK;
+}
+
+// D3D12's argument structures are Vulkan's indirect commands, field for field.
+static_assert(sizeof(D3D12_DRAW_ARGUMENTS) == sizeof(VkDrawIndirectCommand));
+static_assert(sizeof(D3D12_DRAW_INDEXED_ARGUMENTS) == sizeof(VkDrawIndexedIndirectCommand));
+static_assert(sizeof(D3D12_DISPATCH_ARGUMENTS) == sizeof(VkDispatchIndirectCommand));
+
+void CommandList::execute_indirect(const CommandSignature& signature, uint32_t max_count, Resource& args,
+                                   uint64_t args_offset, Resource* count, uint64_t count_offset)
+{
+    Impl& l = *impl_;
+    auto& vk = l.device->vk;
+    const Resource::Impl& a = args.impl();
+    const Resource::Impl* c = count ? &count->impl() : nullptr;
+    const uint64_t arg_size = signature.type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW ? sizeof(D3D12_DRAW_ARGUMENTS)
+                              : signature.type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED
+                                  ? sizeof(D3D12_DRAW_INDEXED_ARGUMENTS)
+                                  : sizeof(D3D12_DISPATCH_ARGUMENTS);
+    if (!a.buffer || args_offset % 4 || (c && (!c->buffer || count_offset % 4 || count_offset + 4 > c->size)) ||
+        (max_count && args_offset + uint64_t(max_count - 1) * signature.stride + arg_size > a.size)) {
+        l.fail(E_INVALIDARG);
+        return;
+    }
+    if (!max_count)
+        return;
+    const bool indexed = signature.type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    if (signature.type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH) {
+        if (c) {
+            // Needs the count applied on the GPU first (a compute pass into scratch memory): not yet.
+            log(LogLevel::warn, "ExecuteIndirect: dispatches with a count buffer are not supported");
+            l.fail(E_NOTIMPL);
+            return;
+        }
+        if (!l.prepare_dispatch())
+            return;
+        for (uint32_t i = 0; i < max_count; i++)
+            vk.vkCmdDispatchIndirect(l.cmd, a.buffer, args_offset + uint64_t(i) * signature.stride);
+        return;
+    }
+    if (indexed && !l.index_buffer) {
+        l.fail(E_INVALIDARG);
+        return;
+    }
+    if (!l.prepare_draw())
+        return;
+    if (c) {
+        if (!l.device->physical->v12.drawIndirectCount) {
+            log(LogLevel::warn, "ExecuteIndirect: no drawIndirectCount for a count buffer");
+            l.fail(E_NOTIMPL);
+            return;
+        }
+        (indexed ? vk.vkCmdDrawIndexedIndirectCount : vk.vkCmdDrawIndirectCount)(
+            l.cmd, a.buffer, args_offset, c->buffer, count_offset, max_count, signature.stride);
+        return;
+    }
+    // One call for all commands when the device can draw several.
+    const auto draw = indexed ? vk.vkCmdDrawIndexedIndirect : vk.vkCmdDrawIndirect;
+    if (l.device->physical->features.multiDrawIndirect &&
+        max_count <= l.device->physical->limits.maxDrawIndirectCount) {
+        draw(l.cmd, a.buffer, args_offset, max_count, signature.stride);
+        return;
+    }
+    for (uint32_t i = 0; i < max_count; i++)
+        draw(l.cmd, a.buffer, args_offset + uint64_t(i) * signature.stride, 1, signature.stride);
+}
+
 // --- UAV clears --------------------------------------------------------------------------------------------
 
 namespace {

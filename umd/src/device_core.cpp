@@ -261,6 +261,7 @@ void fill_device_core(D3D12DDI_DEVICE_FUNCS_CORE_0088& t)
     fill_resource_ddi(t);
     fill_descriptor_ddi(t);
     fill_query_ddi(t);
+    fill_indirect_ddi(t);
 }
 
 } // namespace vgd::umd

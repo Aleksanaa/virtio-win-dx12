@@ -148,6 +148,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         VGD_FILL_STUBS(t, "cmdlist", VGD_SLOTS_COMMAND_LIST_3D_0092);
         fill_command_list_ddi(t);
         fill_query_list_ddi(t);
+        fill_indirect_list_ddi(t);
         if (index < CommandListTables::kMax) {
             tables.rt[index] = rt_table;
             if (index >= tables.count)

@@ -8,6 +8,7 @@
 //   --depth  on each device created, draw with depth/stencil tests and 4x MSAA with a resolve, check pixels.
 //   --compute  on each device created, clear UAVs and dispatch on a compute queue, check the values.
 //   --queries  on each device created, run occlusion, pipeline statistics and timestamp queries, check results.
+//   --indirect  on each device created, ExecuteIndirect draws and dispatches, counted by queries and the shader.
 #include <windows.h>
 #include <dxgi1_4.h>
 #include <dxgidebug.h>
@@ -22,6 +23,7 @@
 
 #include <compute_dxil.h>
 #include <depth_dxil.h>
+#include <indirect_dxil.h>
 #include <textured_dxil.h>
 #include <triangle_dxil.h>
 
@@ -1424,6 +1426,266 @@ out:
     return ok;
 }
 
+// ExecuteIndirect, the same work as core/tests/indirect.cpp: draws, indexed draws and dispatches from an argument
+// buffer, with and without a count buffer, counted by pipeline statistics queries and by the compute shader.
+bool indirect_test(ID3D12Device* device)
+{
+    constexpr UINT kSize = 64, kArgsSize = 1024;
+    constexpr UINT kDraws = 0, kDrawStride = 32, kIndexed = 128, kIndexedStride = 20, kDispatches = 256,
+                   kDispatchStride = 12, kCounts = 512, kIndices = 768, kZeros = 1008;
+    auto step = [](const char* what, HRESULT hr) {
+        std::printf("  indirect: %-26s 0x%08lx %s\n", what, hr, SUCCEEDED(hr) ? "ok" : "FAIL");
+        print_messages();
+        return SUCCEEDED(hr);
+    };
+
+    ID3DBlob *rs_blob = nullptr, *crs_blob = nullptr, *rs_error = nullptr;
+    ID3D12RootSignature *rs = nullptr, *crs = nullptr;
+    ID3D12PipelineState *pso = nullptr, *cpso = nullptr;
+    ID3D12CommandSignature *draw_sig = nullptr, *indexed_sig = nullptr, *dispatch_sig = nullptr;
+    ID3D12Resource *target = nullptr, *args = nullptr, *counter = nullptr, *results = nullptr;
+    ID3D12DescriptorHeap* rtv_heap = nullptr;
+    ID3D12QueryHeap* queries = nullptr;
+    ID3D12CommandQueue* queue = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    bool ok = false;
+
+    D3D12_ROOT_PARAMETER1 params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants = {0, 0, 1};
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants = {1, 0, 4};
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsd{D3D_ROOT_SIGNATURE_VERSION_1_1};
+    rsd.Desc_1_1 = {2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+    D3D12_ROOT_PARAMETER1 cparam{};
+    cparam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    cparam.Descriptor = {0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE};
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC crsd{D3D_ROOT_SIGNATURE_VERSION_1_1};
+    crsd.Desc_1_1 = {1, &cparam, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+    pd.VS = {k_vs_flat, sizeof(k_vs_flat)};
+    pd.PS = {k_ps_flat, sizeof(k_ps_flat)};
+    for (auto& rt : pd.BlendState.RenderTarget)
+        rt = {FALSE, FALSE, D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, D3D12_BLEND_ONE, D3D12_BLEND_ZERO,
+              D3D12_BLEND_OP_ADD, D3D12_LOGIC_OP_NOOP, D3D12_COLOR_WRITE_ENABLE_ALL};
+    pd.SampleMask = UINT_MAX;
+    pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pd.RasterizerState.DepthClipEnable = TRUE;
+    pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pd.NumRenderTargets = 1;
+    pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pd.SampleDesc.Count = 1;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC cpd{};
+    cpd.CS = {k_cs_count, sizeof(k_cs_count)};
+
+    D3D12_INDIRECT_ARGUMENT_DESC arg_draw{D3D12_INDIRECT_ARGUMENT_TYPE_DRAW},
+        arg_indexed{D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED}, arg_dispatch{D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH};
+    D3D12_COMMAND_SIGNATURE_DESC draw_sd{kDrawStride, 1, &arg_draw}, indexed_sd{kIndexedStride, 1, &arg_indexed},
+        dispatch_sd{kDispatchStride, 1, &arg_dispatch};
+
+    D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT}, upload_heap{D3D12_HEAP_TYPE_UPLOAD},
+        readback_heap{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC target_desc{};
+    target_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    target_desc.Width = target_desc.Height = kSize;
+    target_desc.DepthOrArraySize = 1;
+    target_desc.MipLevels = 1;
+    target_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    target_desc.SampleDesc.Count = 1;
+    target_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    auto buffer_desc = [](UINT64 size, D3D12_RESOURCE_FLAGS flags) {
+        D3D12_RESOURCE_DESC d{};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        d.Width = size;
+        d.Height = 1;
+        d.DepthOrArraySize = 1;
+        d.MipLevels = 1;
+        d.SampleDesc.Count = 1;
+        d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        d.Flags = flags;
+        return d;
+    };
+    const D3D12_RESOURCE_DESC args_desc = buffer_desc(kArgsSize, D3D12_RESOURCE_FLAG_NONE),
+                              counter_desc = buffer_desc(256, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    // Results: 5 statistics, the counter, then the target's footprint.
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT64 target_bytes = 0;
+    device->GetCopyableFootprints(&target_desc, 0, 1, 0, &fp, nullptr, nullptr, &target_bytes);
+    const UINT64 kStatsBytes = 5 * sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS), kCounterAt = kStatsBytes,
+                 kTargetAt = 1024;
+    fp.Offset = kTargetAt;
+    const D3D12_RESOURCE_DESC results_desc = buffer_desc(kTargetAt + target_bytes, D3D12_RESOURCE_FLAG_NONE);
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_hd{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1};
+    D3D12_QUERY_HEAP_DESC query_hd{D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, 5};
+    D3D12_COMMAND_QUEUE_DESC qd{D3D12_COMMAND_LIST_TYPE_DIRECT};
+    D3D12_RANGE none{0, 0};
+    const float clear[4] = {0, 0, 0, 1}, color[4] = {0, 1, 0, 1}, z = 0.5f;
+    const D3D12_VIEWPORT viewport{0, 0, kSize, kSize, 0, 1};
+    const D3D12_RECT scissor{0, 0, kSize, kSize};
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+    void* mapped = nullptr;
+
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&rsd, &rs_blob, &rs_error);
+    if (!step("serialize root signature", hr) ||
+        !step("root signature", device->CreateRootSignature(0, rs_blob->GetBufferPointer(), rs_blob->GetBufferSize(),
+                                                            IID_PPV_ARGS(&rs))) ||
+        !step("serialize compute rs", D3D12SerializeVersionedRootSignature(&crsd, &crs_blob, &rs_error)) ||
+        !step("compute root signature", device->CreateRootSignature(0, crs_blob->GetBufferPointer(),
+                                                                    crs_blob->GetBufferSize(), IID_PPV_ARGS(&crs))))
+        goto out;
+    pd.pRootSignature = rs;
+    cpd.pRootSignature = crs;
+    if (!step("pipeline", device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso))) ||
+        !step("compute pipeline", device->CreateComputePipelineState(&cpd, IID_PPV_ARGS(&cpso))) ||
+        !step("draw signature", device->CreateCommandSignature(&draw_sd, nullptr, IID_PPV_ARGS(&draw_sig))) ||
+        !step("indexed signature", device->CreateCommandSignature(&indexed_sd, nullptr, IID_PPV_ARGS(&indexed_sig))) ||
+        !step("dispatch signature",
+              device->CreateCommandSignature(&dispatch_sd, nullptr, IID_PPV_ARGS(&dispatch_sig))) ||
+        !step("render target", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &target_desc,
+                                                               D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+                                                               IID_PPV_ARGS(&target))) ||
+        !step("argument buffer", device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &args_desc,
+                                                                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                                 IID_PPV_ARGS(&args))) ||
+        !step("counter", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &counter_desc,
+                                                         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                         IID_PPV_ARGS(&counter))) ||
+        !step("results buffer", device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &results_desc,
+                                                                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                                IID_PPV_ARGS(&results))) ||
+        !step("rtv heap", device->CreateDescriptorHeap(&rtv_hd, IID_PPV_ARGS(&rtv_heap))) ||
+        !step("query heap", device->CreateQueryHeap(&query_hd, IID_PPV_ARGS(&queries))) ||
+        !step("command queue", device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue))) ||
+        !step("command allocator",
+              device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
+        !step("command list", device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr,
+                                                        IID_PPV_ARGS(&list))) ||
+        !step("fence", device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))) ||
+        !step("map arguments", args->Map(0, &none, &mapped)))
+        goto out;
+    {
+        auto* a = static_cast<uint8_t*>(mapped);
+        std::memset(a, 0, kArgsSize);
+        const D3D12_DRAW_ARGUMENTS draws[3] = {{3, 1, 0, 0}, {3, 2, 0, 0}, {3, 4, 0, 0}};
+        for (UINT i = 0; i < 3; i++)
+            std::memcpy(a + kDraws + i * kDrawStride, &draws[i], sizeof(draws[i]));
+        const D3D12_DRAW_INDEXED_ARGUMENTS indexed[2] = {{3, 1, 0, 0, 0}, {3, 2, 0, 0, 0}};
+        std::memcpy(a + kIndexed, indexed, sizeof(indexed));
+        const D3D12_DISPATCH_ARGUMENTS dispatches[2] = {{2, 1, 1}, {3, 1, 1}};
+        std::memcpy(a + kDispatches, dispatches, sizeof(dispatches));
+        const UINT counts[2] = {1, 5};
+        std::memcpy(a + kCounts, counts, sizeof(counts));
+        const uint16_t indices[3] = {0, 1, 2};
+        std::memcpy(a + kIndices, indices, sizeof(indices));
+        args->Unmap(0, nullptr);
+    }
+    rtv_heap->GetCPUDescriptorHandleForHeapStart(&rtv);   // the MinGW form of the struct-returning method
+    device->CreateRenderTargetView(target, nullptr, rtv);
+    print_messages();
+
+    {
+        const D3D12_INDEX_BUFFER_VIEW ibv{args->GetGPUVirtualAddress() + kIndices, 8, DXGI_FORMAT_R16_UINT};
+        auto counted = [&](UINT q, auto&& work) {
+            list->BeginQuery(queries, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, q);
+            work();
+            list->EndQuery(queries, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, q);
+        };
+        list->ClearRenderTargetView(rtv, clear, 0, nullptr);
+        list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        list->RSSetViewports(1, &viewport);
+        list->RSSetScissorRects(1, &scissor);
+        list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        list->IASetIndexBuffer(&ibv);
+        list->SetGraphicsRootSignature(rs);
+        list->SetPipelineState(pso);
+        list->SetGraphicsRoot32BitConstants(0, 1, &z, 0);
+        list->SetGraphicsRoot32BitConstants(1, 4, color, 0);
+        counted(0, [&] { list->ExecuteIndirect(draw_sig, 3, args, kDraws, nullptr, 0); });
+        counted(1, [&] { list->ExecuteIndirect(draw_sig, 3, args, kDraws, args, kCounts); });         // count 1
+        counted(2, [&] { list->ExecuteIndirect(draw_sig, 2, args, kDraws, args, kCounts + 4); });     // 5 > 2
+        counted(3, [&] { list->ExecuteIndirect(indexed_sig, 2, args, kIndexed, nullptr, 0); });
+
+        list->CopyBufferRegion(counter, 0, args, kZeros, 16);   // the counter starts at zero
+        D3D12_RESOURCE_BARRIER br{};
+        br.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        br.Transition = {counter, 0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS};
+        list->ResourceBarrier(1, &br);
+        list->SetComputeRootSignature(crs);
+        list->SetPipelineState(cpso);
+        list->SetComputeRootUnorderedAccessView(0, counter->GetGPUVirtualAddress());
+        counted(4, [&] { list->ExecuteIndirect(dispatch_sig, 2, args, kDispatches, nullptr, 0); });
+        br.Transition = {counter, 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE};
+        list->ResourceBarrier(1, &br);
+        br.Transition = {target, 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
+        list->ResourceBarrier(1, &br);
+
+        list->ResolveQueryData(queries, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0, 5, results, 0);
+        list->CopyBufferRegion(results, kCounterAt, counter, 0, 4);
+        D3D12_TEXTURE_COPY_LOCATION dst{results, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT},
+            src{target, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        dst.PlacedFootprint = fp;
+        src.SubresourceIndex = 0;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        std::printf("  indirect: recorded\n");
+        if (!step("close list", list->Close()))
+            goto out;
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+        if (!step("signal fence", queue->Signal(fence, 1)) || !step("set event", fence->SetEventOnCompletion(1, event)))
+            goto out;
+        if (WaitForSingleObject(event, 5000) != WAIT_OBJECT_0) {
+            std::printf("  indirect: fence did not complete within 5 s\n");
+            goto out;
+        }
+    }
+    {
+        D3D12_RANGE all{0, static_cast<SIZE_T>(results_desc.Width)};
+        if (!step("map results", results->Map(0, &all, &mapped)))
+            goto out;
+        const auto* r = static_cast<const uint8_t*>(mapped);
+        D3D12_QUERY_DATA_PIPELINE_STATISTICS s[5];
+        std::memcpy(s, r, sizeof(s));
+        uint32_t counted_threads, pixel;
+        std::memcpy(&counted_threads, r + kCounterAt, 4);
+        std::memcpy(&pixel, r + kTargetAt + (kSize / 2) * fp.Footprint.RowPitch + (kSize / 2) * 4, 4);
+        auto expect = [&](const char* what, UINT64 got, UINT64 want) {
+            std::printf("  indirect: %-30s %llu %s (expected %llu)\n", what, static_cast<unsigned long long>(got),
+                        got == want ? "ok  " : "FAIL", static_cast<unsigned long long>(want));
+            return got == want;
+        };
+        ok = true;
+        ok &= expect("3 draws: vertices", s[0].IAVertices, 3 * (1 + 2 + 4));
+        ok &= expect("3 draws: primitives", s[0].IAPrimitives, 1 + 2 + 4);
+        ok &= expect("count 1: vertices", s[1].IAVertices, 3);
+        ok &= expect("count 5, max 2: vertices", s[2].IAVertices, 3 * (1 + 2));
+        ok &= expect("2 indexed draws: vertices", s[3].IAVertices, 3 * (1 + 2));
+        ok &= expect("2 indexed draws: primitives", s[3].IAPrimitives, 1 + 2);
+        ok &= expect("2 dispatches: invocations", s[4].CSInvocations, 64 * (2 + 3));
+        ok &= expect("2 dispatches: counted", counted_threads, 64 * (2 + 3));
+        ok &= expect("center pixel", pixel, 0xff00ff00);
+        results->Unmap(0, &none);
+    }
+out:
+    if (rs_error)
+        std::printf("  indirect: root signature error: %.*s\n", static_cast<int>(rs_error->GetBufferSize()),
+                    static_cast<const char*>(rs_error->GetBufferPointer()));
+    std::printf("  indirect test: %s\n", ok ? "PASS" : "FAIL");
+    for (IUnknown* u : std::initializer_list<IUnknown*>{fence, list, alloc, queue, queries, rtv_heap, results, counter,
+                                                         args, target, dispatch_sig, indexed_sig, draw_sig, cpso, pso,
+                                                         crs, rs, rs_error, crs_blob, rs_blob})
+        if (u)
+            u->Release();
+    CloseHandle(event);
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -1435,7 +1697,8 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; i++)
         std::printf(" %s", argv[i]);
     std::printf("\n");
-    bool copy = false, triangle = false, textured = false, depth = false, compute = false, queries = false;
+    bool copy = false, triangle = false, textured = false, depth = false, compute = false, queries = false,
+         indirect = false;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--debug"))
             enable_debug_layer();
@@ -1447,6 +1710,8 @@ int main(int argc, char** argv)
             textured = true;
         else if (!std::strcmp(argv[i], "--depth"))
             depth = true;
+        else if (!std::strcmp(argv[i], "--indirect"))
+            indirect = true;
         else if (!std::strcmp(argv[i], "--queries"))
             queries = true;
         else if (!std::strcmp(argv[i], "--compute"))
@@ -1482,6 +1747,8 @@ int main(int argc, char** argv)
             if (textured && !textured_test(device))
                 failures++;
             if (depth && !depth_test(device))
+                failures++;
+            if (indirect && !indirect_test(device))
                 failures++;
             if (queries && !queries_test(device))
                 failures++;

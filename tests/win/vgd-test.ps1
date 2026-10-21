@@ -27,7 +27,9 @@ param(
     # Probe only: also clear UAVs and dispatch a compute shader on a compute queue
     [switch]$Compute,
     # Probe only: also run occlusion, pipeline statistics and timestamp queries
-    [switch]$Queries
+    [switch]$Queries,
+    # Probe only: also run ExecuteIndirect draws and dispatches
+    [switch]$Indirect
 )
 
 $ErrorActionPreference = 'Stop'
@@ -121,6 +123,7 @@ switch ($Action) {
         if ($Depth) { $probeArgs += '--depth' }
         if ($Compute) { $probeArgs += '--compute' }
         if ($Queries) { $probeArgs += '--queries' }
+        if ($Indirect) { $probeArgs += '--indirect' }
         & $exe @probeArgs
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"
