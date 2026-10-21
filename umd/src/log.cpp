@@ -18,16 +18,24 @@ bool g_verbose = false;
 void sink(LogLevel level, const char* msg) { logf(level, "core: %s", msg); }
 
 // The environment variable, or else the same-named value under HKLM\SOFTWARE\vgd3d12: processes that do not
-// inherit the environment (Chromium's GPU process gets a filtered one) still read the registry.
+// inherit the environment (Chromium's GPU process gets a filtered one) still read the registry. A REG_DWORD value
+// reads as its decimal digits.
 bool setting(const char* name, char* out, DWORD size)
 {
     const DWORD len = GetEnvironmentVariableA(name, out, size);
     if (len > 0 && len < size)
         return true;
     DWORD bytes = size;
-    return RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\vgd3d12", name, RRF_RT_REG_SZ, nullptr, out, &bytes) ==
-               ERROR_SUCCESS &&
-           out[0];
+    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\vgd3d12", name, RRF_RT_REG_SZ, nullptr, out, &bytes) ==
+        ERROR_SUCCESS)
+        return out[0] != 0;
+    DWORD value = 0;
+    bytes = sizeof(value);
+    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\vgd3d12", name, RRF_RT_REG_DWORD, nullptr, &value, &bytes) !=
+        ERROR_SUCCESS)
+        return false;
+    std::snprintf(out, size, "%lu", value);
+    return true;
 }
 
 } // namespace
@@ -42,6 +50,12 @@ void log_init()
         g_file = std::fopen(path, "a");
     char v[8];
     g_verbose = setting("VGD_VERBOSE", v, sizeof(v)) && v[0] == '1';
+    // The Venus ICD reads its debug options with GetEnvironmentVariable: give it the registry's too.
+    for (const char* name : {"VN_DEBUG", "VN_PERF", "MESA_LOG_LEVEL"}) {
+        char value[256];
+        if (setting(name, value, sizeof(value)))
+            SetEnvironmentVariableA(name, value);
+    }
     set_log_sink(sink);
 }
 
@@ -56,9 +70,12 @@ void logf(LogLevel level, const char* fmt, ...)
     std::vsnprintf(body, sizeof(body), fmt, ap);
     va_end(ap);
 
-    char line[1100];
-    std::snprintf(line, sizeof(line), "vgd3d12[%lu:%lu] %s %s\n", GetCurrentProcessId(), GetCurrentThreadId(),
-                  names[static_cast<int>(level)], body);
+    // Local wall-clock time, to line up with logs from the host.
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    char line[1120];
+    std::snprintf(line, sizeof(line), "%02u:%02u:%02u.%03u vgd3d12[%lu:%lu] %s %s\n", t.wHour, t.wMinute, t.wSecond,
+                  t.wMilliseconds, GetCurrentProcessId(), GetCurrentThreadId(), names[static_cast<int>(level)], body);
     OutputDebugStringA(line);
     std::lock_guard lock(g_lock);
     if (g_file) {

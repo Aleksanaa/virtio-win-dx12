@@ -266,9 +266,15 @@ void APIENTRY create_render_target_view(D3D12DDI_HDEVICE h, const D3D12DDIARG_CR
     Device* dev = Device::from(h);
     vgd::Descriptor d;
     d.kind = vgd::Descriptor::Kind::rtv;
+    // A null resource makes a null RTV (CreateRenderTargetView(nullptr, &desc)): writes to it are discarded.
+    if (!args->hDrvResource.pDrvPrivate) {
+        store(dev, dest, S_OK, d, "RenderTargetView");
+        return;
+    }
     auto* r = object<ResourceObject>(args->hDrvResource);
-    if (!r || !r->resource || !r->resource->is_texture()) {
-        VGD_WARN("CreateRenderTargetView: dimension %d of a buffer is not supported", static_cast<int>(args->ResourceDimension));
+    if (!r->resource || !r->resource->is_texture()) {
+        VGD_WARN("CreateRenderTargetView: dimension %d on %s", static_cast<int>(args->ResourceDimension),
+                 r->resource ? "a buffer (not supported)" : "a heap");
         store(dev, dest, E_INVALIDARG, d, "RenderTargetView");
         return;
     }
