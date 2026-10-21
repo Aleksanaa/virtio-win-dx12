@@ -113,10 +113,10 @@ class VioGpuVidPN
     {
         return m_sourceAddress;
     }
-    BOOLEAN QueueSourceAddress(PHYSICAL_ADDRESS address);
-    BOOLEAN DequeueSourceAddress(PHYSICAL_ADDRESS *address);
     
-    volatile LONG m_vsync = 0;
+    /* res_id a flip's DMA buffer last put on the scanout and flushed, until the
+     * vsync Flip() consumes it; 0 after any other scanout change. */
+    volatile LONG m_flippedResId = 0;
 
     NTSTATUS SetVidPnSourceAddress(const DXGKARG_SETVIDPNSOURCEADDRESS *pSetVidPnSourceAddress);
 
@@ -163,11 +163,4 @@ class VioGpuVidPN
     KDPC m_vsyncNotifyDpc;
     ULONG m_timerRes = 0;
     LARGE_INTEGER next_vsync_time = {0};
-    /* kSourceAddressQueueSize must be power of 2 */
-    static const LONG kSourceAddressQueueSize = 16;
-    PHYSICAL_ADDRESS m_sourceAddressQueue[kSourceAddressQueueSize] = {};
-    volatile LONG m_sourceAddressQueueHead = 0;
-    volatile LONG m_sourceAddressQueueTail = 0;
-    PHYSICAL_ADDRESS m_lastQueuedSourceAddress = {0};
-    volatile LONG m_sourceQueueFullCount = 0;
 };

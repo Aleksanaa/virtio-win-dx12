@@ -243,6 +243,8 @@ class VioGpuAdapter : IVioGpuPCI, public IVioGpuQueueSync
     {
         return m_VsyncInterruptEnabled != 0;
     }
+    // Raises DXGK_INTERRUPT_CRTC_VSYNC for target 0 at device IRQL, from below it.
+    void NotifyVsync(PHYSICAL_ADDRESS sourceAddress);
 
     CPciResources *GetPciResources(void)
     {

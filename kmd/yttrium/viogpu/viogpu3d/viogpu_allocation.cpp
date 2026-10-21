@@ -371,6 +371,8 @@ VioGpuAllocation::~VioGpuAllocation(void)
         DbgPrint(TRACE_LEVEL_VERBOSE, ("%s DestroyResource res_id=0x%x\n", __FUNCTION__, m_Id));
         m_adapter->ctrlQueue.DestroyResource(m_Id);
     }
+    // The id can be reused: a flip token naming it must not skip a new allocation's flush.
+    InterlockedCompareExchange(&m_adapter->vidpn.m_flippedResId, 0, (LONG)m_Id);
     m_adapter->resourceIdr.PutId(m_Id);
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
@@ -641,6 +643,7 @@ void VioGpuAllocation::FlushToScreen(UINT scan_id,
         stride = GetStride();
     }
 
+    InterlockedExchange(&m_adapter->vidpn.m_flippedResId, 0);
     if (m_is_blob)
     {
         m_adapter->ctrlQueue.SetScanoutBlob(scan_id,

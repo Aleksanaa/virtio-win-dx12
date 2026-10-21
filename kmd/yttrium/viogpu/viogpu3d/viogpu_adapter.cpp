@@ -1887,6 +1887,36 @@ void VioGpuAdapter::NotifyDmaPreempted(UINT preemptionFenceId,
     }
 }
 
+void VioGpuAdapter::NotifyVsync(PHYSICAL_ADDRESS sourceAddress)
+{
+    if (!IsVsyncInterruptEnabled())
+    {
+        return;
+    }
+
+    DXGKARGCB_NOTIFY_INTERRUPT_DATA interrupt = {};
+    interrupt.InterruptType = DXGK_INTERRUPT_CRTC_VSYNC;
+    interrupt.CrtcVsync.VidPnTargetId = 0;
+    interrupt.CrtcVsync.PhysicalAddress = sourceAddress;
+
+    NOTIFY_CONTEXT notify = {};
+    notify.pDxgkInterface = &m_DxgkInterface;
+    notify.interrupt = &interrupt;
+    notify.triggerDpc = TRUE;
+
+    BOOLEAN callbackRet = FALSE;
+    NTSTATUS status = m_DxgkInterface.DxgkCbSynchronizeExecution(m_DxgkInterface.DeviceHandle,
+                                                                  NotifyInterruptSyncRoutine,
+                                                                  &notify,
+                                                                  0,
+                                                                  &callbackRet);
+    if (!NT_SUCCESS(status) || !callbackRet)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("%s vsync_notify_sync_failed status=0x%x callback=%u\n", __FUNCTION__, status, callbackRet));
+    }
+}
+
 void VioGpuAdapter::NotifyPendingPreemptionIfDrained(UINT nodeOrdinal,
                                                      UINT engineOrdinal,
                                                      BOOLEAN fromIsr,
@@ -3150,19 +3180,6 @@ BOOLEAN VioGpuAdapter::InterruptRoutine(_In_ ULONG MessageNumber)
                 }
 
                 CtrlStagePushFromIsr(pvbuf, len);
-            }
-        }
-        if (IsVsyncInterruptEnabled())
-        {
-            if (InterlockedExchange(&vidpn.m_vsync, 0))
-            {
-                PHYSICAL_ADDRESS sourceAddress = {};
-                vidpn.DequeueSourceAddress(&sourceAddress);
-                DXGKARGCB_NOTIFY_INTERRUPT_DATA interrupt = {};
-                interrupt.InterruptType = DXGK_INTERRUPT_CRTC_VSYNC;
-                interrupt.CrtcVsync.VidPnTargetId = 0;
-                interrupt.CrtcVsync.PhysicalAddress = sourceAddress;
-                m_DxgkInterface.DxgkCbNotifyInterrupt(m_DxgkInterface.DeviceHandle, &interrupt);
             }
         }
         InterlockedOr((PLONG)&m_PendingWorks, intReason);

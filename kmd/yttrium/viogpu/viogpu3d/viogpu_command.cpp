@@ -1004,6 +1004,8 @@ void VioGpuCommand::Run()
                                                          flipCmd->x,
                                                          flipCmd->y);
                     }
+                    // Shown now: the vsync Flip() for this allocation need not flush it again.
+                    InterlockedExchange(&m_pAdapter->vidpn.m_flippedResId, (LONG)flipCmd->res_id);
                     UINT ret = m_pAdapter->ctrlQueue.ResFlush(flipCmd->res_id,
                                                               flipCmd->width,
                                                               flipCmd->height,

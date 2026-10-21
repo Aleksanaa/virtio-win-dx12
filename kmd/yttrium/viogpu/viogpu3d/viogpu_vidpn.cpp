@@ -122,10 +122,6 @@ NTSTATUS VioGpuVidPN::Start(ULONG *pNumberOfViews, ULONG *pNumberOfChildren)
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("<--- %s ColorFormat = %d\n", __FUNCTION__, m_CurrentModes[0].DispInfo.ColorFormat));
 
-    InterlockedExchange(&m_sourceAddressQueueHead, 0);
-    InterlockedExchange(&m_sourceAddressQueueTail, 0);
-    InterlockedExchange(&m_sourceQueueFullCount, 0);
-
     StartVsyncTimer();
     return Status;
 }
@@ -721,6 +717,7 @@ void VioGpuVidPN::DestroyFrameBufferObj(BOOLEAN bReset)
         m_pAdapter->ctrlQueue.DestroyResource(resid);
         if (bReset == TRUE)
         {
+            InterlockedExchange(&m_flippedResId, 0);
             m_pAdapter->ctrlQueue.SetScanout(0, 0, 0, 0, 0, 0);
         }
         delete m_pFrameBuf;
@@ -1644,6 +1641,7 @@ VOID VioGpuVidPN::BlackOutScreen(CURRENT_MODE *pCurrentMod)
 
         resid = m_pFrameBuf->GetId();
 
+        InterlockedExchange(&m_flippedResId, 0);
         m_pAdapter->ctrlQueue.SetScanout(0,
                                          resid,
                                          pCurrentMod->DispInfo.Width,
@@ -2039,51 +2037,23 @@ void VioGpuVidPN::Flip()
 {
     if (InterlockedExchange(&m_shouldFlip, 0))
     {
+        /* A flip's DMA buffer already showed its allocation when its rendering
+         * completed; flushing it again would make the host present the frame
+         * twice, and each flush stalls the host's command processing until its
+         * display has drawn. */
+        const LONG flipped = InterlockedExchange(&m_flippedResId, 0);
         if (m_sourceRes != NULL)
         {
-            m_sourceRes->FlushToScreen(0);
+            if ((UINT)flipped != m_sourceRes->GetId())
+            {
+                m_sourceRes->FlushToScreen(0);
+            }
         }
         else
         {
             m_pAdapter->ctrlQueue.SetScanout(0, 0, 0, 0, 0, 0);
         }
     }
-}
-
-BOOLEAN VioGpuVidPN::QueueSourceAddress(PHYSICAL_ADDRESS address)
-{
-    LONG head = InterlockedCompareExchange(&m_sourceAddressQueueHead, 0, 0);
-    LONG tail = InterlockedCompareExchange(&m_sourceAddressQueueTail, 0, 0);
-    if ((tail - head) >= kSourceAddressQueueSize)
-    {
-        return FALSE;
-    }
-
-    LONG slot = tail & (kSourceAddressQueueSize - 1);
-    m_sourceAddressQueue[slot] = address;
-    m_lastQueuedSourceAddress = address;
-    KeMemoryBarrier();
-
-    InterlockedExchange(&m_sourceAddressQueueTail, tail + 1);
-
-    return TRUE;
-}
-
-BOOLEAN VioGpuVidPN::DequeueSourceAddress(PHYSICAL_ADDRESS *address)
-{
-    LONG head = InterlockedCompareExchange(&m_sourceAddressQueueHead, 0, 0);
-    LONG tail = InterlockedCompareExchange(&m_sourceAddressQueueTail, 0, 0);
-    if (head == tail)
-    {
-        *address = m_sourceAddress;
-        return TRUE;
-    }
-
-    LONG slot = head & (kSourceAddressQueueSize-1);
-    *address = m_sourceAddressQueue[slot];
-    KeMemoryBarrier();
-    InterlockedCompareExchange(&m_sourceAddressQueueHead, head + 1, head);
-    return TRUE;
 }
 
 void VioGpuVidPN::VsyncNotifyTimerDpc(KDPC *dpc, PVOID deferredContext, PVOID systemArg1, PVOID systemArg2)
@@ -2122,9 +2092,12 @@ void VioGpuVidPN::VsyncNotifyTimerDpc(KDPC *dpc, PVOID deferredContext, PVOID sy
     due.QuadPart = -due.QuadPart;
 
     vidpn->Flip();
-    InterlockedExchange(&vidpn->m_vsync, 1);
-    // submit a NOP to trigger the ISR generate CRTC_VSYNC
-    vidpn->m_pAdapter->ctrlQueue.SubmitNop(NULL, NULL);
+    /* Report the vblank now, with the address on screen, as a display's vblank
+     * interrupt would. Raising it from the next host completion instead (a NOP
+     * round trip) made it land before or after the flip that this vblank
+     * released completes, depending on host timing, so that flip was reported
+     * on this vblank or only on the next, and DWM alternated 60 and 30 fps. */
+    vidpn->m_pAdapter->NotifyVsync(vidpn->m_sourceAddress);
 
     KeAcquireSpinLockAtDpcLevel(&vidpn->m_vsyncTimerLock);
     if (InterlockedCompareExchange(&vidpn->m_shouldFlipStop, 0, 0) == 0)
@@ -2150,17 +2123,6 @@ NTSTATUS VioGpuVidPN::SetVidPnSourceAddress(const DXGKARG_SETVIDPNSOURCEADDRESS 
 
     m_sourceAddress = pSetVidPnSourceAddress->PrimaryAddress;
     m_sourceRes = sourceRes;
-    if (!QueueSourceAddress(m_sourceAddress))
-    {
-        LONG fullCount = InterlockedIncrement(&m_sourceQueueFullCount);
-        DbgPrint(TRACE_LEVEL_WARNING,
-                 ("%s source queue full[%ld] source=0x%llx alloc=%p last_queued=0x%llx\n",
-                  __FUNCTION__,
-                  fullCount,
-                  m_sourceAddress.QuadPart,
-                  m_sourceRes,
-                  m_lastQueuedSourceAddress.QuadPart));
-    }
     DbgPrint(TRACE_LEVEL_VERBOSE,
              ("%s source=0x%llx alloc=%p\n",
               __FUNCTION__,
