@@ -7,3 +7,6 @@
 [submodule "third_party/DirectX-Headers"]
 	path = third_party/DirectX-Headers
 	url = https://github.com/microsoft/DirectX-Headers.git
+[submodule "third_party/yttrium-virtio-gpu"]
+	path = third_party/yttrium-virtio-gpu
+	url = https://github.com/arehnman/yttrium-virtio-gpu.git

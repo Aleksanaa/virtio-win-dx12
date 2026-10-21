@@ -24,6 +24,12 @@
         VGD_MINGW_MCFG_INCLUDE = "${mcfg.dev}/include";
         VGD_MINGW_MCFG_LIB = "${mcfg}/lib";
 
+        # Read by cmake/clang-cl-kmd.cmake. Not on PATH: unwrapped clang would shadow the host cc/cpp.
+        VGD_CLANG_CL = "${pkgs.llvmPackages.clang-unwrapped}/bin/clang-cl";
+        VGD_LLD_LINK = "${pkgs.lld}/bin/lld-link";
+        VGD_LLVM_RC = "${pkgs.llvmPackages.llvm}/bin/llvm-rc";
+        VGD_LLVM_LIB = "${pkgs.llvmPackages.llvm}/bin/llvm-lib";
+
         # The Vulkan loader finds llvmpipe/RADV through the system driver path.
         LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib";
       };
