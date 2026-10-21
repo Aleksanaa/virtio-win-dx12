@@ -21,7 +21,7 @@ int main()
     D3D12_ROOT_PARAMETER1 params[3] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants = {0, 0, 3};
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;   // aligned up from 12 to 16
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     params[1].Descriptor = {1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE};
     params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[2].DescriptorTable = {2, ranges};
@@ -31,10 +31,11 @@ int main()
     CHECK(SUCCEEDED(vgd::RootSignature::create(desc, &rs)));
     auto p = rs->parameters();
     CHECK(p.size() == 3);
-    CHECK(p[0].offset == 0 && p[0].size == 12);
-    CHECK(p[1].offset == 16 && p[1].size == 8);
-    CHECK(p[2].offset == 24 && p[2].size == 4);
-    CHECK(rs->root_data_size() == 28);
+    // Root descriptors come first, then the words of constants and tables.
+    CHECK(p[1].offset == 0 && p[1].size == 8 && p[1].index == 0);
+    CHECK(p[0].offset == 8 && p[0].size == 12 && p[0].index == 0);
+    CHECK(p[2].offset == 20 && p[2].size == 4 && p[2].index == 3);
+    CHECK(rs->root_data_size() == 24 && rs->root_descriptor_count() == 1 && rs->root_word_count() == 4);
 
     // The copy must not alias the caller's memory.
     ranges[0].NumDescriptors = 99;

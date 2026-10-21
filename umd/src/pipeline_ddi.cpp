@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Shaders, fixed-function state objects, input layouts and pipeline state objects. Everything is captured into
-// core objects; translating to Vulkan happens when a pipeline is first used.
+// core objects; CreatePipelineState translates the shaders and builds the Vulkan pipeline.
 #include "device.h"
 #include "log.h"
 #include "objects.h"
@@ -184,7 +184,7 @@ SIZE_T APIENTRY calc_private_pipeline_state_size(D3D12DDI_HDEVICE, const D3D12DD
     return sizeof(PipelineStateObject);
 }
 
-HRESULT APIENTRY create_pipeline_state(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATE_PIPELINE_STATE_0075* a,
+HRESULT APIENTRY create_pipeline_state(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_PIPELINE_STATE_0075* a,
                                        D3D12DDI_HPIPELINESTATE hp, D3D12DDI_HRTPIPELINESTATE)
 {
     auto* obj = new (hp.pDrvPrivate) PipelineStateObject;
@@ -221,6 +221,8 @@ HRESULT APIENTRY create_pipeline_state(D3D12DDI_HDEVICE, const D3D12DDIARG_CREAT
         desc.sample_desc = a->SampleDesc;
         hr = vgd::PipelineState::create_graphics(std::move(desc), &obj->pso);
     }
+    if (SUCCEEDED(hr))
+        hr = obj->pso->compile(*Device::from(h)->core);   // D3D12 compiles at creation; draws must not stall
     if (FAILED(hr)) {
         VGD_WARN("CreatePipelineState failed: 0x%08lx", hr);
         obj->~PipelineStateObject();

@@ -17,7 +17,9 @@ param(
     # Probe only: VGD_VERBOSE=1, logging every format-support and MSAA answer
     [switch]$Trace,
     # Probe only: also run the buffer copy test (upload -> default -> readback, fence) on each device
-    [switch]$Copy
+    [switch]$Copy,
+    # Probe only: also draw off-screen and check pixels (render target, shaders, root constants, vertex buffer)
+    [switch]$Triangle
 )
 
 $ErrorActionPreference = 'Stop'
@@ -106,6 +108,7 @@ switch ($Action) {
         $probeArgs = @()
         if ($DebugLayer) { $probeArgs += '--debug' }
         if ($Copy) { $probeArgs += '--copy' }
+        if ($Triangle) { $probeArgs += '--triangle' }
         & $exe @probeArgs
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"

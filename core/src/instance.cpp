@@ -67,6 +67,7 @@ static void probe_physical_device(Instance::Impl& in, VkPhysicalDevice pd)
     VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver};
     in.vk.vkGetPhysicalDeviceProperties2(pd, &props);
+    phys.limits = props.properties.limits;
     d.name = props.properties.deviceName;
     d.vendor_id = props.properties.vendorID;
     d.device_id = props.properties.deviceID;
@@ -94,7 +95,8 @@ static void probe_physical_device(Instance::Impl& in, VkPhysicalDevice pd)
         VkPhysicalDeviceMaintenance5FeaturesKHR m5{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
         VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &v13};
-        VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v12};
+        VkPhysicalDeviceVulkan11Features v11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &v12};
+        VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &v11};
         if (is_1_4 || phys.needs_maintenance5_ext) {
             m5.pNext = f2.pNext;
             f2.pNext = &m5;
@@ -104,6 +106,15 @@ static void probe_physical_device(Instance::Impl& in, VkPhysicalDevice pd)
             f2.pNext = &heap;
         }
         in.vk.vkGetPhysicalDeviceFeatures2(pd, &f2);
+        phys.features = f2.features;
+        phys.features.robustBufferAccess = VK_FALSE;
+        phys.v11 = v11;
+        phys.v12 = v12;
+        phys.v13 = v13;
+        phys.v13.robustImageAccess = VK_FALSE;   // like robustBufferAccess: a cost D3D12 does not ask for
+        phys.v11.protectedMemory = VK_FALSE;   // and features with no D3D12 use that only add risk
+        phys.v12.bufferDeviceAddressCaptureReplay = VK_FALSE;
+        phys.v12.bufferDeviceAddressMultiDevice = VK_FALSE;
 
         if (!v12.timelineSemaphore) d.missing.push_back("timelineSemaphore");
         if (!v12.bufferDeviceAddress) d.missing.push_back("bufferDeviceAddress");

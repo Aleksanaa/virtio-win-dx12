@@ -6,6 +6,7 @@
 
 #include "wdk.h"
 
+#include <vgd/core.h>
 #include <vgd/pipeline.h>
 #include <vgd/root_signature.h>
 
@@ -60,14 +61,33 @@ struct CommandListObject {
 };
 
 // CreateHeapAndResource gives the heap and the resource separate storage. A committed resource is both at once: the
-// heap owns the core resource and the resource handle refers to it. Placed resources and textures come later.
+// heap owns the core resource and the resource handle refers to it. Placed resources come later.
 struct HeapObject {
-    std::unique_ptr<vgd::Resource> buffer;
+    std::unique_ptr<vgd::Resource> resource;
 };
 
 struct ResourceObject {
     HeapObject* heap;
-    vgd::Resource* buffer;
+    vgd::Resource* resource;
+};
+
+// Descriptors are records of ours in descriptor heap memory, kDescriptorSize bytes apart. The runtime hands out
+// CPU handles that are plain addresses into that memory, and copies descriptors through CopyDescriptors.
+constexpr UINT kDescriptorSize = 64;
+
+struct Descriptor {
+    enum class Kind : uint32_t { none, rtv } kind;
+    vgd::RenderTargetView rtv;
+
+    static Descriptor* at(D3D12DDI_CPU_DESCRIPTOR_HANDLE h) { return reinterpret_cast<Descriptor*>(h.ptr); }
+};
+static_assert(sizeof(Descriptor) <= kDescriptorSize);
+
+struct DescriptorHeapObject {
+    D3D12DDI_DESCRIPTOR_HEAP_TYPE type;
+    UINT count;
+    bool shader_visible;
+    std::unique_ptr<std::byte[]> memory;   // count * kDescriptorSize, zeroed (Kind::none)
 };
 
 // The runtime owns D3D12 fences (kernel monitored fences it signals and waits on our queues' contexts); the driver
@@ -75,6 +95,9 @@ struct ResourceObject {
 struct FenceObject {
     D3D12DDI_FENCE fence;
 };
+
+// Descriptor heaps and views (descriptor_ddi.cpp).
+void fill_descriptor_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
 
 // Heaps, resources, mapping and fences (resource_ddi.cpp).
 void fill_resource_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);

@@ -190,11 +190,11 @@ void APIENTRY copy_buffer_region(D3D12DDI_HCOMMANDLIST hl, D3D12DDIARG_BUFFER_PL
     auto* l = object<CommandListObject>(hl);
     auto* d = object<ResourceObject>(dst.BaseAddress.UMD.hResource);
     auto* s = object<ResourceObject>(src.BaseAddress.UMD.hResource);
-    if (!d->buffer || !s->buffer) {
+    if (!d->resource || !s->resource || d->resource->is_texture() || s->resource->is_texture()) {
         l->error(E_INVALIDARG);
         return;
     }
-    l->list->copy_buffer_region(*d->buffer, dst.BaseAddress.UMD.Offset, *s->buffer, src.BaseAddress.UMD.Offset, bytes);
+    l->list->copy_buffer_region(*d->resource, dst.BaseAddress.UMD.Offset, *s->resource, src.BaseAddress.UMD.Offset, bytes);
 }
 
 void APIENTRY resource_copy(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HRESOURCE dst, D3D12DDI_HRESOURCE src)
@@ -202,19 +202,190 @@ void APIENTRY resource_copy(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HRESOURCE dst, D3
     auto* l = object<CommandListObject>(hl);
     auto* d = object<ResourceObject>(dst);
     auto* s = object<ResourceObject>(src);
-    if (!d->buffer || !s->buffer) {
-        VGD_WARN("CopyResource: only buffers so far");
+    if (!d->resource || !s->resource) {
         l->error(E_INVALIDARG);
         return;
     }
-    l->list->copy_buffer_region(*d->buffer, 0, *s->buffer, 0, d->buffer->size());
+    l->list->copy_resource(*d->resource, *s->resource);
 }
 
 void APIENTRY resource_barrier(D3D12DDI_HCOMMANDLIST hl, UINT count, const D3D12DDIARG_RESOURCE_BARRIER_0022*)
 {
-    // Buffers only so far: any batch of legacy barriers is one full memory dependency.
+    // Any batch of legacy barriers is one full memory dependency; images stay in VK_IMAGE_LAYOUT_GENERAL.
     if (count)
         object<CommandListObject>(hl)->list->global_barrier();
+}
+
+// --- Texture copies ------------------------------------------------------------------------------------------
+
+// One side of CopyTextureRegion. A texture names its subresource in the placement offset; a buffer side is a pitched
+// footprint whose dimensions the DDI gives in format blocks.
+bool copy_location(const D3D12DDIARG_BUFFER_PLACEMENT& placement, const D3D12DDIARG_PLACED_RESOURCE& layout,
+                   vgd::TextureCopyLocation* out)
+{
+    auto* r = object<ResourceObject>(placement.BaseAddress.UMD.hResource);
+    if (!r || !r->resource)
+        return false;
+    out->resource = r->resource;
+    switch (layout.Layout) {
+    case D3D12DDI_RL_SELECT_SUBRESOURCE:
+        out->is_footprint = false;
+        out->subresource = static_cast<uint32_t>(placement.BaseAddress.UMD.Offset);
+        return true;
+    case D3D12DDI_RL_PLACED_PHYSICAL_SUBRESOURCE_PITCHED: {
+        const auto& p = *static_cast<const D3D12DDIARG_PHYSICAL_SUBRESOURCE_PITCHED_LAYOUT*>(layout.pLayout);
+        const vgd::FormatBlock b = vgd::format_block(vgd::vk_format(p.Format));
+        out->is_footprint = true;
+        out->footprint.Offset = placement.BaseAddress.UMD.Offset;
+        out->footprint.Footprint = {p.Format, p.PhysicalWidth * b.width, p.PhysicalHeight * b.height, p.PhysicalDepth,
+                                    p.Pitch};
+        if (p.PhysicalDepth > 1 && p.SlicePitch != p.Pitch * p.PhysicalHeight)
+            VGD_WARN("CopyTextureRegion: slice pitch %u is not rows * pitch (%u * %u)", p.SlicePitch, p.PhysicalHeight,
+                     p.Pitch);
+        return true;
+    }
+    default:
+        VGD_WARN("CopyTextureRegion: resource layout %d not supported", static_cast<int>(layout.Layout));
+        return false;
+    }
+}
+
+void APIENTRY copy_texture_region(D3D12DDI_HCOMMANDLIST hl, const D3D12DDIARG_BUFFER_PLACEMENT* dst,
+                                  D3D12DDIARG_PLACED_RESOURCE dst_layout, UINT x, UINT y, UINT z,
+                                  const D3D12DDIARG_BUFFER_PLACEMENT* src, D3D12DDIARG_PLACED_RESOURCE src_layout,
+                                  const D3D12DDI_BOX* box)
+{
+    auto* l = object<CommandListObject>(hl);
+    vgd::TextureCopyLocation d, s;
+    if (!copy_location(*dst, dst_layout, &d) || !copy_location(*src, src_layout, &s)) {
+        l->error(E_INVALIDARG);
+        return;
+    }
+    D3D12_BOX b{};
+    if (box)
+        b = {static_cast<UINT>(box->Left), static_cast<UINT>(box->Top), static_cast<UINT>(box->Front),
+             static_cast<UINT>(box->Right), static_cast<UINT>(box->Bottom), static_cast<UINT>(box->Back)};
+    l->list->copy_texture_region(d, x, y, z, s, box ? &b : nullptr);
+}
+
+// --- Graphics state ------------------------------------------------------------------------------------------
+// The DDI's viewport, rect, box and buffer-view structs are the API's field for field.
+static_assert(sizeof(D3D12DDI_VIEWPORT) == sizeof(D3D12_VIEWPORT));
+static_assert(sizeof(D3D12DDI_VERTEX_BUFFER_VIEW) == sizeof(D3D12_VERTEX_BUFFER_VIEW));
+static_assert(sizeof(D3D12DDI_INDEX_BUFFER_VIEW) == sizeof(D3D12_INDEX_BUFFER_VIEW));
+
+vgd::CommandList& list_of(D3D12DDI_HCOMMANDLIST hl)
+{
+    return *object<CommandListObject>(hl)->list;
+}
+
+void APIENTRY set_pipeline_state(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HPIPELINESTATE hp)
+{
+    list_of(hl).set_pipeline_state(hp.pDrvPrivate ? object<PipelineStateObject>(hp)->pso.get() : nullptr);
+}
+
+void APIENTRY set_graphics_root_signature(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HROOTSIGNATURE hr_)
+{
+    list_of(hl).set_graphics_root_signature(hr_.pDrvPrivate ? object<RootSignatureObject>(hr_)->rs.get() : nullptr);
+}
+
+void APIENTRY set_graphics_root_32bit_constant(D3D12DDI_HCOMMANDLIST hl, UINT index, UINT value, UINT offset)
+{
+    list_of(hl).set_graphics_root_32bit_constants(index, {&value, 1}, offset);
+}
+
+void APIENTRY set_graphics_root_32bit_constants(D3D12DDI_HCOMMANDLIST hl, UINT index, UINT count, const void* data,
+                                                UINT offset)
+{
+    list_of(hl).set_graphics_root_32bit_constants(index, {static_cast<const uint32_t*>(data), count}, offset);
+}
+
+void APIENTRY set_graphics_root_buffer_view(D3D12DDI_HCOMMANDLIST hl, UINT index, D3D12DDI_GPU_VIRTUAL_ADDRESS va)
+{
+    list_of(hl).set_graphics_root_descriptor(index, va);
+}
+
+void APIENTRY clear_root_arguments(D3D12DDI_HCOMMANDLIST hl)
+{
+    list_of(hl).set_graphics_root_signature(nullptr);
+}
+
+void APIENTRY ia_set_topology(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_PRIMITIVE_TOPOLOGY t)
+{
+    list_of(hl).set_primitive_topology(static_cast<D3D12_PRIMITIVE_TOPOLOGY>(t));
+}
+
+void APIENTRY rs_set_viewports(D3D12DDI_HCOMMANDLIST hl, UINT count, const D3D12DDI_VIEWPORT* v)
+{
+    list_of(hl).set_viewports({reinterpret_cast<const D3D12_VIEWPORT*>(v), count});
+}
+
+void APIENTRY rs_set_scissor_rects(D3D12DDI_HCOMMANDLIST hl, UINT count, const D3D12DDI_RECT* r)
+{
+    list_of(hl).set_scissor_rects({r, count});
+}
+
+void APIENTRY om_set_blend_factor(D3D12DDI_HCOMMANDLIST hl, const FLOAT factor[4])
+{
+    list_of(hl).set_blend_factor(factor);
+}
+
+void APIENTRY om_set_stencil_ref(D3D12DDI_HCOMMANDLIST hl, UINT ref)
+{
+    list_of(hl).set_stencil_ref(ref);
+}
+
+void APIENTRY ia_set_vertex_buffers(D3D12DDI_HCOMMANDLIST hl, UINT start, UINT count,
+                                    const D3D12DDI_VERTEX_BUFFER_VIEW* views)
+{
+    std::array<D3D12_VERTEX_BUFFER_VIEW, D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> unbound{};
+    const auto* v = views ? reinterpret_cast<const D3D12_VERTEX_BUFFER_VIEW*>(views) : unbound.data();
+    list_of(hl).set_vertex_buffers(start, {v, std::min<size_t>(count, unbound.size())});
+}
+
+void APIENTRY ia_set_index_buffer(D3D12DDI_HCOMMANDLIST hl, const D3D12DDI_INDEX_BUFFER_VIEW* view)
+{
+    list_of(hl).set_index_buffer(reinterpret_cast<const D3D12_INDEX_BUFFER_VIEW*>(view));
+}
+
+void APIENTRY om_set_render_targets(D3D12DDI_HCOMMANDLIST hl, UINT count, const D3D12DDI_CPU_DESCRIPTOR_HANDLE* rtvs,
+                                    BOOL single_range, const D3D12DDI_CPU_DESCRIPTOR_HANDLE* dsv)
+{
+    std::array<vgd::RenderTargetView, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT> views{};
+    count = std::min<UINT>(count, views.size());
+    for (UINT i = 0; i < count; i++) {
+        const D3D12DDI_CPU_DESCRIPTOR_HANDLE h =
+            single_range ? D3D12DDI_CPU_DESCRIPTOR_HANDLE{rtvs[0].ptr + SIZE_T(i) * kDescriptorSize} : rtvs[i];
+        const Descriptor* d = h.ptr ? Descriptor::at(h) : nullptr;
+        if (d && d->kind == Descriptor::Kind::rtv)
+            views[i] = d->rtv;
+    }
+    if (dsv && dsv->ptr)
+        VGD_WARN("OMSetRenderTargets: depth/stencil views are not supported yet");
+    list_of(hl).set_render_targets({views.data(), count});
+}
+
+void APIENTRY clear_render_target_view(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_CPU_DESCRIPTOR_HANDLE h,
+                                       const FLOAT color[4], UINT count, const D3D12DDI_RECT* rects)
+{
+    const Descriptor* d = Descriptor::at(h);
+    if (d->kind != Descriptor::Kind::rtv) {
+        object<CommandListObject>(hl)->error(E_INVALIDARG);
+        return;
+    }
+    list_of(hl).clear_render_target_view(d->rtv, color, {rects, rects ? count : 0});
+}
+
+void APIENTRY draw_instanced(D3D12DDI_HCOMMANDLIST hl, UINT vertices, UINT instances, UINT start_vertex,
+                             UINT start_instance)
+{
+    list_of(hl).draw_instanced(vertices, instances, start_vertex, start_instance);
+}
+
+void APIENTRY draw_indexed_instanced(D3D12DDI_HCOMMANDLIST hl, UINT indices, UINT instances, UINT start_index,
+                                     INT base_vertex, UINT start_instance)
+{
+    list_of(hl).draw_indexed_instanced(indices, instances, start_index, base_vertex, start_instance);
 }
 
 // --- Queues --------------------------------------------------------------------------------------------------
@@ -293,20 +464,31 @@ void fill_command_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& t)
     t.pfnCopyBufferRegion = copy_buffer_region;
     t.pfnResourceCopy = resource_copy;
     t.pfnResourceBarrier = resource_barrier;
-    // Default state the runtime sets on every reset; recorded for real with the graphics milestone.
-    set_noop(t.pfnSetPipelineState);
-    set_noop(t.pfnIaSetTopology);
+    t.pfnCopyTextureRegion = copy_texture_region;
+    t.pfnSetPipelineState = set_pipeline_state;
+    t.pfnSetGraphicsRootSignature = set_graphics_root_signature;
+    t.pfnSetGraphicsRoot32BitConstant = set_graphics_root_32bit_constant;
+    t.pfnSetGraphicsRoot32BitConstants = set_graphics_root_32bit_constants;
+    t.pfnSetGraphicsRootConstantBufferView = set_graphics_root_buffer_view;
+    t.pfnSetGraphicsRootShaderResourceView = set_graphics_root_buffer_view;
+    t.pfnSetGraphicsRootUnorderedAccessView = set_graphics_root_buffer_view;
+    t.pfnClearRootArguments = clear_root_arguments;
+    t.pfnIaSetTopology = ia_set_topology;
+    t.pfnRsSetViewports = rs_set_viewports;
+    t.pfnRsSetScissorRects = rs_set_scissor_rects;
+    t.pfnOmSetBlendFactor = om_set_blend_factor;
+    t.pfnOmSetStencilRef = om_set_stencil_ref;
+    t.pfnIASetVertexBuffers = ia_set_vertex_buffers;
+    t.pfnIASetIndexBuffer = ia_set_index_buffer;
+    t.pfnOMSetRenderTargets = om_set_render_targets;
+    t.pfnClearRenderTargetView = clear_render_target_view;
+    t.pfnDrawInstanced = draw_instanced;
+    t.pfnDrawIndexedInstanced = draw_indexed_instanced;
+    // Default state the runtime sets on every reset, with nothing to record yet: descriptor heaps are not read
+    // (tables are not mapped), and there is no stream output or predication.
     set_noop(t.pfnSetDescriptorHeaps);
-    set_noop(t.pfnIASetVertexBuffers);
-    set_noop(t.pfnIASetIndexBuffer);
     set_noop(t.pfnSOSetTargets);
-    set_noop(t.pfnOMSetRenderTargets);
-    set_noop(t.pfnRsSetViewports);
-    set_noop(t.pfnRsSetScissorRects);
-    set_noop(t.pfnOmSetBlendFactor);
-    set_noop(t.pfnOmSetStencilRef);
     set_noop(t.pfnSetPredication);
-    set_noop(t.pfnClearRootArguments);
 }
 
 void fill_command_queue_ddi(D3D12DDI_COMMAND_QUEUE_FUNCS_CORE_0001& t)

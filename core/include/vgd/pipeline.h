@@ -12,6 +12,8 @@
 
 namespace vgd {
 
+class Device;
+
 enum class ShaderStage : uint8_t { vertex, hull, domain, geometry, pixel, compute, amplification, mesh };
 const char* stage_name(ShaderStage stage);
 
@@ -27,6 +29,8 @@ public:
     std::span<const uint8_t> code() const { return code_; }
     bool is_dxil() const { return dxil_; }
     Format format() const { return format_; }
+    // DXIL only: the LLVM bitcode inside the program (empty if the program header is malformed).
+    std::span<const uint8_t> bitcode() const { return std::span(code_).subspan(bitcode_offset_, bitcode_size_); }
 
 private:
     Shader() = default;
@@ -34,6 +38,7 @@ private:
     std::vector<uint8_t> code_;
     bool dxil_ = false;
     Format format_ = Format::container;
+    size_t bitcode_offset_ = 0, bitcode_size_ = 0;
 };
 
 // One input-assembler element. The DDI names inputs by shader input register, not semantic.
@@ -67,22 +72,33 @@ struct ComputePipelineDesc {
     std::shared_ptr<const Shader> cs;
 };
 
-// A pipeline state object. It keeps everything it was created from; the Vulkan pipeline is compiled when the
-// pipeline is first used (shader translation and descriptor heap mapping come with the graphics milestone).
+// A pipeline state object. It keeps everything it was created from. compile() translates the shaders and builds the
+// Vulkan pipeline; a pipeline must be compiled before a command list uses it.
 class PipelineState {
 public:
+    ~PipelineState();
     static HRESULT create_graphics(GraphicsPipelineDesc desc, std::unique_ptr<PipelineState>* out);
     static HRESULT create_compute(ComputePipelineDesc desc, std::unique_ptr<PipelineState>* out);
+    HRESULT compile(Device& device);
+    bool compiled() const { return impl_ != nullptr; }
 
     bool is_compute() const { return compute_; }
     const GraphicsPipelineDesc& graphics() const { return graphics_; }
     const ComputePipelineDesc& compute() const { return compute_desc_; }
+    const RootSignature& root_signature() const
+    {
+        return compute_ ? *compute_desc_.root_signature : *graphics_.root_signature;
+    }
+
+    struct Impl;
+    const Impl& impl() const { return *impl_; }
 
 private:
-    PipelineState() = default;
+    PipelineState();
     bool compute_ = false;
     GraphicsPipelineDesc graphics_;
     ComputePipelineDesc compute_desc_;
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace vgd

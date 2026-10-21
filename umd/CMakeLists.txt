@@ -26,6 +26,7 @@ add_library(vgd3d12 SHARED
     src/command_ddi.cpp
     src/queue_bridge.cpp
     src/resource_ddi.cpp
+    src/descriptor_ddi.cpp
     src/log.cpp
     src/vulkan_icd.cpp)
 set_target_properties(vgd3d12 PROPERTIES PREFIX "")

@@ -3,8 +3,15 @@
 
 #include <vgd/core.h>
 
+#include <vgd/pipeline.h>
+
+#include <array>
+#include <atomic>
 #include <cstdarg>
+#include <map>
 #include <mutex>
+#include <shared_mutex>
+#include <string>
 
 namespace vgd {
 
@@ -42,6 +49,12 @@ struct PhysicalDevice {
     VkPhysicalDeviceMemoryProperties memory{};
     std::vector<VkQueueFamilyProperties> queue_families;
     bool needs_maintenance5_ext = false;   // device is 1.3: maintenance5 is an extension
+    VkPhysicalDeviceFeatures features{};   // Vulkan 1.0 features, all enabled except robustBufferAccess
+    VkPhysicalDeviceLimits limits{};
+    // Vulkan 1.1-1.3 features: everything supported is enabled (pNext is rebuilt at device creation).
+    VkPhysicalDeviceVulkan11Features v11{};
+    VkPhysicalDeviceVulkan12Features v12{};
+    VkPhysicalDeviceVulkan13Features v13{};
 };
 
 struct Instance::Impl {
@@ -68,6 +81,26 @@ struct Device::Impl {
     std::vector<uint32_t> families;   // distinct families in use, for concurrent sharing
     ~Impl();
 
+    // Buffers by GPU virtual address, for the D3D12 commands that take addresses where Vulkan wants buffers
+    // (vertex and index buffers).
+    std::shared_mutex va_lock;
+    std::map<VkDeviceAddress, Resource::Impl*> buffers_by_va;
+    void register_buffer(Resource::Impl* r);
+    void unregister_buffer(Resource::Impl* r);
+    // The buffer containing `va`, with the offset of `va` in it and the bytes from there to its end;
+    // VK_NULL_HANDLE if none.
+    VkBuffer find_buffer(VkDeviceAddress va, VkDeviceSize* offset, VkDeviceSize* size_left);
+
+    // New images go from UNDEFINED to GENERAL in a small submission of their own on the direct queue. Every queue
+    // waits for the latest one before its next submission (CommandQueue::Impl::submit).
+    std::mutex init_lock;
+    VkCommandPool init_pool = VK_NULL_HANDLE;
+    VkSemaphore init_timeline = VK_NULL_HANDLE;
+    std::atomic<uint64_t> init_value{0};
+    std::vector<std::pair<VkCommandBuffer, uint64_t>> init_cmds;   // reused once their value has passed
+    HRESULT create_init_objects();
+    HRESULT init_image(VkImage image, VkImageAspectFlags aspects);
+
     QueueSlot& slot_for(D3D12_COMMAND_LIST_TYPE type);
     uint32_t find_memory_type(uint32_t type_bits, D3D12_HEAP_TYPE heap_type) const;
     // The Vulkan format this device stores a DXGI format as: vk_format() plus device-specific substitutions
@@ -76,14 +109,36 @@ struct Device::Impl {
     bool d24s8_supported = false;
 };
 
+// A view of an image, keyed by everything that distinguishes the Vulkan image views we create.
+struct ImageViewKey {
+    VkImageViewType type;
+    VkFormat format;
+    VkImageAspectFlags aspects;
+    uint32_t mip, mips, layer, layers;
+    bool operator==(const ImageViewKey&) const = default;
+};
+
 struct Resource::Impl {
     Device::Impl* device = nullptr;
+    D3D12_RESOURCE_DESC desc{};
     VkBuffer buffer = VK_NULL_HANDLE;
+    VkImage image = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageAspectFlags aspects = 0;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     uint64_t size = 0;
     VkDeviceAddress address = 0;
     void* mapped = nullptr;
+    std::mutex views_lock;
+    std::vector<std::pair<ImageViewKey, VkImageView>> views;
     ~Impl();
+
+    // A cached view; VK_NULL_HANDLE on failure.
+    VkImageView view(const ImageViewKey& key);
+    uint32_t array_layers() const
+    {
+        return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize;
+    }
 };
 
 struct Fence::Impl {
@@ -104,6 +159,24 @@ struct CommandAllocator::Impl {
     HRESULT acquire(VkCommandBuffer* out);
 };
 
+struct PipelineState::Impl {
+    Device::Impl* device = nullptr;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    uint32_t push_size = 0;               // the root signature's root data
+    uint32_t vertex_binding_mask = 0;     // input slots the vertex input state declares
+    bool primitive_restart = false;       // a strip cut value is set
+    ~Impl();
+};
+
+// Converts one shader to SPIR-V, mapping its root parameters onto `rs`'s root data (shader.cpp).
+HRESULT translate_shader(const Shader& shader, const RootSignature& rs, std::vector<uint32_t>* spirv,
+                         std::string* entry_point);
+
+// The Vulkan stage of a D3D12 shader stage.
+VkShaderStageFlagBits vk_stage(ShaderStage stage);
+
 struct CommandList::Impl {
     Device::Impl* device = nullptr;
     D3D12_COMMAND_LIST_TYPE type{};
@@ -111,7 +184,37 @@ struct CommandList::Impl {
     bool open = false;
     HRESULT error = S_OK;   // first recording error, reported by close() as D3D12 does
 
+    // Graphics state, applied lazily at draws.
+    const PipelineState* pso = nullptr;
+    const PipelineState* bound_pso = nullptr;
+    const RootSignature* graphics_rs = nullptr;
+    std::array<uint8_t, 256> root_data{};
+    bool root_dirty = false;
+    D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+    std::vector<VkViewport> viewports;
+    std::vector<VkRect2D> scissors;
+    bool viewports_dirty = true;
+    struct VertexBuffer {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0, size = 0, stride = 0;
+    };
+    std::array<VertexBuffer, D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> vertex_buffers{};
+    bool vertex_buffers_dirty = true;
+    VkBuffer index_buffer = VK_NULL_HANDLE;
+    VkDeviceSize index_offset = 0;
+    VkIndexType index_type = VK_INDEX_TYPE_UINT16;
+    bool index_buffer_dirty = false;
+    std::array<RenderTargetView, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT> rtvs{};
+    uint32_t num_rtvs = 0;
+    bool rendering = false;
+    const PipelineState* rendering_pso = nullptr;   // the pipeline whose attachments the rendering has
+
     HRESULT begin(CommandAllocator& allocator);
+    void reset_state();
+    void fail(HRESULT hr);
+    void end_rendering();
+    // Flushes state for a draw; false if the draw has to be dropped.
+    bool prepare_draw();
 };
 
 struct CommandQueue::Impl {
@@ -119,6 +222,7 @@ struct CommandQueue::Impl {
     QueueSlot* slot = nullptr;
     D3D12_COMMAND_QUEUE_DESC desc{};
     std::vector<VkSemaphoreSubmitInfo> pending_waits;   // guarded by slot->submit_lock
+    uint64_t init_waited = 0;                            // last image initialization this queue waited for
 
     HRESULT submit(std::span<const VkCommandBufferSubmitInfo> cmds, const VkSemaphoreSubmitInfo* signal);
 };

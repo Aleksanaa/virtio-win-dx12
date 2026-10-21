@@ -50,23 +50,35 @@ HRESULT RootSignature::create(const D3D12_ROOT_SIGNATURE_DESC1& desc, std::uniqu
     rs->desc_.pParameters = rs->root_params_.data();
     rs->desc_.pStaticSamplers = rs->static_samplers_.data();
 
-    // Root data layout. Root descriptors are 8-byte GPU addresses and are aligned to 8.
-    uint32_t offset = 0;
+    // Root data layout: root descriptors first, then the 32-bit words of constants and tables.
+    uint32_t descriptors = 0, words = 0;
+    for (const auto& p : rs->root_params_)
+        if (p.ParameterType == D3D12_ROOT_PARAMETER_TYPE_CBV || p.ParameterType == D3D12_ROOT_PARAMETER_TYPE_SRV ||
+            p.ParameterType == D3D12_ROOT_PARAMETER_TYPE_UAV)
+            descriptors++;
+    const uint32_t words_base = 8 * descriptors;
+    descriptors = 0;
     for (const auto& p : rs->root_params_) {
-        Parameter out_p{p.ParameterType, 0, 0};
+        Parameter out_p{p.ParameterType, 0, 0, 0};
         switch (p.ParameterType) {
-        case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE: out_p.size = 4; break;
-        case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS: out_p.size = 4 * p.Constants.Num32BitValues; break;
+        case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
+        case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
+            out_p.size = p.ParameterType == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE ? 4 : 4 * p.Constants.Num32BitValues;
+            out_p.index = words;
+            out_p.offset = words_base + 4 * words;
+            words += out_p.size / 4;
+            break;
         default:
             out_p.size = 8;
-            offset = (offset + 7) & ~7u;
+            out_p.index = descriptors;
+            out_p.offset = 8 * descriptors++;
             break;
         }
-        out_p.offset = offset;
-        offset += out_p.size;
         rs->params_.push_back(out_p);
     }
-    rs->root_data_size_ = offset;
+    rs->root_descriptors_ = descriptors;
+    rs->root_words_ = words;
+    rs->root_data_size_ = words_base + 4 * words;
 
     *out = std::move(rs);
     return S_OK;

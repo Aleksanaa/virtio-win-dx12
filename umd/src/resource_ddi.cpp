@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Heaps, resources, CPU mapping and fences. First version: committed buffers only, with memory owned by Vulkan
-// (no WDDM allocations; residency is a no-op). Placed resources, heaps and textures come with the graphics milestone.
+// Heaps, resources, CPU mapping and fences. First version: committed buffers and textures, with memory owned by
+// Vulkan (no WDDM allocations; residency is a no-op). Placed resources and heap-only creation come later.
 #include "device.h"
 #include "log.h"
 #include "objects.h"
@@ -10,10 +10,6 @@
 namespace vgd::umd {
 
 namespace {
-
-constexpr UINT64 kBufferAlignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;   // 64 KiB
-
-UINT64 align_up(UINT64 v, UINT64 a) { return (v + a - 1) & ~(a - 1); }
 
 // The runtime has already turned the API heap type into a memory pool and CPU page property for our caps (UMA, not
 // cache coherent): DEFAULT has no CPU access, UPLOAD is write-combined and READBACK is write-back.
@@ -26,10 +22,28 @@ D3D12_HEAP_TYPE heap_type(const D3D12DDIARG_CREATEHEAP_0001& h)
     }
 }
 
-D3D12_RESOURCE_FLAGS api_flags(D3D12DDI_RESOURCE_FLAGS_0003 f)
+// The DDI resource description as the API's. Dimensions and layouts share values; the flags differ (the DDI says
+// what a resource may be used as, where the API denies shader resource use).
+D3D12_RESOURCE_DESC resource_desc(const D3D12DDIARG_CREATERESOURCE_0088& r)
 {
-    return (f & D3D12DDI_RESOURCE_FLAG_0022_UNORDERED_ACCESS) ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
-                                                              : D3D12_RESOURCE_FLAG_NONE;
+    D3D12_RESOURCE_DESC d{};
+    d.Dimension = static_cast<D3D12_RESOURCE_DIMENSION>(r.ResourceType);
+    d.Width = r.Width;
+    d.Height = r.Height;
+    d.DepthOrArraySize = r.DepthOrArraySize;
+    d.MipLevels = r.MipLevels;
+    d.Format = r.Format;
+    d.SampleDesc = r.SampleDesc;
+    d.Layout = static_cast<D3D12_TEXTURE_LAYOUT>(r.Layout);
+    if (r.Flags & D3D12DDI_RESOURCE_FLAG_0003_RENDER_TARGET)
+        d.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    if (r.Flags & D3D12DDI_RESOURCE_FLAG_0003_DEPTH_STENCIL)
+        d.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    if (r.Flags & D3D12DDI_RESOURCE_FLAG_0022_UNORDERED_ACCESS)
+        d.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (r.ResourceType != D3D12DDI_RT_BUFFER && !(r.Flags & D3D12DDI_RESOURCE_FLAG_0003_SHADER_RESOURCE))
+        d.Flags |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+    return d;
 }
 
 // --- Heaps and resources -------------------------------------------------------------------------------------
@@ -47,26 +61,29 @@ HRESULT APIENTRY create_heap_and_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_
                                           const D3D12DDI_CLEAR_VALUES*, D3D12DDI_HPROTECTEDRESOURCESESSION_0030,
                                           D3D12DDI_HRESOURCE hr_)
 {
-    if (!heap || !resource || resource->ResourceType != D3D12DDI_RT_BUFFER) {
-        VGD_WARN("CreateHeapAndResource: only committed buffers so far (heap %p, resource %p, type %d)",
-                 static_cast<const void*>(heap), static_cast<const void*>(resource),
-                 resource ? static_cast<int>(resource->ResourceType) : -1);
+    if (!heap || !resource) {
+        VGD_WARN("CreateHeapAndResource: only committed resources so far (heap %p, resource %p)",
+                 static_cast<const void*>(heap), static_cast<const void*>(resource));
         return E_OUTOFMEMORY;
     }
     const D3D12_HEAP_TYPE type = heap_type(*heap);
+    const D3D12_RESOURCE_DESC desc = resource_desc(*resource);
     auto* ho = new (hh.pDrvPrivate) HeapObject;
-    HRESULT hr = Device::from(h)->core->create_committed_buffer(type, resource->Width, api_flags(resource->Flags),
-                                                                &ho->buffer);
+    HRESULT hr = Device::from(h)->core->create_committed_resource(type, desc, &ho->resource);
     if (FAILED(hr)) {
-        VGD_WARN("CreateHeapAndResource: buffer of %llu bytes (heap type %d) failed: 0x%08lx",
-                 static_cast<unsigned long long>(resource->Width), static_cast<int>(type), hr);
+        VGD_WARN("CreateHeapAndResource: dimension %d, %llux%ux%u, format %d, flags 0x%x, heap type %d failed: 0x%08lx",
+                 static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
+                 desc.DepthOrArraySize, static_cast<int>(desc.Format), static_cast<unsigned>(desc.Flags),
+                 static_cast<int>(type), hr);
         ho->~HeapObject();
         return E_OUTOFMEMORY;
     }
-    new (hr_.pDrvPrivate) ResourceObject{ho, ho->buffer.get()};
-    VGD_VERBOSE("CreateHeapAndResource: buffer %llu bytes, heap type %d, va 0x%llx",
-                static_cast<unsigned long long>(resource->Width), static_cast<int>(type),
-                static_cast<unsigned long long>(ho->buffer->gpu_virtual_address()));
+    new (hr_.pDrvPrivate) ResourceObject{ho, ho->resource.get()};
+    VGD_VERBOSE("CreateHeapAndResource: dimension %d, %llux%ux%u, format %d, heap type %d, %llu bytes, va 0x%llx",
+                static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
+                desc.DepthOrArraySize, static_cast<int>(desc.Format), static_cast<int>(type),
+                static_cast<unsigned long long>(ho->resource->size()),
+                static_cast<unsigned long long>(ho->resource->gpu_virtual_address()));
     return S_OK;
 }
 
@@ -81,7 +98,7 @@ void APIENTRY destroy_heap_and_resource(D3D12DDI_HDEVICE, D3D12DDI_HHEAP hh, D3D
 HRESULT APIENTRY map_heap(D3D12DDI_HDEVICE, D3D12DDI_HHEAP hh, void** data)
 {
     auto* ho = object<HeapObject>(hh);
-    void* p = ho->buffer ? ho->buffer->cpu_pointer() : nullptr;
+    void* p = ho->resource ? ho->resource->cpu_pointer() : nullptr;
     if (!p) {
         VGD_WARN("MapHeap: heap has no CPU mapping");
         return E_INVALIDARG;
@@ -99,39 +116,38 @@ void APIENTRY unmap_heap(D3D12DDI_HDEVICE, D3D12DDI_HHEAP)
 D3D12DDI_GPU_VIRTUAL_ADDRESS APIENTRY check_resource_virtual_address(D3D12DDI_HDEVICE, D3D12DDI_HRESOURCE hr_)
 {
     const auto* r = object<ResourceObject>(hr_);
-    return r->buffer ? r->buffer->gpu_virtual_address() : 0;
+    return r->resource ? r->resource->gpu_virtual_address() : 0;
 }
 
-void APIENTRY check_resource_allocation_info(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATERESOURCE_0088* resource,
+void APIENTRY check_resource_allocation_info(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATERESOURCE_0088* resource,
                                              D3D12DDI_RESOURCE_OPTIMIZATION_FLAGS, UINT32, UINT,
                                              D3D12DDI_RESOURCE_ALLOCATION_INFO_0022* info)
 {
     *info = {};
-    info->Layout = D3D12DDI_TL_ROW_MAJOR;
-    if (resource->ResourceType != D3D12DDI_RT_BUFFER) {
-        // Textures come with the graphics milestone. A plausible, generous answer keeps the runtime's
-        // bookkeeping consistent until then; creation itself still fails.
-        VGD_WARN("CheckResourceAllocationInfo: texture type %d %llux%u not supported yet",
-                 static_cast<int>(resource->ResourceType), static_cast<unsigned long long>(resource->Width),
-                 resource->Height);
-        info->Layout = D3D12DDI_TL_UNDEFINED;
-        info->ResourceDataSize = align_up(resource->Width * resource->Height * resource->DepthOrArraySize * 16 * 2,
-                                          kBufferAlignment);
-        info->ResourceDataAlignment = static_cast<UINT32>(kBufferAlignment);
-        return;
+    const D3D12_RESOURCE_DESC desc = resource_desc(*resource);
+    uint64_t size = 0, alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+    if (FAILED(Device::from(h)->core->resource_allocation_info(desc, &size, &alignment))) {
+        // Creation of this resource will fail too. A plausible answer keeps the runtime's bookkeeping consistent.
+        VGD_WARN("CheckResourceAllocationInfo: dimension %d, format %d not supported", static_cast<int>(desc.Dimension),
+                 static_cast<int>(desc.Format));
+        size = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     }
-    info->ResourceDataSize = align_up(resource->Width, kBufferAlignment);
-    info->ResourceDataAlignment = static_cast<UINT32>(kBufferAlignment);
+    info->ResourceDataSize = size;
+    info->ResourceDataAlignment = static_cast<UINT32>(alignment);
+    info->Layout = desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12DDI_TL_ROW_MAJOR : D3D12DDI_TL_UNDEFINED;
 }
 
-void APIENTRY check_existing_resource_allocation_info(D3D12DDI_HDEVICE, D3D12DDI_HRESOURCE hr_,
+void APIENTRY check_existing_resource_allocation_info(D3D12DDI_HDEVICE h, D3D12DDI_HRESOURCE hr_,
                                                       D3D12DDI_RESOURCE_ALLOCATION_INFO_0022* info)
 {
     const auto* r = object<ResourceObject>(hr_);
     *info = {};
-    info->Layout = D3D12DDI_TL_ROW_MAJOR;
-    info->ResourceDataSize = align_up(r->buffer ? r->buffer->size() : 0, kBufferAlignment);
-    info->ResourceDataAlignment = static_cast<UINT32>(kBufferAlignment);
+    uint64_t size = 0, alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+    if (r->resource)
+        Device::from(h)->core->resource_allocation_info(r->resource->desc(), &size, &alignment);
+    info->ResourceDataSize = size;
+    info->ResourceDataAlignment = static_cast<UINT32>(alignment);
+    info->Layout = r->resource && r->resource->is_texture() ? D3D12DDI_TL_UNDEFINED : D3D12DDI_TL_ROW_MAJOR;
 }
 
 // Used by the runtime's Map to find a subresource within the heap mapping. A buffer is one subresource at 0.
@@ -140,11 +156,11 @@ void APIENTRY check_subresource_info(D3D12DDI_HDEVICE, D3D12DDI_HRESOURCE hr_, U
 {
     const auto* r = object<ResourceObject>(hr_);
     *info = {};
-    const UINT64 size = r->buffer ? r->buffer->size() : 0;
+    const UINT64 size = r->resource ? r->resource->size() : 0;
     info->RowStride = size;
     info->DepthStride = size;
-    if (subresource != 0 || !r->buffer)
-        VGD_WARN("CheckSubresourceInfo: subresource %u of a non-buffer resource", subresource);
+    if (subresource != 0 || !r->resource || r->resource->is_texture())
+        VGD_WARN("CheckSubresourceInfo: subresource %u of a texture (textures have no CPU mapping)", subresource);
 }
 
 // --- Fences --------------------------------------------------------------------------------------------------

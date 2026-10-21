@@ -39,6 +39,27 @@ struct AdapterDesc {
 
 class Device;
 class Resource;
+class PipelineState;
+class RootSignature;
+
+// A render target view: what an RTV descriptor holds. Plain data, so the UMD can store it in descriptor memory; the
+// Vulkan view belongs to the resource and lives as long as it does.
+struct RenderTargetView {
+    Resource* resource = nullptr;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0, height = 0;
+    uint32_t mip = 0, first_layer = 0, layers = 1;
+};
+
+// One side of CopyTextureRegion: a texture subresource, or a placed footprint in a buffer.
+struct TextureCopyLocation {
+    Resource* resource = nullptr;
+    bool is_footprint = false;
+    uint32_t subresource = 0;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+};
+
 class CommandAllocator;
 class CommandList;
 class CommandQueue;
@@ -69,6 +90,14 @@ public:
     // Committed buffer: its own heap of the given type, like ID3D12Device::CreateCommittedResource with a buffer desc.
     HRESULT create_committed_buffer(D3D12_HEAP_TYPE heap_type, uint64_t size, D3D12_RESOURCE_FLAGS flags,
                                     std::unique_ptr<Resource>* out);
+    // Committed resource of any dimension. Textures live in DEFAULT heaps only.
+    HRESULT create_committed_resource(D3D12_HEAP_TYPE heap_type, const D3D12_RESOURCE_DESC& desc,
+                                      std::unique_ptr<Resource>* out);
+    // What a texture needs from a heap (GetResourceAllocationInfo); buffers need their size at 64 KiB alignment.
+    HRESULT resource_allocation_info(const D3D12_RESOURCE_DESC& desc, uint64_t* size, uint64_t* alignment) const;
+    // A view of a texture for OMSetRenderTargets / ClearRenderTargetView. `desc` may be null (whole mip 0).
+    HRESULT create_render_target_view(Resource& resource, const D3D12_RENDER_TARGET_VIEW_DESC* desc,
+                                      RenderTargetView* out);
     HRESULT create_fence(uint64_t initial_value, std::unique_ptr<Fence>* out);
     HRESULT create_command_queue(const D3D12_COMMAND_QUEUE_DESC& desc, std::unique_ptr<CommandQueue>* out);
     HRESULT create_command_allocator(D3D12_COMMAND_LIST_TYPE type, std::unique_ptr<CommandAllocator>* out);
@@ -89,7 +118,11 @@ private:
 class Resource {
 public:
     ~Resource();
+    const D3D12_RESOURCE_DESC& desc() const;
+    bool is_texture() const { return desc().Dimension != D3D12_RESOURCE_DIMENSION_BUFFER; }
+    // Buffers: their width. Textures: the memory they occupy.
     uint64_t size() const;
+    // Buffers only (0 for textures).
     D3D12_GPU_VIRTUAL_ADDRESS gpu_virtual_address() const;
     // Persistent CPU pointer for UPLOAD/READBACK heaps; nullptr for DEFAULT.
     void* cpu_pointer() const;
@@ -138,10 +171,34 @@ public:
     HRESULT reset(CommandAllocator& allocator);
 
     void copy_buffer_region(Resource& dst, uint64_t dst_offset, Resource& src, uint64_t src_offset, uint64_t bytes);
-    // Legacy D3D12 transition barriers on buffers become one global memory dependency.
+    // Texture <-> footprint or texture <-> texture. `src_box` (null: the whole source) is in texels.
+    void copy_texture_region(const TextureCopyLocation& dst, uint32_t x, uint32_t y, uint32_t z,
+                             const TextureCopyLocation& src, const D3D12_BOX* src_box);
+    // Whole resources of the same shape.
+    void copy_resource(Resource& dst, Resource& src);
+    // Legacy D3D12 barriers become one global memory dependency: textures stay in VK_IMAGE_LAYOUT_GENERAL.
     void resource_barrier(std::span<const D3D12_RESOURCE_BARRIER> barriers);
     // A full memory dependency between everything recorded before and after.
     void global_barrier();
+
+    // Graphics state. Like D3D12, everything is reset by reset().
+    void set_pipeline_state(const PipelineState* pso);
+    void set_graphics_root_signature(const RootSignature* rs);
+    void set_graphics_root_32bit_constants(uint32_t parameter, std::span<const uint32_t> values, uint32_t dest_offset);
+    // Root CBV/SRV/UAV.
+    void set_graphics_root_descriptor(uint32_t parameter, D3D12_GPU_VIRTUAL_ADDRESS address);
+    void set_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY topology);
+    void set_viewports(std::span<const D3D12_VIEWPORT> viewports);
+    void set_scissor_rects(std::span<const D3D12_RECT> rects);
+    void set_blend_factor(const float factor[4]);
+    void set_stencil_ref(uint32_t ref);
+    void set_vertex_buffers(uint32_t start_slot, std::span<const D3D12_VERTEX_BUFFER_VIEW> views);
+    void set_index_buffer(const D3D12_INDEX_BUFFER_VIEW* view);
+    void set_render_targets(std::span<const RenderTargetView> rtvs);
+    void clear_render_target_view(const RenderTargetView& rtv, const float color[4], std::span<const D3D12_RECT> rects);
+    void draw_instanced(uint32_t vertex_count, uint32_t instance_count, uint32_t start_vertex, uint32_t start_instance);
+    void draw_indexed_instanced(uint32_t index_count, uint32_t instance_count, uint32_t start_index,
+                                int32_t base_vertex, uint32_t start_instance);
 
     struct Impl;
     Impl& impl() { return *impl_; }

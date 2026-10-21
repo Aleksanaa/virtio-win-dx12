@@ -15,10 +15,6 @@ namespace vgd::umd {
 
 namespace {
 
-// Descriptors are CPU-side records we define. 64 bytes holds any Vulkan descriptor we will store; once
-// VK_EXT_descriptor_heap is in use this becomes the device's descriptor size for the heap type.
-constexpr UINT kDescriptorSize = 64;
-
 // How D3D lets a DXGI format be used. Depth/stencil formats share one Vulkan format with their plane views, but
 // D3D allows different things on each: the DSV format is only an attachment, its views are only sampled.
 enum class FormatClass { color, depth_stencil, depth_view, stencil_view, depth_typeless };
@@ -263,6 +259,7 @@ void fill_device_core(D3D12DDI_DEVICE_FUNCS_CORE_0088& t)
     fill_pipeline_ddi(t);
     fill_command_ddi(t);
     fill_resource_ddi(t);
+    fill_descriptor_ddi(t);
 }
 
 } // namespace vgd::umd

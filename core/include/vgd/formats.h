@@ -13,6 +13,14 @@ namespace vgd {
 VkFormat vk_format(DXGI_FORMAT format);
 bool is_typeless(DXGI_FORMAT format);
 
+// Size of one texel block, in bytes and texels, of a format (or of one aspect of a depth/stencil format).
+struct FormatBlock {
+    uint32_t bytes, width, height;
+};
+FormatBlock format_block(VkFormat format, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT);
+VkImageAspectFlags format_aspects(VkFormat format);
+bool is_integer(VkFormat format);
+
 struct FormatFeatures {
     VkFormatFeatureFlags2 optimal = 0;   // optimally tiled images
     VkFormatFeatureFlags2 buffer = 0;    // texel and vertex buffers
