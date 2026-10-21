@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# yttrium's viogpu3d.sys, built from the pinned submodule plus our patches (kmd/patches) with clang-cl and lld-link.
+# yttrium's viogpu3d.sys (vendored in kmd/yttrium, with our changes) built with clang-cl and lld-link.
 #
 #   cmake -S kmd -B build/kmd -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/clang-cl-kmd.cmake && ninja -C build/kmd
 #
@@ -12,9 +12,8 @@ cmake_minimum_required(VERSION 3.24)
 project(vgd-kmd LANGUAGES C CXX)
 
 get_filename_component(VGD_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
-set(VGD_YTTRIUM_DIR "${VGD_ROOT}/third_party/yttrium-virtio-gpu" CACHE PATH "yttrium kernel driver source (pinned tag)")
 set(VGD_WINKITS_DIR "${VGD_ROOT}/refs/winkits" CACHE PATH "WDK/SDK from the Microsoft.Windows.WDK.x64 / SDK.CPP NuGet packages")
-set(VGD_KMD_SIGN_PFX "${VGD_YTTRIUM_DIR}/build/VirtIOTestCert.pfx" CACHE FILEPATH
+set(VGD_KMD_SIGN_PFX "${CMAKE_SOURCE_DIR}/yttrium/build/VirtIOTestCert.pfx" CACHE FILEPATH
     "Test certificate for signing; yttrium's own, which guests running its test-signed builds already trust")
 
 set(wdk_inc "${VGD_WINKITS_DIR}/wdk/c/Include/10.0.26100.0")
@@ -26,34 +25,7 @@ foreach(f "${wdk_inc}/km/ntddk.h" "${wdk_lib}/displib.lib")
   endif()
 endforeach()
 
-# --- Patched source tree -------------------------------------------------------------------------------------------
-# The submodule stays pristine; the build compiles a copy with kmd/patches/*.patch applied in order.
-set(src "${CMAKE_BINARY_DIR}/src")
-file(GLOB patches CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/patches/*.patch")
-list(SORT patches)
-execute_process(COMMAND git -C "${VGD_YTTRIUM_DIR}" rev-parse HEAD OUTPUT_VARIABLE yttrium_rev
-                OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-set(stamp "${yttrium_rev}")
-foreach(p IN LISTS patches)
-  file(SHA256 "${p}" h)
-  string(APPEND stamp " ${h}")
-endforeach()
-set(subdirs viogpu/common viogpu/shared viogpu/viogpu3d viogpu/viogpudo VirtIO)
-if(EXISTS "${src}/.stamp")
-  file(READ "${src}/.stamp" old_stamp)
-endif()
-if(NOT "${old_stamp}" STREQUAL "${stamp}")
-  file(REMOVE_RECURSE "${src}")
-  foreach(d IN LISTS subdirs)
-    get_filename_component(parent "${src}/${d}" DIRECTORY)
-    file(COPY "${VGD_YTTRIUM_DIR}/${d}" DESTINATION "${parent}")
-  endforeach()
-  foreach(p IN LISTS patches)
-    message(STATUS "kmd: applying ${p}")
-    execute_process(COMMAND git apply --whitespace=nowarn "${p}" WORKING_DIRECTORY "${src}" COMMAND_ERROR_IS_FATAL ANY)
-  endforeach()
-  file(WRITE "${src}/.stamp" "${stamp}")
-endif()
+set(src "${CMAKE_SOURCE_DIR}/yttrium")
 
 # --- Shims ---------------------------------------------------------------------------------------------------------
 set(gen "${CMAKE_BINARY_DIR}/gen")
