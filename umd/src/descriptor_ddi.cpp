@@ -221,6 +221,45 @@ void APIENTRY create_sampler(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_SAMPLE
     store(d, dest, hr, out, "Sampler");
 }
 
+void APIENTRY create_depth_stencil_view(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_DEPTH_STENCIL_VIEW* args,
+                                        D3D12DDI_CPU_DESCRIPTOR_HANDLE dest)
+{
+    Device* dev = Device::from(h);
+    vgd::Descriptor d;
+    d.kind = vgd::Descriptor::Kind::dsv;
+    auto* r = object<ResourceObject>(args->hDrvResource);
+    if (!r || !r->resource || !r->resource->is_texture()) {
+        store(dev, dest, E_INVALIDARG, d, "DepthStencilView");
+        return;
+    }
+    D3D12_DEPTH_STENCIL_VIEW_DESC v{};
+    v.Format = args->Format;
+    v.Flags = static_cast<D3D12_DSV_FLAGS>(args->Flags & D3D12DDI_CREATE_DSV_FLAG_MASK);   // same bits as the API
+    const bool ms = r->resource->desc().SampleDesc.Count > 1;
+    switch (args->ResourceDimension) {
+    case D3D12DDI_RD_TEXTURE1D:
+        v.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE1DARRAY;
+        v.Texture1DArray = {args->Tex1D.MipSlice, args->Tex1D.FirstArraySlice, args->Tex1D.ArraySize};
+        break;
+    case D3D12DDI_RD_TEXTURE2D:
+    case D3D12DDI_RD_TEXTURECUBE:
+        if (ms) {
+            v.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY;
+            v.Texture2DMSArray = {args->Tex2D.FirstArraySlice, args->Tex2D.ArraySize};
+        } else {
+            v.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+            v.Texture2DArray = {args->Tex2D.MipSlice, args->Tex2D.FirstArraySlice, args->Tex2D.ArraySize};
+        }
+        break;
+    default:
+        VGD_WARN("CreateDepthStencilView: dimension %d not supported", static_cast<int>(args->ResourceDimension));
+        store(dev, dest, E_INVALIDARG, d, "DepthStencilView");
+        return;
+    }
+    HRESULT hr = dev->core->create_depth_stencil_view(*r->resource, &v, &d.dsv);
+    store(dev, dest, hr, d, "DepthStencilView");
+}
+
 void APIENTRY create_render_target_view(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_RENDER_TARGET_VIEW_0002* args,
                                         D3D12DDI_CPU_DESCRIPTOR_HANDLE dest)
 {
@@ -316,6 +355,7 @@ void fill_descriptor_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& t)
     t.pfnCreateConstantBufferView = create_constant_buffer_view;
     t.pfnCreateSampler = create_sampler;
     t.pfnCreateRenderTargetView = create_render_target_view;
+    t.pfnCreateDepthStencilView = create_depth_stencil_view;
     t.pfnCopyDescriptors = copy_descriptors;
     t.pfnCopyDescriptorsSimple = copy_descriptors_simple;
 }

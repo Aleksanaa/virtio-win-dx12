@@ -5,6 +5,7 @@
 //   --copy   on each device created, copy a buffer upload -> default -> readback and check the bytes.
 //   --triangle  on each device created, draw off-screen and check pixels (shaders from tests/shaders).
 //   --textured  on each device created, sample a texture through descriptor heaps and tables, check pixels.
+//   --depth  on each device created, draw with depth/stencil tests and 4x MSAA with a resolve, check pixels.
 #include <windows.h>
 #include <dxgi1_4.h>
 #include <dxgidebug.h>
@@ -17,6 +18,7 @@
 #include <initializer_list>
 #include <vector>
 
+#include <depth_dxil.h>
 #include <textured_dxil.h>
 #include <triangle_dxil.h>
 
@@ -710,6 +712,259 @@ out:
     return ok;
 }
 
+
+// Depth/stencil and MSAA, the same scene as core/tests/depth_stencil.cpp: full and rect clears of each plane, a
+// depth-tested pass, a pass behind it, a stencil-equal pass; then a 4x MSAA draw resolved and read back.
+bool depth_test(ID3D12Device* device)
+{
+    constexpr UINT kSize = 64;
+    auto step = [](const char* what, HRESULT hr) {
+        std::printf("  depth: %-29s 0x%08lx %s\n", what, hr, SUCCEEDED(hr) ? "ok" : "FAIL");
+        print_messages();
+        return SUCCEEDED(hr);
+    };
+    auto rgba = [](uint32_t r, uint32_t g, uint32_t b, uint32_t a) { return r | g << 8 | b << 16 | a << 24; };
+
+    ID3DBlob *rs_blob = nullptr, *rs_error = nullptr;
+    ID3D12RootSignature* rs = nullptr;
+    ID3D12PipelineState *pso_depth = nullptr, *pso_stencil = nullptr, *pso_msaa = nullptr;
+    ID3D12Resource *target = nullptr, *depth = nullptr, *msaa = nullptr, *resolved = nullptr, *readback = nullptr;
+    ID3D12DescriptorHeap *rtv_heap = nullptr, *dsv_heap = nullptr;
+    ID3D12CommandQueue* queue = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    bool ok = false;
+    const DXGI_FORMAT ds_format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+
+    D3D12_ROOT_PARAMETER1 params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants = {0, 0, 1};
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants = {1, 0, 4};
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsd{D3D_ROOT_SIGNATURE_VERSION_1_1};
+    rsd.Desc_1_1 = {2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+    pd.VS = {k_vs_flat, sizeof(k_vs_flat)};
+    pd.PS = {k_ps_flat, sizeof(k_ps_flat)};
+    for (auto& rt : pd.BlendState.RenderTarget)
+        rt = {FALSE, FALSE, D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, D3D12_BLEND_ONE, D3D12_BLEND_ZERO,
+              D3D12_BLEND_OP_ADD, D3D12_LOGIC_OP_NOOP, D3D12_COLOR_WRITE_ENABLE_ALL};
+    pd.SampleMask = UINT_MAX;
+    pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pd.RasterizerState.DepthClipEnable = TRUE;
+    pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pd.NumRenderTargets = 1;
+    pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pd.DSVFormat = ds_format;
+    pd.SampleDesc.Count = 1;
+    pd.DepthStencilState.DepthEnable = TRUE;
+    pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pd.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+
+    D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT}, readback_heap{D3D12_HEAP_TYPE_READBACK};
+    auto texture_desc = [&](DXGI_FORMAT format, UINT samples, D3D12_RESOURCE_FLAGS flags) {
+        D3D12_RESOURCE_DESC d{};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        d.Width = d.Height = kSize;
+        d.DepthOrArraySize = 1;
+        d.MipLevels = 1;
+        d.Format = format;
+        d.SampleDesc.Count = samples;
+        d.Flags = flags;
+        return d;
+    };
+    const D3D12_RESOURCE_DESC target_desc =
+                                  texture_desc(DXGI_FORMAT_R8G8B8A8_UNORM, 1, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
+                              depth_desc = texture_desc(ds_format, 1, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
+                              msaa_desc =
+                                  texture_desc(DXGI_FORMAT_R8G8B8A8_UNORM, 4, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
+                              resolved_desc = texture_desc(DXGI_FORMAT_R8G8B8A8_UNORM, 1, D3D12_RESOURCE_FLAG_NONE);
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT64 readback_size = 0;
+    device->GetCopyableFootprints(&target_desc, 0, 1, 0, &fp, nullptr, nullptr, &readback_size);
+    D3D12_RESOURCE_DESC rb_desc{};
+    rb_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rb_desc.Width = readback_size;
+    rb_desc.Height = 1;
+    rb_desc.DepthOrArraySize = 1;
+    rb_desc.MipLevels = 1;
+    rb_desc.SampleDesc.Count = 1;
+    rb_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_hd{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2}, dsv_hd{D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1};
+    D3D12_COMMAND_QUEUE_DESC qd{D3D12_COMMAND_LIST_TYPE_DIRECT};
+    UINT64 fence_value = 0;
+    D3D12_RANGE none{0, 0};
+
+    const float clear[4] = {0, 0, 0.6f, 1}, a[4] = {1, 0.2f, 0, 1}, b[4] = {0, 0.4f, 1, 1}, c[4] = {0.2f, 1, 0.2f, 1};
+    const uint32_t clear_px = rgba(0, 0, 153, 255), a_px = rgba(255, 51, 0, 255), b_px = rgba(0, 102, 255, 255),
+                   c_px = rgba(51, 255, 51, 255);
+    const D3D12_VIEWPORT viewport{0, 0, kSize, kSize, 0, 1};
+    const D3D12_RECT scissor{0, 0, kSize, kSize};
+    const D3D12_RECT top_right{kSize - 16, 0, kSize, 16}, bottom_left{0, kSize - 16, 16, kSize};
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv{}, msaa_rtv{}, dsv{};
+
+    auto draw = [&](ID3D12PipelineState* pso, float z, const float* color) {
+        list->SetPipelineState(pso);
+        list->SetGraphicsRoot32BitConstants(0, 1, &z, 0);
+        list->SetGraphicsRoot32BitConstants(1, 4, color, 0);
+        list->DrawInstanced(3, 1, 0, 0);
+    };
+    auto barrier = [&](ID3D12Resource* r, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+        D3D12_RESOURCE_BARRIER br{};
+        br.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        br.Transition = {r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after};
+        list->ResourceBarrier(1, &br);
+    };
+    auto copy_out = [&](ID3D12Resource* r) {
+        D3D12_TEXTURE_COPY_LOCATION dst{readback, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT},
+            src{r, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        dst.PlacedFootprint = fp;
+        src.SubresourceIndex = 0;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    };
+    // Closes, executes and waits; then checks pixels of the readback.
+    struct Probe { UINT x, y; uint32_t expected; const char* what; };
+    auto run_and_check = [&](const char* name, std::initializer_list<Probe> probes) {
+        if (!step("close list", list->Close()))
+            return false;
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+        if (!step("signal fence", queue->Signal(fence, ++fence_value)) ||
+            !step("set event", fence->SetEventOnCompletion(fence_value, event)))
+            return false;
+        if (WaitForSingleObject(event, 5000) != WAIT_OBJECT_0) {
+            std::printf("  depth: fence did not reach %llu within 5 s\n", static_cast<unsigned long long>(fence_value));
+            return false;
+        }
+        void* p = nullptr;
+        D3D12_RANGE all{0, static_cast<SIZE_T>(readback_size)};
+        if (!step("map readback", readback->Map(0, &all, &p)))
+            return false;
+        bool good = true;
+        for (const Probe& pr : probes) {
+            uint32_t v;
+            std::memcpy(&v, static_cast<uint8_t*>(p) + fp.Offset + pr.y * fp.Footprint.RowPitch + pr.x * 4, 4);
+            std::printf("  depth: %s pixel (%2u, %2u) 0x%08x %s %s\n", name, pr.x, pr.y, v,
+                        v == pr.expected ? "ok  " : "FAIL", pr.what);
+            good &= v == pr.expected;
+        }
+        readback->Unmap(0, &none);
+        return good;
+    };
+
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&rsd, &rs_blob, &rs_error);
+    if (!step("serialize root signature", hr) ||
+        !step("root signature", device->CreateRootSignature(0, rs_blob->GetBufferPointer(), rs_blob->GetBufferSize(),
+                                                            IID_PPV_ARGS(&rs))))
+        goto out;
+    pd.pRootSignature = rs;
+    if (!step("pipeline (depth)", device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso_depth))))
+        goto out;
+    pd.DepthStencilState.StencilEnable = TRUE;
+    pd.DepthStencilState.StencilReadMask = pd.DepthStencilState.StencilWriteMask = 0xff;
+    pd.DepthStencilState.FrontFace = pd.DepthStencilState.BackFace = {
+        D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_COMPARISON_FUNC_EQUAL};
+    if (!step("pipeline (stencil)", device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso_stencil))))
+        goto out;
+    pd.DepthStencilState = {};
+    pd.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    pd.SampleDesc.Count = 4;
+    if (!step("pipeline (4x MSAA)", device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso_msaa))) ||
+        !step("render target", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &target_desc,
+                                                               D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+                                                               IID_PPV_ARGS(&target))) ||
+        !step("depth/stencil", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &depth_desc,
+                                                               D3D12_RESOURCE_STATE_DEPTH_WRITE, nullptr,
+                                                               IID_PPV_ARGS(&depth))) ||
+        !step("4x MSAA target", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &msaa_desc,
+                                                                D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+                                                                IID_PPV_ARGS(&msaa))) ||
+        !step("resolve target", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &resolved_desc,
+                                                                D3D12_RESOURCE_STATE_RESOLVE_DEST, nullptr,
+                                                                IID_PPV_ARGS(&resolved))) ||
+        !step("readback buffer", device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &rb_desc,
+                                                                 D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                                 IID_PPV_ARGS(&readback))) ||
+        !step("rtv heap", device->CreateDescriptorHeap(&rtv_hd, IID_PPV_ARGS(&rtv_heap))) ||
+        !step("dsv heap", device->CreateDescriptorHeap(&dsv_hd, IID_PPV_ARGS(&dsv_heap))) ||
+        !step("command queue", device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue))) ||
+        !step("command allocator",
+              device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
+        !step("command list", device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr,
+                                                        IID_PPV_ARGS(&list))) ||
+        !step("fence", device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+        goto out;
+
+    rtv_heap->GetCPUDescriptorHandleForHeapStart(&rtv);   // the MinGW form of the struct-returning method
+    msaa_rtv = {rtv.ptr + device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)};
+    dsv_heap->GetCPUDescriptorHandleForHeapStart(&dsv);
+    device->CreateRenderTargetView(target, nullptr, rtv);
+    device->CreateRenderTargetView(msaa, nullptr, msaa_rtv);
+    device->CreateDepthStencilView(depth, nullptr, dsv);
+    print_messages();
+
+    // Depth 1 and stencil 0 everywhere; depth 0 in the top-right corner, stencil 1 in the bottom-left.
+    list->ClearRenderTargetView(rtv, clear, 0, nullptr);
+    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 1, &top_right);
+    list->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_STENCIL, 0.0f, 1, 1, &bottom_left);
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->SetGraphicsRootSignature(rs);
+    list->OMSetStencilRef(1);
+    draw(pso_depth, 0.5f, a);     // everywhere but the depth-0 corner
+    draw(pso_depth, 0.7f, b);     // behind: nowhere
+    draw(pso_stencil, 0.2f, c);   // in front, but only where stencil is 1
+    barrier(target, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    copy_out(target);
+    std::printf("  depth: recorded depth/stencil pass\n");
+    ok = run_and_check("depth/stencil", {
+        {4, 4, a_px, "depth test passed"},
+        {32, 32, a_px, "center"},
+        {60, 4, clear_px, "depth rect clear (0) rejects"},
+        {60, 20, a_px, "below the depth rect"},
+        {4, 60, c_px, "stencil rect"},
+        {20, 60, a_px, "next to the stencil rect"},
+        {60, 60, a_px, "bottom right"},
+    });
+
+    if (!step("reset allocator", alloc->Reset()) || !step("reset list", list->Reset(alloc, nullptr)))
+        goto out;
+    list->ClearRenderTargetView(msaa_rtv, clear, 0, nullptr);
+    list->OMSetRenderTargets(1, &msaa_rtv, FALSE, nullptr);
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->SetGraphicsRootSignature(rs);
+    draw(pso_msaa, 0.5f, b);
+    barrier(msaa, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+    list->ResolveSubresource(resolved, 0, msaa, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+    barrier(resolved, D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    copy_out(resolved);
+    std::printf("  depth: recorded MSAA pass\n");
+    ok = run_and_check("MSAA", {{4, 4, b_px, "resolved"}, {60, 60, b_px, "resolved"}}) && ok;
+out:
+    if (rs_error)
+        std::printf("  depth: root signature error: %.*s\n", static_cast<int>(rs_error->GetBufferSize()),
+                    static_cast<const char*>(rs_error->GetBufferPointer()));
+    std::printf("  depth test: %s\n", ok ? "PASS" : "FAIL");
+    for (IUnknown* u : std::initializer_list<IUnknown*>{fence, list, alloc, queue, dsv_heap, rtv_heap, readback,
+                                                         resolved, msaa, depth, target, pso_msaa, pso_stencil,
+                                                         pso_depth, rs, rs_error, rs_blob})
+        if (u)
+            u->Release();
+    CloseHandle(event);
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -721,7 +976,7 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; i++)
         std::printf(" %s", argv[i]);
     std::printf("\n");
-    bool copy = false, triangle = false, textured = false;
+    bool copy = false, triangle = false, textured = false, depth = false;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--debug"))
             enable_debug_layer();
@@ -731,6 +986,8 @@ int main(int argc, char** argv)
             triangle = true;
         else if (!std::strcmp(argv[i], "--textured"))
             textured = true;
+        else if (!std::strcmp(argv[i], "--depth"))
+            depth = true;
     }
 
     IDXGIFactory1* factory = nullptr;
@@ -760,6 +1017,8 @@ int main(int argc, char** argv)
             if (triangle && !triangle_test(device))
                 failures++;
             if (textured && !textured_test(device))
+                failures++;
+            if (depth && !depth_test(device))
                 failures++;
             device->Release();
         } else if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {

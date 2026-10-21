@@ -54,15 +54,28 @@ struct RenderTargetView {
     uint32_t mip = 0, first_layer = 0, layers = 1;
 };
 
+// A depth/stencil view: what a DSV descriptor holds. `aspects` are the planes the image has.
+struct DepthStencilView {
+    Resource* resource = nullptr;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageAspectFlags aspects = 0;
+    uint32_t width = 0, height = 0;
+    uint32_t mip = 0, first_layer = 0, layers = 1;
+    D3D12_DSV_FLAGS flags = D3D12_DSV_FLAG_NONE;   // read-only planes (recorded; not enforced yet)
+};
+
 // A descriptor: plain data, kDescriptorStride bytes apart in descriptor heap memory, so the UMD can hand out
 // CPU handles that are addresses of these records. Views and samplers it names belong to their resource (or, for
 // samplers, to the device), as D3D12 descriptors do not own what they describe.
 constexpr uint32_t kDescriptorStride = 64;
 
-struct alignas(8) Descriptor {
+// alignas makes each record exactly one stride.
+struct alignas(kDescriptorStride) Descriptor {
     enum class Kind : uint32_t {
         none,
         rtv,
+        dsv,
         sampled_image,    // texture SRV
         storage_image,    // texture UAV
         uniform_texel,    // typed buffer SRV
@@ -74,6 +87,7 @@ struct alignas(8) Descriptor {
     Kind kind = Kind::none;
     union {
         RenderTargetView rtv;
+        DepthStencilView dsv;
         VkImageView image;   // VK_NULL_HANDLE: a null descriptor
         VkBufferView texel;
         struct {
@@ -82,7 +96,6 @@ struct alignas(8) Descriptor {
         } buffer;
         VkSampler sampler;
     };
-    uint64_t reserved[2] = {};   // pads the record to kDescriptorStride: heap memory is an array of these
     Descriptor() : rtv() {}
 };
 static_assert(sizeof(Descriptor) == kDescriptorStride);
@@ -134,6 +147,8 @@ public:
     // A view of a texture for OMSetRenderTargets / ClearRenderTargetView. `desc` may be null (whole mip 0).
     HRESULT create_render_target_view(Resource& resource, const D3D12_RENDER_TARGET_VIEW_DESC* desc,
                                       RenderTargetView* out);
+    HRESULT create_depth_stencil_view(Resource& resource, const D3D12_DEPTH_STENCIL_VIEW_DESC* desc,
+                                      DepthStencilView* out);
 
     // Descriptor heaps. Shader-visible CBV/SRV/UAV and sampler heaps are backed by a Vulkan descriptor set
     // (needs mutable descriptors: AdapterDesc::bindless).
@@ -270,8 +285,14 @@ public:
     void set_stencil_ref(uint32_t ref);
     void set_vertex_buffers(uint32_t start_slot, std::span<const D3D12_VERTEX_BUFFER_VIEW> views);
     void set_index_buffer(const D3D12_INDEX_BUFFER_VIEW* view);
-    void set_render_targets(std::span<const RenderTargetView> rtvs);
+    void set_render_targets(std::span<const RenderTargetView> rtvs, const DepthStencilView* dsv = nullptr);
     void clear_render_target_view(const RenderTargetView& rtv, const float color[4], std::span<const D3D12_RECT> rects);
+    void clear_depth_stencil_view(const DepthStencilView& dsv, D3D12_CLEAR_FLAGS flags, float depth, uint8_t stencil,
+                                  std::span<const D3D12_RECT> rects);
+    void set_depth_bounds(float min, float max);
+    // ResolveSubresource: a multisampled color subresource into a single-sampled one.
+    void resolve_subresource(Resource& dst, uint32_t dst_subresource, Resource& src, uint32_t src_subresource,
+                             DXGI_FORMAT format);
     void draw_instanced(uint32_t vertex_count, uint32_t instance_count, uint32_t start_vertex, uint32_t start_instance);
     void draw_indexed_instanced(uint32_t index_count, uint32_t instance_count, uint32_t start_index,
                                 int32_t base_vertex, uint32_t start_instance);

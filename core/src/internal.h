@@ -272,6 +272,7 @@ struct CommandList::Impl {
     bool index_buffer_dirty = false;
     std::array<RenderTargetView, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT> rtvs{};
     uint32_t num_rtvs = 0;
+    DepthStencilView dsv{};   // dsv.view is VK_NULL_HANDLE when none is bound
     bool rendering = false;
     const PipelineState* rendering_pso = nullptr;   // the pipeline whose attachments the rendering has
 

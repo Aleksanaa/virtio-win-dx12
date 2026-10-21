@@ -314,6 +314,7 @@ void CommandList::Impl::reset_state()
     index_buffer = VK_NULL_HANDLE;
     index_buffer_dirty = false;
     num_rtvs = 0;
+    dsv = {};
     rendering = false;
 }
 
@@ -401,6 +402,19 @@ bool CommandList::Impl::prepare_draw()
                 layers = std::min(layers, rtvs[i].layers);
             }
         }
+        // The DSV is attached only to pipelines with a depth/stencil format: Vulkan requires the formats to match.
+        VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        depth.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingAttachmentInfo stencil = depth;
+        const bool ds_pipeline = g.dsv_format != DXGI_FORMAT_UNKNOWN;
+        if (ds_pipeline && dsv.view) {
+            depth.imageView = stencil.imageView = dsv.view;
+            area.extent.width = std::min(area.extent.width, dsv.width);
+            area.extent.height = std::min(area.extent.height, dsv.height);
+            layers = std::min(layers, dsv.layers);
+        }
         if (area.extent.width == UINT32_MAX) {
             // No render targets: the viewports bound the area.
             area.extent = {1, 1};
@@ -415,6 +429,13 @@ bool CommandList::Impl::prepare_draw()
         ri.layerCount = layers;
         ri.colorAttachmentCount = g.num_render_targets;
         ri.pColorAttachments = colors.data();
+        if (ds_pipeline) {
+            const VkImageAspectFlags aspects = format_aspects(device->resolve_format(g.dsv_format));
+            if (aspects & VK_IMAGE_ASPECT_DEPTH_BIT)
+                ri.pDepthAttachment = &depth;
+            if (aspects & VK_IMAGE_ASPECT_STENCIL_BIT)
+                ri.pStencilAttachment = &stencil;
+        }
         vk.vkCmdBeginRendering(cmd, &ri);
         rendering = true;
         rendering_pso = pso;
@@ -626,11 +647,12 @@ void CommandList::set_index_buffer(const D3D12_INDEX_BUFFER_VIEW* view)
     l.index_buffer_dirty = l.index_buffer != VK_NULL_HANDLE;
 }
 
-void CommandList::set_render_targets(std::span<const RenderTargetView> rtvs)
+void CommandList::set_render_targets(std::span<const RenderTargetView> rtvs, const DepthStencilView* dsv)
 {
     Impl& l = *impl_;
     const uint32_t n = static_cast<uint32_t>(std::min(rtvs.size(), l.rtvs.size()));
-    bool same = n == l.num_rtvs;
+    const VkImageView dsv_view = dsv ? dsv->view : VK_NULL_HANDLE;
+    bool same = n == l.num_rtvs && dsv_view == l.dsv.view;
     for (uint32_t i = 0; same && i < n; i++)
         same = rtvs[i].view == l.rtvs[i].view;
     if (same)
@@ -638,6 +660,87 @@ void CommandList::set_render_targets(std::span<const RenderTargetView> rtvs)
     l.end_rendering();
     std::copy_n(rtvs.begin(), n, l.rtvs.begin());
     l.num_rtvs = n;
+    l.dsv = dsv ? *dsv : DepthStencilView{};
+}
+
+void CommandList::clear_depth_stencil_view(const DepthStencilView& dsv, D3D12_CLEAR_FLAGS flags, float depth,
+                                           uint8_t stencil, std::span<const D3D12_RECT> rects)
+{
+    Impl& l = *impl_;
+    auto& vk = l.device->vk;
+    l.end_rendering();
+    if (!dsv.resource || !dsv.view) {
+        l.fail(E_INVALIDARG);
+        return;
+    }
+    VkImageAspectFlags aspects = 0;
+    if (flags & D3D12_CLEAR_FLAG_DEPTH)
+        aspects |= dsv.aspects & VK_IMAGE_ASPECT_DEPTH_BIT;
+    if (flags & D3D12_CLEAR_FLAG_STENCIL)
+        aspects |= dsv.aspects & VK_IMAGE_ASPECT_STENCIL_BIT;
+    if (!aspects)
+        return;
+    const VkClearDepthStencilValue value{depth, stencil};
+    if (rects.empty()) {
+        const VkImageSubresourceRange range{aspects, dsv.mip, 1, dsv.first_layer, dsv.layers};
+        vk.vkCmdClearDepthStencilImage(l.cmd, dsv.resource->impl().image, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+        return;
+    }
+    // Rects clear as an attachment, with every plane of the view attached (only the cleared ones are written).
+    VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    a.imageView = dsv.view;
+    a.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    a.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{0, 0}, {dsv.width, dsv.height}};
+    ri.layerCount = dsv.layers;
+    if (dsv.aspects & VK_IMAGE_ASPECT_DEPTH_BIT)
+        ri.pDepthAttachment = &a;
+    if (dsv.aspects & VK_IMAGE_ASPECT_STENCIL_BIT)
+        ri.pStencilAttachment = &a;
+    std::vector<VkClearRect> clear_rects;
+    for (const auto& rc : rects) {
+        const LONG left = std::max<LONG>(rc.left, 0), top = std::max<LONG>(rc.top, 0);
+        const LONG right = std::min<LONG>(rc.right, dsv.width), bottom = std::min<LONG>(rc.bottom, dsv.height);
+        if (right > left && bottom > top)
+            clear_rects.push_back({{{left, top}, {uint32_t(right - left), uint32_t(bottom - top)}}, 0, dsv.layers});
+    }
+    if (clear_rects.empty())
+        return;
+    VkClearAttachment ca{aspects, 0, {}};
+    ca.clearValue.depthStencil = value;
+    vk.vkCmdBeginRendering(l.cmd, &ri);
+    vk.vkCmdClearAttachments(l.cmd, 1, &ca, static_cast<uint32_t>(clear_rects.size()), clear_rects.data());
+    vk.vkCmdEndRendering(l.cmd);
+}
+
+void CommandList::set_depth_bounds(float min, float max)
+{
+    Impl& l = *impl_;
+    if (l.type == D3D12_COMMAND_LIST_TYPE_DIRECT && l.device->physical->features.depthBounds)
+        l.device->vk.vkCmdSetDepthBounds(l.cmd, min, max);
+}
+
+void CommandList::resolve_subresource(Resource& dst, uint32_t dst_subresource, Resource& src,
+                                      uint32_t src_subresource, DXGI_FORMAT)
+{
+    Impl& l = *impl_;
+    Resource::Impl& d = dst.impl();
+    Resource::Impl& s = src.impl();
+    if (!d.image || !s.image || s.aspects != VK_IMAGE_ASPECT_COLOR_BIT) {
+        log(LogLevel::warn, "ResolveSubresource: only color images can be resolved");
+        l.fail(E_INVALIDARG);
+        return;
+    }
+    l.end_rendering();
+    // Both images are read in their own formats. D3D12 resolves a typeless pair in the given format, which differs
+    // only for sRGB averaging; that is not handled yet.
+    VkImageResolve r{};
+    r.srcSubresource = subresource_layers(s, src_subresource);
+    r.dstSubresource = subresource_layers(d, dst_subresource);
+    r.extent = mip_extent(s, r.srcSubresource.mipLevel);
+    l.device->vk.vkCmdResolveImage(l.cmd, s.image, VK_IMAGE_LAYOUT_GENERAL, d.image, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
 }
 
 void CommandList::clear_render_target_view(const RenderTargetView& rtv, const float color[4],

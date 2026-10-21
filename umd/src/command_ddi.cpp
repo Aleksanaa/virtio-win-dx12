@@ -374,9 +374,38 @@ void APIENTRY om_set_render_targets(D3D12DDI_HCOMMANDLIST hl, UINT count, const 
         if (d && d->kind == vgd::Descriptor::Kind::rtv)
             views[i] = d->rtv;
     }
-    if (dsv && dsv->ptr)
-        VGD_WARN("OMSetRenderTargets: depth/stencil views are not supported yet");
-    list_of(hl).set_render_targets({views.data(), count});
+    const vgd::Descriptor* ds = dsv && dsv->ptr ? descriptor_at(*dsv) : nullptr;
+    list_of(hl).set_render_targets({views.data(), count},
+                                   ds && ds->kind == vgd::Descriptor::Kind::dsv && ds->dsv.view ? &ds->dsv : nullptr);
+}
+
+void APIENTRY clear_depth_stencil_view(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_CPU_DESCRIPTOR_HANDLE h, UINT flags,
+                                       FLOAT depth, UINT8 stencil, UINT count, const D3D12DDI_RECT* rects)
+{
+    const vgd::Descriptor* d = descriptor_at(h);
+    if (d->kind != vgd::Descriptor::Kind::dsv || !d->dsv.view) {
+        object<CommandListObject>(hl)->error(E_INVALIDARG);
+        return;
+    }
+    list_of(hl).clear_depth_stencil_view(d->dsv, static_cast<D3D12_CLEAR_FLAGS>(flags), depth, stencil,
+                                         {rects, rects ? count : 0});
+}
+
+void APIENTRY om_set_depth_bounds(D3D12DDI_HCOMMANDLIST hl, FLOAT min, FLOAT max)
+{
+    list_of(hl).set_depth_bounds(min, max);
+}
+
+void APIENTRY resource_resolve_subresource(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HRESOURCE dst, UINT dst_sub,
+                                           D3D12DDI_HRESOURCE src, UINT src_sub, DXGI_FORMAT format)
+{
+    auto* d = object<ResourceObject>(dst);
+    auto* s = object<ResourceObject>(src);
+    if (!d || !s || !d->resource || !s->resource) {
+        object<CommandListObject>(hl)->error(E_INVALIDARG);
+        return;
+    }
+    list_of(hl).resolve_subresource(*d->resource, dst_sub, *s->resource, src_sub, format);
 }
 
 void APIENTRY clear_render_target_view(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_CPU_DESCRIPTOR_HANDLE h,
@@ -496,6 +525,9 @@ void fill_command_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& t)
     t.pfnIASetIndexBuffer = ia_set_index_buffer;
     t.pfnOMSetRenderTargets = om_set_render_targets;
     t.pfnClearRenderTargetView = clear_render_target_view;
+    t.pfnClearDepthStencilView = clear_depth_stencil_view;
+    t.pfnOMSetDepthBounds = om_set_depth_bounds;
+    t.pfnResourceResolveSubresource = resource_resolve_subresource;
     t.pfnDrawInstanced = draw_instanced;
     t.pfnDrawIndexedInstanced = draw_indexed_instanced;
     // Default state the runtime sets on every reset, with nothing to record yet: no stream output or predication.

@@ -21,7 +21,9 @@ param(
     # Probe only: also draw off-screen and check pixels (render target, shaders, root constants, vertex buffer)
     [switch]$Triangle,
     # Probe only: also sample a texture through descriptor heaps, tables, a heap and a static sampler
-    [switch]$Textured
+    [switch]$Textured,
+    # Probe only: also draw with depth/stencil tests and 4x MSAA with a resolve
+    [switch]$Depth
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,6 +114,7 @@ switch ($Action) {
         if ($Copy) { $probeArgs += '--copy' }
         if ($Triangle) { $probeArgs += '--triangle' }
         if ($Textured) { $probeArgs += '--textured' }
+        if ($Depth) { $probeArgs += '--depth' }
         & $exe @probeArgs
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"

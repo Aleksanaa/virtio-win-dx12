@@ -483,3 +483,69 @@ HRESULT Device::create_render_target_view(Resource& resource, const D3D12_RENDER
 }
 
 } // namespace vgd
+
+namespace vgd {
+
+HRESULT Device::create_depth_stencil_view(Resource& resource, const D3D12_DEPTH_STENCIL_VIEW_DESC* desc,
+                                          DepthStencilView* out)
+{
+    Resource::Impl& r = resource.impl();
+    if (!out || !r.image || !(r.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)))
+        return E_INVALIDARG;
+    const auto& rd = r.desc;
+    // Depth/stencil images are viewed in their own format, with every plane they have.
+    ImageViewKey key{VK_IMAGE_VIEW_TYPE_2D, r.format, r.aspects, 0, 1, 0, 1, 0,
+                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT};
+    auto layers = [&](UINT first, UINT size) {
+        key.layer = first;
+        key.layers = size == UINT_MAX ? r.array_layers() - first : size;
+    };
+    if (!desc) {
+        key.layers = r.array_layers();
+    } else {
+        switch (desc->ViewDimension) {
+        case D3D12_DSV_DIMENSION_TEXTURE1D: key.mip = desc->Texture1D.MipSlice; break;
+        case D3D12_DSV_DIMENSION_TEXTURE1DARRAY:
+            key.mip = desc->Texture1DArray.MipSlice;
+            layers(desc->Texture1DArray.FirstArraySlice, desc->Texture1DArray.ArraySize);
+            break;
+        case D3D12_DSV_DIMENSION_TEXTURE2D: key.mip = desc->Texture2D.MipSlice; break;
+        case D3D12_DSV_DIMENSION_TEXTURE2DARRAY:
+            key.mip = desc->Texture2DArray.MipSlice;
+            layers(desc->Texture2DArray.FirstArraySlice, desc->Texture2DArray.ArraySize);
+            break;
+        case D3D12_DSV_DIMENSION_TEXTURE2DMS: break;
+        case D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY:
+            layers(desc->Texture2DMSArray.FirstArraySlice, desc->Texture2DMSArray.ArraySize);
+            break;
+        default:
+            log(LogLevel::warn, "depth/stencil view dimension %d not supported", desc->ViewDimension);
+            return E_INVALIDARG;
+        }
+    }
+    if (key.mip >= rd.MipLevels || key.layers == 0 || key.layer + key.layers > r.array_layers())
+        return E_INVALIDARG;
+    if (key.layers > 1)
+        key.type = rd.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ? VK_IMAGE_VIEW_TYPE_1D_ARRAY
+                                                                       : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    else if (rd.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D)
+        key.type = VK_IMAGE_VIEW_TYPE_1D;
+
+    DepthStencilView v;
+    v.resource = &resource;
+    v.view = r.view(key);
+    if (!v.view)
+        return E_OUTOFMEMORY;
+    v.format = r.format;
+    v.aspects = r.aspects;
+    v.width = std::max<uint32_t>(static_cast<uint32_t>(rd.Width >> key.mip), 1);
+    v.height = std::max<uint32_t>(rd.Height >> key.mip, 1);
+    v.mip = key.mip;
+    v.first_layer = key.layer;
+    v.layers = key.layers;
+    v.flags = desc ? desc->Flags : D3D12_DSV_FLAG_NONE;
+    *out = v;
+    return S_OK;
+}
+
+} // namespace vgd
