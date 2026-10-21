@@ -75,7 +75,11 @@ constexpr ULONG kBlobFlagShareable = 2;
 constexpr ULONG kPipeTexture2d = 2;
 constexpr ULONG kBindRenderTarget = 1u << 1, kBindSamplerView = 1u << 3, kBindDisplayTarget = 1u << 7,
                 kBindShared = 1u << 20;
-constexpr ULONG kVirglFormatB8G8R8A8Unorm = 1, kVirglFormatB8G8R8X8Unorm = 2, kVirglFormatR8G8B8A8Unorm = 67,
-                kVirglFormatB8G8R8A8Srgb = 100, kVirglFormatR8G8B8A8Srgb = 104;
+constexpr ULONG kVirglFormatB8G8R8A8Unorm = 1, kVirglFormatB8G8R8X8Unorm = 2, kVirglFormatR10G10B10A2Unorm = 8,
+                kVirglFormatR8G8B8A8Unorm = 67, kVirglFormatB8G8R8A8Srgb = 100, kVirglFormatR8G8B8A8Srgb = 104;
+// The importer (yttrium_resource_to_pipe_format) translates only the virgl formats above and takes any other value
+// as a Mesa pipe_format, whose numbering is Mesa's own: this is PIPE_FORMAT_R16G16B16A16_FLOAT in the Mesa of
+// third_party/virtio-win-mesa (its generated u_format_gen.h), the one yttrium's D3D10 UMD is built from.
+constexpr ULONG kPipeFormatR16G16B16A16Float = 56;
 
 } // namespace vgd::viogpu

@@ -30,7 +30,7 @@ param(
     [switch]$Queries,
     # Probe only: also run ExecuteIndirect draws and dispatches
     [switch]$Indirect,
-    # Probe only: also open a window with a flip-model swapchain for a few seconds and check the screen
+    # Probe only: also present a flip-model swapchain in phases (resizes, 10-bit, FP16, borderless fullscreen)
     [switch]$Present
 )
 

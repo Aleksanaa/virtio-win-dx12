@@ -43,10 +43,12 @@ HRESULT bring_up_core(Device& d)
         std::string missing;
         for (const auto& m : a.missing)
             missing += " " + m;
-        VGD_TRACE("CreateDevice: Vulkan device %u: %s (api %u.%u.%u, %s) descriptor_heap=%d external_memory=%d%s%s",
+        VGD_TRACE("CreateDevice: Vulkan device %u: %s (api %u.%u.%u, %s) descriptor_heap=%d external_memory=%d "
+                  "drm_modifier=%d%s%s",
                   static_cast<unsigned>(i), a.name.c_str(),
                   VK_API_VERSION_MAJOR(a.api_version), VK_API_VERSION_MINOR(a.api_version),
                   VK_API_VERSION_PATCH(a.api_version), a.driver_info.c_str(), a.descriptor_heap, a.external_memory,
+                  a.drm_format_modifier,
                   missing.empty() ? "" : " missing:", missing.c_str());
         if (!a.usable() || d.core)
             continue;

@@ -9,8 +9,8 @@
 //   --compute  on each device created, clear UAVs and dispatch on a compute queue, check the values.
 //   --queries  on each device created, run occlusion, pipeline statistics and timestamp queries, check results.
 //   --indirect  on each device created, ExecuteIndirect draws and dispatches, counted by queries and the shader.
-//   --present  on each device created, a flip-model swapchain in a window for a few seconds (watch it), then a
-//            screen readback of the last frame.
+//   --present  on each device created, a flip-model swapchain for a few seconds per phase (watch it): windowed,
+//            ResizeBuffers to other sizes and formats, borderless fullscreen; a screen readback ends each phase.
 #include <windows.h>
 #include <dxgi1_4.h>
 #include <dxgidebug.h>
@@ -1702,12 +1702,27 @@ void pump_messages()
     }
 }
 
-// A flip-model swapchain in a window: a few seconds of clears with a moving square (watch it), then one solid
-// colour. Passing means every frame was presented; whether the compositor shows them is for the person watching
-// (the screen readback is a hint only: with WARP it read the desktop behind the window).
+// A flip-model swapchain in a window, in phases (watch them): the first size, then ResizeBuffers to a larger window,
+// to 10-bit and to FP16 buffers, and to a borderless window covering the monitor (where the compositor may flip our
+// buffers directly). Each phase is clears with a moving square, ending in one solid colour. Passing means every frame
+// of every phase was presented; whether the compositor shows them is for the person watching (the screen readback
+// is a hint only: with WARP it read the desktop behind the window).
 bool present_test(ID3D12Device* device, IDXGIFactory1* factory1, const wchar_t* label)
 {
-    constexpr UINT kWidth = 480, kHeight = 270, kBuffers = 2, kFrames = 240;
+    constexpr UINT kBuffers = 2;
+    struct Phase {
+        const char* name;
+        DXGI_FORMAT format;
+        UINT width, height;   // 0: the monitor's
+        UINT frames;
+    };
+    static const Phase kPhases[] = {
+        {"windowed B8G8R8A8 480x270", DXGI_FORMAT_B8G8R8A8_UNORM, 480, 270, 120},
+        {"ResizeBuffers 640x360", DXGI_FORMAT_B8G8R8A8_UNORM, 640, 360, 90},
+        {"ResizeBuffers R10G10B10A2", DXGI_FORMAT_R10G10B10A2_UNORM, 640, 360, 90},
+        {"ResizeBuffers R16G16B16A16_FLOAT", DXGI_FORMAT_R16G16B16A16_FLOAT, 640, 360, 90},
+        {"borderless fullscreen B8G8R8A8", DXGI_FORMAT_B8G8R8A8_UNORM, 0, 0, 180},
+    };
     auto step = [](const char* what, HRESULT hr) {
         std::printf("  present: %-26s 0x%08lx %s\n", what, hr, SUCCEEDED(hr) ? "ok" : "FAIL");
         print_messages();
@@ -1717,6 +1732,7 @@ bool present_test(ID3D12Device* device, IDXGIFactory1* factory1, const wchar_t* 
     IDXGIFactory2* factory = nullptr;
     IDXGISwapChain1* swapchain1 = nullptr;
     IDXGISwapChain3* swapchain = nullptr;
+    IDXGISwapChainMedia* media = nullptr;
     ID3D12CommandQueue* queue = nullptr;
     ID3D12CommandAllocator* alloc = nullptr;
     ID3D12GraphicsCommandList* list = nullptr;
@@ -1727,9 +1743,127 @@ bool present_test(ID3D12Device* device, IDXGIFactory1* factory1, const wchar_t* 
     HWND hwnd = nullptr;
     bool ok = false;
     UINT64 fence_value = 0;
-    DWORD start = 0, elapsed = 0;
-    UINT presented = 0;
-    HRESULT present_hr = S_OK;
+    UINT phases_passed = 0;
+
+    auto wait_idle = [&] {
+        queue->Signal(fence, ++fence_value);
+        fence->SetEventOnCompletion(fence_value, event);
+        return WaitForSingleObject(event, 5000) == WAIT_OBJECT_0;
+    };
+    auto release_buffers = [&] {
+        for (ID3D12Resource*& b : buffers)
+            if (b) {
+                b->Release();
+                b = nullptr;
+            }
+    };
+    auto get_buffers = [&] {
+        const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        for (UINT i = 0; i < kBuffers; i++) {
+            if (!step("GetBuffer", swapchain->GetBuffer(i, IID_PPV_ARGS(&buffers[i]))))
+                return false;
+            D3D12_CPU_DESCRIPTOR_HANDLE h;
+            rtv_heap->GetCPUDescriptorHandleForHeapStart(&h);
+            h.ptr += i * inc;
+            device->CreateRenderTargetView(buffers[i], nullptr, h);
+        }
+        return true;
+    };
+    // Places the window for a phase; returns the client size.
+    auto place_window = [&](const Phase& p, UINT* w, UINT* h) {
+        if (p.width) {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+            RECT r{0, 0, static_cast<LONG>(p.width), static_cast<LONG>(p.height)};
+            AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+            SetWindowPos(hwnd, HWND_TOPMOST, 100, 100, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED);
+            *w = p.width;
+            *h = p.height;
+        } else {
+            MONITORINFO mi{sizeof(mi)};
+            GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi);
+            SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+            SetWindowPos(hwnd, HWND_TOPMOST, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                         mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED);
+            *w = static_cast<UINT>(mi.rcMonitor.right - mi.rcMonitor.left);
+            *h = static_cast<UINT>(mi.rcMonitor.bottom - mi.rcMonitor.top);
+        }
+        pump_messages();
+    };
+    // One phase's frames; true if all were presented.
+    auto run_frames = [&](const Phase& p, UINT width, UINT height) {
+        UINT presented = 0;
+        const DWORD start = GetTickCount();
+        for (UINT frame = 0; frame <= p.frames; frame++) {
+            pump_messages();
+            const bool last = frame == p.frames;
+            const UINT index = swapchain->GetCurrentBackBufferIndex();
+            alloc->Reset();
+            list->Reset(alloc, nullptr);
+            D3D12_RESOURCE_BARRIER b{};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition = {buffers[index], D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PRESENT,
+                            D3D12_RESOURCE_STATE_RENDER_TARGET};
+            list->ResourceBarrier(1, &b);
+            D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+            rtv_heap->GetCPUDescriptorHandleForHeapStart(&rtv);
+            rtv.ptr += index * device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+            // Background cycles red, green, blue each second; a white square moves along the diagonal. The last
+            // frame is solid magenta, for the screen readback.
+            static const float backgrounds[3][4] = {{0.8f, 0.1f, 0.1f, 1}, {0.1f, 0.7f, 0.1f, 1}, {0.1f, 0.2f, 0.8f, 1}};
+            const float magenta[4] = {1, 0, 1, 1}, white[4] = {1, 1, 1, 1};
+            list->ClearRenderTargetView(rtv, last ? magenta : backgrounds[(frame / 60) % 3], 0, nullptr);
+            if (!last) {
+                const LONG x = static_cast<LONG>((frame * 4) % (width - 40)), y = static_cast<LONG>((frame * 2) % (height - 40));
+                const D3D12_RECT square{x, y, x + 40, y + 40};
+                list->ClearRenderTargetView(rtv, white, 1, &square);
+            }
+            std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+            list->ResourceBarrier(1, &b);
+            list->Close();
+            ID3D12CommandList* lists[] = {list};
+            queue->ExecuteCommandLists(1, lists);
+            const HRESULT hr = swapchain->Present(1, 0);
+            if (FAILED(hr)) {
+                std::printf("  present: Present #%u failed: 0x%08lx (device removed reason 0x%08lx)\n", frame, hr,
+                            device->GetDeviceRemovedReason());
+                print_messages();
+                break;
+            }
+            presented++;
+            if (!wait_idle()) {
+                std::printf("  present: frame %u did not complete in 5 s\n", frame);
+                break;
+            }
+        }
+        const DWORD elapsed = GetTickCount() - start;
+        std::printf("  present: %u of %u frames presented in %lu ms (%.1f fps)\n", presented, p.frames + 1, elapsed,
+                    elapsed ? presented * 1000.0 / elapsed : 0.0);
+        DXGI_FRAME_STATISTICS stats{};
+        HRESULT hr = swapchain->GetFrameStatistics(&stats);
+        std::printf("  present: GetFrameStatistics 0x%08lx, present count %u, refresh count %u\n", hr,
+                    stats.PresentCount, stats.PresentRefreshCount);
+        if (media) {
+            // How the compositor showed the last frames: composed, or flipped directly (overlay / independent flip).
+            DXGI_FRAME_STATISTICS_MEDIA ms{};
+            hr = media->GetFrameStatisticsMedia(&ms);
+            static const char* const kModes[] = {"composed", "overlay", "none", "composition failure"};
+            std::printf("  present: GetFrameStatisticsMedia 0x%08lx, composition mode %d (%s)\n", hr,
+                        static_cast<int>(ms.CompositionMode),
+                        static_cast<unsigned>(ms.CompositionMode) < 4 ? kModes[ms.CompositionMode] : "?");
+        }
+        // What the compositor shows: the centre of our client area on the screen, a moment after the last frame.
+        Sleep(500);
+        pump_messages();
+        POINT pt{static_cast<LONG>(width / 2), static_cast<LONG>(height / 2)};
+        ClientToScreen(hwnd, &pt);
+        HDC screen = GetDC(nullptr);
+        const COLORREF c = GetPixel(screen, pt.x, pt.y);
+        ReleaseDC(nullptr, screen);
+        const bool magenta = c != CLR_INVALID && GetRValue(c) > 200 && GetGValue(c) < 60 && GetBValue(c) > 200;
+        std::printf("  present: screen pixel at (%ld, %ld) = 0x%06lx (r %u g %u b %u): %s\n", pt.x, pt.y, c,
+                    GetRValue(c), GetGValue(c), GetBValue(c), magenta ? "magenta" : "not magenta (a hint only, see above)");
+        return presented == p.frames + 1;
+    };
 
     WNDCLASSW wc{};
     wc.lpfnWndProc = present_wndproc;
@@ -1739,13 +1873,15 @@ bool present_test(ID3D12Device* device, IDXGIFactory1* factory1, const wchar_t* 
     RegisterClassW(&wc);
     wchar_t title[160];
     swprintf(title, 160, L"d3dprobe present: %ls", label);
-    RECT r{0, 0, static_cast<LONG>(kWidth), static_cast<LONG>(kHeight)};
-    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    hwnd = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, 100, 100, r.right - r.left,
-                           r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+    hwnd = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, 100, 100, 100, 100, nullptr,
+                           nullptr, wc.hInstance, nullptr);
     if (!hwnd) {
         std::printf("  present: CreateWindow failed: %lu\n", GetLastError());
         goto out;
+    }
+    {
+        UINT w, h;
+        place_window(kPhases[0], &w, &h);
     }
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
@@ -1761,9 +1897,9 @@ bool present_test(ID3D12Device* device, IDXGIFactory1* factory1, const wchar_t* 
         goto out;
     {
         DXGI_SWAP_CHAIN_DESC1 sd{};
-        sd.Width = kWidth;
-        sd.Height = kHeight;
-        sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        sd.Width = kPhases[0].width;
+        sd.Height = kPhases[0].height;
+        sd.Format = kPhases[0].format;
         sd.SampleDesc = {1, 0};
         sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         sd.BufferCount = kBuffers;
@@ -1775,22 +1911,15 @@ bool present_test(ID3D12Device* device, IDXGIFactory1* factory1, const wchar_t* 
     }
     if (!step("QueryInterface(SwapChain3)", swapchain1->QueryInterface(IID_PPV_ARGS(&swapchain))))
         goto out;
+    if (FAILED(swapchain1->QueryInterface(IID_PPV_ARGS(&media))))
+        media = nullptr;
     {
         D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kBuffers, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
         if (!step("CreateDescriptorHeap(RTV)", device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap))))
             goto out;
     }
-    {
-        const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        for (UINT i = 0; i < kBuffers; i++) {
-            if (!step("GetBuffer", swapchain->GetBuffer(i, IID_PPV_ARGS(&buffers[i]))))
-                goto out;
-            D3D12_CPU_DESCRIPTOR_HANDLE h;
-            rtv_heap->GetCPUDescriptorHandleForHeapStart(&h);
-            h.ptr += i * inc;
-            device->CreateRenderTargetView(buffers[i], nullptr, h);
-        }
-    }
+    if (!get_buffers())
+        goto out;
     if (!step("CreateCommandAllocator",
               device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
         !step("CreateCommandList", device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr,
@@ -1799,85 +1928,36 @@ bool present_test(ID3D12Device* device, IDXGIFactory1* factory1, const wchar_t* 
         goto out;
     list->Close();
 
-    start = GetTickCount();
-    for (UINT frame = 0; frame <= kFrames; frame++) {
-        pump_messages();
-        const bool last = frame == kFrames;
-        const UINT index = swapchain->GetCurrentBackBufferIndex();
-        alloc->Reset();
-        list->Reset(alloc, nullptr);
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition = {buffers[index], D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PRESENT,
-                        D3D12_RESOURCE_STATE_RENDER_TARGET};
-        list->ResourceBarrier(1, &b);
-        D3D12_CPU_DESCRIPTOR_HANDLE rtv;
-        rtv_heap->GetCPUDescriptorHandleForHeapStart(&rtv);
-        rtv.ptr += index * device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-        // Background cycles red, green, blue each second; a white square moves along the diagonal. The last
-        // frame is solid magenta, for the screen readback.
-        static const float backgrounds[3][4] = {{0.8f, 0.1f, 0.1f, 1}, {0.1f, 0.7f, 0.1f, 1}, {0.1f, 0.2f, 0.8f, 1}};
-        const float magenta[4] = {1, 0, 1, 1}, white[4] = {1, 1, 1, 1};
-        list->ClearRenderTargetView(rtv, last ? magenta : backgrounds[(frame / 60) % 3], 0, nullptr);
-        if (!last) {
-            const LONG x = static_cast<LONG>((frame * 2) % (kWidth - 40)), y = static_cast<LONG>(frame % (kHeight - 40));
-            const D3D12_RECT square{x, y, x + 40, y + 40};
-            list->ClearRenderTargetView(rtv, white, 1, &square);
+    for (UINT i = 0; i < sizeof(kPhases) / sizeof(kPhases[0]); i++) {
+        const Phase& p = kPhases[i];
+        std::printf("  present: phase %u: %s\n", i + 1, p.name);
+        UINT w = p.width, h = p.height;
+        if (i > 0) {
+            // ResizeBuffers needs every reference to the buffers gone and the GPU done with them.
+            if (!wait_idle())
+                break;
+            release_buffers();
+            place_window(p, &w, &h);
+            char what[64];
+            std::snprintf(what, sizeof(what), "ResizeBuffers %ux%u", w, h);
+            if (!step(what, swapchain->ResizeBuffers(kBuffers, w, h, p.format, 0)) || !get_buffers())
+                break;
         }
-        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
-        list->ResourceBarrier(1, &b);
-        list->Close();
-        ID3D12CommandList* lists[] = {list};
-        queue->ExecuteCommandLists(1, lists);
-        present_hr = swapchain->Present(1, 0);
-        if (FAILED(present_hr)) {
-            std::printf("  present: Present #%u failed: 0x%08lx (device removed reason 0x%08lx)\n", frame, present_hr,
-                        device->GetDeviceRemovedReason());
-            print_messages();
+        if (!run_frames(p, w, h))
             break;
-        }
-        presented++;
-        queue->Signal(fence, ++fence_value);
-        fence->SetEventOnCompletion(fence_value, event);
-        if (WaitForSingleObject(event, 5000) != WAIT_OBJECT_0) {
-            std::printf("  present: frame %u did not complete in 5 s\n", frame);
-            break;
-        }
+        phases_passed++;
     }
-    elapsed = GetTickCount() - start;
-    std::printf("  present: %u of %u frames presented in %lu ms (%.1f fps)\n", presented, kFrames + 1, elapsed,
-                elapsed ? presented * 1000.0 / elapsed : 0.0);
-    {
-        DXGI_FRAME_STATISTICS stats{};
-        HRESULT hr = swapchain->GetFrameStatistics(&stats);
-        std::printf("  present: GetFrameStatistics 0x%08lx, present count %u, refresh count %u\n", hr,
-                    stats.PresentCount, stats.PresentRefreshCount);
-    }
-    {
-        // What the compositor shows: the centre of our client area on the screen, a moment after the last frame.
-        Sleep(500);
-        pump_messages();
-        POINT p{static_cast<LONG>(kWidth / 2), static_cast<LONG>(kHeight / 2)};
-        ClientToScreen(hwnd, &p);
-        HDC screen = GetDC(nullptr);
-        const COLORREF c = GetPixel(screen, p.x, p.y);
-        ReleaseDC(nullptr, screen);
-        const bool magenta = c != CLR_INVALID && GetRValue(c) > 200 && GetGValue(c) < 60 && GetBValue(c) > 200;
-        std::printf("  present: screen pixel at (%ld, %ld) = 0x%06lx (r %u g %u b %u): %s\n", p.x, p.y, c,
-                    GetRValue(c), GetGValue(c), GetBValue(c), magenta ? "magenta" : "not magenta (a hint only, see above)");
-        ok = presented == kFrames + 1;
-    }
-    std::printf("  present: device removed reason 0x%08lx\n", device->GetDeviceRemovedReason());
+    ok = phases_passed == sizeof(kPhases) / sizeof(kPhases[0]);
+    std::printf("  present: %u of %zu phases passed; device removed reason 0x%08lx\n", phases_passed,
+                sizeof(kPhases) / sizeof(kPhases[0]), device->GetDeviceRemovedReason());
 
 out:
     std::printf("  present test: %s\n", ok ? "PASS" : "FAIL");
-    if (queue && fence) {
-        queue->Signal(fence, ++fence_value);
-        fence->SetEventOnCompletion(fence_value, event);
-        WaitForSingleObject(event, 5000);
-    }
-    for (IUnknown* u : std::initializer_list<IUnknown*>{fence, list, alloc, buffers[0], buffers[1], rtv_heap,
-                                                         swapchain, swapchain1, factory, queue})
+    if (queue && fence)
+        wait_idle();
+    release_buffers();
+    for (IUnknown* u : std::initializer_list<IUnknown*>{fence, list, alloc, rtv_heap, media, swapchain, swapchain1,
+                                                         factory, queue})
         if (u)
             u->Release();
     if (hwnd)

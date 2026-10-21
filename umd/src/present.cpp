@@ -166,7 +166,7 @@ KmtDevice* kmt_device(Device& d)
     return d.kmt.get();
 }
 
-// The virgl format yttrium's D3D10 UMD knows the buffer by; 0 if none.
+// The format yttrium's D3D10 UMD knows the buffer by (virgl, or pipe where it has no virgl translation); 0 if none.
 ULONG virgl_format(DXGI_FORMAT f)
 {
     switch (f) {
@@ -177,6 +177,10 @@ ULONG virgl_format(DXGI_FORMAT f)
     case DXGI_FORMAT_R8G8B8A8_UNORM:
     case DXGI_FORMAT_R8G8B8A8_TYPELESS: return viogpu::kVirglFormatR8G8B8A8Unorm;
     case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return viogpu::kVirglFormatR8G8B8A8Srgb;
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS: return viogpu::kVirglFormatR10G10B10A2Unorm;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS: return viogpu::kPipeFormatR16G16B16A16Float;
     default: return 0;
     }
 }
