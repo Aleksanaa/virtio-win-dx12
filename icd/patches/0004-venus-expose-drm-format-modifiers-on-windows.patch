@@ -1,0 +1,21 @@
+From: vgd3d12
+Subject: venus: expose VK_EXT_image_drm_format_modifier on Windows
+
+The extension is passed through to the renderer, and the image create path already forwards the
+modifier list and explicit create infos. With the dma-buf export of 0001, an image whose memory
+is exported can then be declared external with the LINEAR modifier, as the spec requires (the
+host's RADV offers dma-buf images only with modifiers).
+
+diff --git a/src/virtio/vulkan/vn_physical_device.c b/src/virtio/vulkan/vn_physical_device.c
+--- a/src/virtio/vulkan/vn_physical_device.c
++++ b/src/virtio/vulkan/vn_physical_device.c
+@@ -1420,9 +1420,7 @@
+       .EXT_global_priority_query = true,
+       .EXT_graphics_pipeline_library = !VN_DEBUG(NO_GPL),
+       .EXT_image_2d_view_of_3d = true,
+-#if !DETECT_OS_WINDOWS
+       .EXT_image_drm_format_modifier = true,
+-#endif
+       .EXT_image_sliced_view_of_3d = true,
+       .EXT_image_view_min_lod = true,
+       .EXT_index_type_uint8 = true,
