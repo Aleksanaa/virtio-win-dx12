@@ -88,8 +88,18 @@ struct alignas(kDescriptorStride) Descriptor {
     union {
         RenderTargetView rtv;
         DepthStencilView dsv;
-        VkImageView image;   // VK_NULL_HANDLE: a null descriptor
-        VkBufferView texel;
+        struct {   // textures; view VK_NULL_HANDLE: a null descriptor
+            VkImageView view;
+            Resource* resource;
+            VkFormat format;
+            uint32_t mip, first_layer, layers;   // what a UAV clear covers
+        } image;
+        struct {   // typed buffers
+            VkBufferView view;
+            VkBuffer buffer;
+            VkDeviceSize offset, range;
+            VkFormat format;
+        } texel;
         struct {
             VkBuffer buffer;
             VkDeviceSize offset, range;
@@ -277,6 +287,16 @@ public:
     void set_graphics_root_descriptor(uint32_t parameter, D3D12_GPU_VIRTUAL_ADDRESS address);
     // The shader-visible heaps descriptor tables point into (at most one CBV/SRV/UAV heap and one sampler heap).
     void set_descriptor_heaps(std::span<DescriptorHeap* const> heaps);
+    // Compute root arguments, separate from the graphics ones as in D3D12.
+    void set_compute_root_signature(const RootSignature* rs);
+    void set_compute_root_32bit_constants(uint32_t parameter, std::span<const uint32_t> values, uint32_t dest_offset);
+    void set_compute_root_descriptor(uint32_t parameter, D3D12_GPU_VIRTUAL_ADDRESS address);
+    void set_compute_root_descriptor_table(uint32_t parameter, uint64_t gpu_handle);
+    void dispatch(uint32_t x, uint32_t y, uint32_t z);
+    // ClearUnorderedAccessView{Uint,Float} on what a UAV descriptor covers. Buffers clear with a fill (raw,
+    // structured and 32-bit typed views); rects are not supported yet.
+    void clear_unordered_access_view_uint(const Descriptor& uav, const uint32_t values[4]);
+    void clear_unordered_access_view_float(const Descriptor& uav, const float values[4]);
     void set_graphics_root_descriptor_table(uint32_t parameter, uint64_t gpu_handle);
     void set_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY topology);
     void set_viewports(std::span<const D3D12_VIEWPORT> viewports);

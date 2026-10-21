@@ -11,6 +11,7 @@
 
 #include <array>
 #include <new>
+#include <type_traits>
 
 namespace vgd::umd {
 
@@ -322,6 +323,7 @@ void APIENTRY set_graphics_root_descriptor_table(D3D12DDI_HCOMMANDLIST hl, UINT 
 void APIENTRY clear_root_arguments(D3D12DDI_HCOMMANDLIST hl)
 {
     list_of(hl).set_graphics_root_signature(nullptr);
+    list_of(hl).set_compute_root_signature(nullptr);
 }
 
 void APIENTRY ia_set_topology(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_PRIMITIVE_TOPOLOGY t)
@@ -431,6 +433,66 @@ void APIENTRY draw_indexed_instanced(D3D12DDI_HCOMMANDLIST hl, UINT indices, UIN
     list_of(hl).draw_indexed_instanced(indices, instances, start_index, base_vertex, start_instance);
 }
 
+// --- Compute -------------------------------------------------------------------------------------------------
+
+void APIENTRY set_compute_root_signature(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HROOTSIGNATURE hr_)
+{
+    list_of(hl).set_compute_root_signature(hr_.pDrvPrivate ? object<RootSignatureObject>(hr_)->rs.get() : nullptr);
+}
+
+void APIENTRY set_compute_root_32bit_constant(D3D12DDI_HCOMMANDLIST hl, UINT index, UINT value, UINT offset)
+{
+    list_of(hl).set_compute_root_32bit_constants(index, {&value, 1}, offset);
+}
+
+void APIENTRY set_compute_root_32bit_constants(D3D12DDI_HCOMMANDLIST hl, UINT index, UINT count, const void* data,
+                                               UINT offset)
+{
+    list_of(hl).set_compute_root_32bit_constants(index, {static_cast<const uint32_t*>(data), count}, offset);
+}
+
+void APIENTRY set_compute_root_buffer_view(D3D12DDI_HCOMMANDLIST hl, UINT index, D3D12DDI_GPU_VIRTUAL_ADDRESS va)
+{
+    list_of(hl).set_compute_root_descriptor(index, va);
+}
+
+void APIENTRY set_compute_root_descriptor_table(D3D12DDI_HCOMMANDLIST hl, UINT index,
+                                                D3D12DDI_GPU_DESCRIPTOR_HANDLE base)
+{
+    list_of(hl).set_compute_root_descriptor_table(index, base.ptr);
+}
+
+void APIENTRY dispatch(D3D12DDI_HCOMMANDLIST hl, UINT x, UINT y, UINT z)
+{
+    list_of(hl).dispatch(x, y, z);
+}
+
+// The CPU handle names a descriptor in a CPU-visible heap, which is where our records are readable.
+template <class T>
+void clear_uav(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_CPU_DESCRIPTOR_HANDLE cpu, const T values[4], UINT rects)
+{
+    if (rects)
+        VGD_WARN("ClearUnorderedAccessView with %u rects: rects are not supported yet, clearing the whole view", rects);
+    const vgd::Descriptor& d = *descriptor_at(cpu);
+    if constexpr (std::is_same_v<T, FLOAT>)
+        list_of(hl).clear_unordered_access_view_float(d, values);
+    else
+        list_of(hl).clear_unordered_access_view_uint(d, values);
+}
+
+void APIENTRY clear_uav_uint(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_GPU_DESCRIPTOR_HANDLE, D3D12DDI_CPU_DESCRIPTOR_HANDLE cpu,
+                             D3D12DDI_HRESOURCE, const UINT values[4], UINT count, const D3D12DDI_RECT*)
+{
+    clear_uav(hl, cpu, values, count);
+}
+
+void APIENTRY clear_uav_float(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_GPU_DESCRIPTOR_HANDLE,
+                              D3D12DDI_CPU_DESCRIPTOR_HANDLE cpu, D3D12DDI_HRESOURCE, const FLOAT values[4], UINT count,
+                              const D3D12DDI_RECT*)
+{
+    clear_uav(hl, cpu, values, count);
+}
+
 // --- Queues --------------------------------------------------------------------------------------------------
 
 SIZE_T APIENTRY calc_private_command_queue_size(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATECOMMANDQUEUE_0050*)
@@ -530,6 +592,16 @@ void fill_command_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& t)
     t.pfnResourceResolveSubresource = resource_resolve_subresource;
     t.pfnDrawInstanced = draw_instanced;
     t.pfnDrawIndexedInstanced = draw_indexed_instanced;
+    t.pfnSetComputeRootSignature = set_compute_root_signature;
+    t.pfnSetComputeRoot32BitConstant = set_compute_root_32bit_constant;
+    t.pfnSetComputeRoot32BitConstants = set_compute_root_32bit_constants;
+    t.pfnSetComputeRootConstantBufferView = set_compute_root_buffer_view;
+    t.pfnSetComputeRootShaderResourceView = set_compute_root_buffer_view;
+    t.pfnSetComputeRootUnorderedAccessView = set_compute_root_buffer_view;
+    t.pfnSetComputeRootDescriptorTable = set_compute_root_descriptor_table;
+    t.pfnDispatch = dispatch;
+    t.pfnClearUnorderedAccessViewUint = clear_uav_uint;
+    t.pfnClearUnorderedAccessViewFloat = clear_uav_float;
     // Default state the runtime sets on every reset, with nothing to record yet: no stream output or predication.
     t.pfnSetDescriptorHeaps = set_descriptor_heaps;
     t.pfnSetGraphicsRootDescriptorTable = set_graphics_root_descriptor_table;

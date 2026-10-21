@@ -249,13 +249,20 @@ struct CommandList::Impl {
 
     // Graphics state, applied lazily at draws.
     const PipelineState* pso = nullptr;
-    const PipelineState* bound_pso = nullptr;
-    const RootSignature* graphics_rs = nullptr;
     DescriptorHeap::Impl* resource_heap = nullptr;   // shader-visible heaps from SetDescriptorHeaps
     DescriptorHeap::Impl* sampler_heap = nullptr;
-    bool heaps_dirty = false;
-    std::array<uint8_t, 256> root_data{};
-    bool root_dirty = false;
+    // D3D12 keeps graphics and compute root signatures and arguments apart, as Vulkan does its bind points.
+    struct RootState {
+        const RootSignature* rs = nullptr;
+        std::array<uint8_t, 256> data{};
+        bool dirty = false;                   // root data changed since the last push
+        bool heaps_dirty = false;             // heap sets need binding
+        const PipelineState* bound = nullptr; // the pipeline bound at this bind point
+    };
+    RootState graphics_root, compute_root;
+    // Binds `p` if new, then its descriptor sets and push constants as needed.
+    void flush_root(RootState& root, VkPipelineBindPoint bind_point, const PipelineState* p);
+    bool prepare_dispatch();
     D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
     std::vector<VkViewport> viewports;
     std::vector<VkRect2D> scissors;

@@ -2,6 +2,7 @@
 #include "internal.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 
 namespace vgd {
@@ -298,13 +299,11 @@ void CommandList::copy_resource(Resource& dst, Resource& src)
 
 void CommandList::Impl::reset_state()
 {
-    pso = bound_pso = nullptr;
+    pso = nullptr;
     rendering_pso = nullptr;
-    graphics_rs = nullptr;
     resource_heap = sampler_heap = nullptr;
-    heaps_dirty = false;
-    root_data.fill(0);
-    root_dirty = false;
+    graphics_root = {};
+    compute_root = {};
     topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
     viewports.clear();
     scissors.clear();
@@ -441,29 +440,8 @@ bool CommandList::Impl::prepare_draw()
         rendering_pso = pso;
     }
 
-    const bool new_pipeline = bound_pso != pso;
-    if (new_pipeline) {
-        vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline);
-        bound_pso = pso;
-    }
-    if (heaps_dirty || new_pipeline) {
-        // Pipeline layouts all start with the two heap sets, so the bound heaps survive pipeline changes in Vulkan
-        // terms too; rebinding on a new pipeline also covers its static sampler set.
-        if (resource_heap && resource_heap->set)
-            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout, kResourceHeapSet, 1,
-                                       &resource_heap->set, 0, nullptr);
-        if (sampler_heap && sampler_heap->set)
-            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout, kSamplerHeapSet, 1,
-                                       &sampler_heap->set, 0, nullptr);
-        if (p.static_set)
-            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout, kStaticSamplerSet, 1,
-                                       &p.static_set, 0, nullptr);
-        heaps_dirty = false;
-    }
-    if (p.push_size && (root_dirty || new_pipeline)) {
-        vk.vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_ALL, 0, p.push_size, root_data.data());
-        root_dirty = false;
-    }
+    const bool new_pipeline = graphics_root.bound != pso;
+    flush_root(graphics_root, VK_PIPELINE_BIND_POINT_GRAPHICS, pso);
     if (viewports_dirty) {
         // Scissors pair with viewports; a missing one is the empty rect, as in D3D12.
         std::vector<VkRect2D> s(viewports.size(), VkRect2D{});
@@ -488,48 +466,164 @@ bool CommandList::Impl::prepare_draw()
     return true;
 }
 
+void CommandList::Impl::flush_root(RootState& root, VkPipelineBindPoint bind_point, const PipelineState* pipeline)
+{
+    auto& vk = device->vk;
+    const PipelineState::Impl& p = pipeline->impl();
+    const bool new_pipeline = root.bound != pipeline;
+    if (new_pipeline) {
+        vk.vkCmdBindPipeline(cmd, bind_point, p.pipeline);
+        root.bound = pipeline;
+    }
+    if (root.heaps_dirty || new_pipeline) {
+        // Pipeline layouts all start with the two heap sets, so the bound heaps survive pipeline changes in Vulkan
+        // terms too; rebinding on a new pipeline also covers its static sampler set.
+        if (resource_heap && resource_heap->set)
+            vk.vkCmdBindDescriptorSets(cmd, bind_point, p.layout, kResourceHeapSet, 1, &resource_heap->set, 0,
+                                       nullptr);
+        if (sampler_heap && sampler_heap->set)
+            vk.vkCmdBindDescriptorSets(cmd, bind_point, p.layout, kSamplerHeapSet, 1, &sampler_heap->set, 0,
+                                       nullptr);
+        if (p.static_set)
+            vk.vkCmdBindDescriptorSets(cmd, bind_point, p.layout, kStaticSamplerSet, 1, &p.static_set, 0, nullptr);
+        root.heaps_dirty = false;
+    }
+    if (p.push_size && (root.dirty || new_pipeline)) {
+        vk.vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_ALL, 0, p.push_size, root.data.data());
+        root.dirty = false;
+    }
+}
+
+bool CommandList::Impl::prepare_dispatch()
+{
+    if (type == D3D12_COMMAND_LIST_TYPE_COPY || !pso || !pso->is_compute() || !pso->compiled()) {
+        fail(E_INVALIDARG);
+        return false;
+    }
+    end_rendering();
+    flush_root(compute_root, VK_PIPELINE_BIND_POINT_COMPUTE, pso);
+    return true;
+}
+
 void CommandList::set_pipeline_state(const PipelineState* pso)
 {
     impl_->pso = pso;
 }
 
+namespace {
+
+using RootState = CommandList::Impl::RootState;
+
+void set_root_signature(RootState& root, const RootSignature* rs)
+{
+    if (root.rs == rs)
+        return;
+    root.rs = rs;   // a new root signature invalidates every root argument
+    root.data.fill(0);
+    root.dirty = true;
+}
+
+// The root parameter `index` of `type`, or null (and the list fails).
+const RootSignature::Parameter* root_parameter(CommandList::Impl& l, RootState& root, uint32_t index,
+                                               D3D12_ROOT_PARAMETER_TYPE type)
+{
+    if (!root.rs || index >= root.rs->parameters().size()) {
+        l.fail(E_INVALIDARG);
+        return nullptr;
+    }
+    const auto& p = root.rs->parameters()[index];
+    const bool descriptor = type == D3D12_ROOT_PARAMETER_TYPE_CBV;   // stands for any root descriptor
+    if (descriptor ? p.size != 8 : p.type != type) {
+        l.fail(E_INVALIDARG);
+        return nullptr;
+    }
+    return &p;
+}
+
+void set_root_constants(CommandList::Impl& l, RootState& root, uint32_t parameter, std::span<const uint32_t> values,
+                        uint32_t dest_offset)
+{
+    const auto* p = root_parameter(l, root, parameter, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS);
+    if (!p)
+        return;
+    if (4 * (dest_offset + values.size()) > p->size) {
+        l.fail(E_INVALIDARG);
+        return;
+    }
+    std::memcpy(root.data.data() + p->offset + 4 * dest_offset, values.data(), 4 * values.size());
+    root.dirty = true;
+}
+
+void set_root_descriptor(CommandList::Impl& l, RootState& root, uint32_t parameter, D3D12_GPU_VIRTUAL_ADDRESS address)
+{
+    const auto* p = root_parameter(l, root, parameter, D3D12_ROOT_PARAMETER_TYPE_CBV);
+    if (!p)
+        return;
+    std::memcpy(root.data.data() + p->offset, &address, 8);
+    root.dirty = true;
+}
+
+void set_root_table(CommandList::Impl& l, RootState& root, uint32_t parameter, uint64_t gpu_handle)
+{
+    const auto* p = root_parameter(l, root, parameter, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE);
+    if (!p)
+        return;
+    DescriptorHeap::Impl* heap = p->sampler_table ? l.sampler_heap : l.resource_heap;
+    const uint64_t base = heap ? reinterpret_cast<uint64_t>(heap->records.get()) : 0;
+    if (!heap || gpu_handle < base || gpu_handle >= base + uint64_t(heap->count) * kDescriptorStride) {
+        log(LogLevel::warn, "descriptor table %u: handle 0x%llx is not in the bound %s heap", parameter,
+            static_cast<unsigned long long>(gpu_handle), p->sampler_table ? "sampler" : "CBV/SRV/UAV");
+        l.fail(E_INVALIDARG);
+        return;
+    }
+    // The table becomes its first descriptor's index in the heap, in the root data word dxil-spirv reads.
+    const uint32_t index = static_cast<uint32_t>((gpu_handle - base) / kDescriptorStride);
+    std::memcpy(root.data.data() + p->offset, &index, 4);
+    root.dirty = true;
+}
+
+} // namespace
+
 void CommandList::set_graphics_root_signature(const RootSignature* rs)
 {
-    Impl& l = *impl_;
-    if (l.graphics_rs == rs)
-        return;
-    l.graphics_rs = rs;   // a new root signature invalidates every root argument
-    l.root_data.fill(0);
-    l.root_dirty = true;
+    set_root_signature(impl_->graphics_root, rs);
+}
+
+void CommandList::set_compute_root_signature(const RootSignature* rs)
+{
+    set_root_signature(impl_->compute_root, rs);
 }
 
 void CommandList::set_graphics_root_32bit_constants(uint32_t parameter, std::span<const uint32_t> values,
                                                     uint32_t dest_offset)
 {
-    Impl& l = *impl_;
-    if (!l.graphics_rs || parameter >= l.graphics_rs->parameters().size()) {
-        l.fail(E_INVALIDARG);
-        return;
-    }
-    const auto& p = l.graphics_rs->parameters()[parameter];
-    if (p.type != D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS || 4 * (dest_offset + values.size()) > p.size) {
-        l.fail(E_INVALIDARG);
-        return;
-    }
-    std::memcpy(l.root_data.data() + p.offset + 4 * dest_offset, values.data(), 4 * values.size());
-    l.root_dirty = true;
+    set_root_constants(*impl_, impl_->graphics_root, parameter, values, dest_offset);
+}
+
+void CommandList::set_compute_root_32bit_constants(uint32_t parameter, std::span<const uint32_t> values,
+                                                   uint32_t dest_offset)
+{
+    set_root_constants(*impl_, impl_->compute_root, parameter, values, dest_offset);
 }
 
 void CommandList::set_graphics_root_descriptor(uint32_t parameter, D3D12_GPU_VIRTUAL_ADDRESS address)
 {
-    Impl& l = *impl_;
-    if (!l.graphics_rs || parameter >= l.graphics_rs->parameters().size() ||
-        l.graphics_rs->parameters()[parameter].size != 8) {
-        l.fail(E_INVALIDARG);
-        return;
-    }
-    std::memcpy(l.root_data.data() + l.graphics_rs->parameters()[parameter].offset, &address, 8);
-    l.root_dirty = true;
+    set_root_descriptor(*impl_, impl_->graphics_root, parameter, address);
+}
+
+void CommandList::set_compute_root_descriptor(uint32_t parameter, D3D12_GPU_VIRTUAL_ADDRESS address)
+{
+    set_root_descriptor(*impl_, impl_->compute_root, parameter, address);
+}
+
+void CommandList::set_graphics_root_descriptor_table(uint32_t parameter, uint64_t gpu_handle)
+{
+    set_root_table(*impl_, impl_->graphics_root, parameter, gpu_handle);
+}
+
+void CommandList::set_compute_root_descriptor_table(uint32_t parameter, uint64_t gpu_handle)
+{
+    set_root_table(*impl_, impl_->compute_root, parameter, gpu_handle);
 }
 
 void CommandList::set_descriptor_heaps(std::span<DescriptorHeap* const> heaps)
@@ -544,30 +638,13 @@ void CommandList::set_descriptor_heaps(std::span<DescriptorHeap* const> heaps)
         else
             l.resource_heap = &h->impl();
     }
-    l.heaps_dirty = true;
+    l.graphics_root.heaps_dirty = l.compute_root.heaps_dirty = true;
 }
 
-void CommandList::set_graphics_root_descriptor_table(uint32_t parameter, uint64_t gpu_handle)
+void CommandList::dispatch(uint32_t x, uint32_t y, uint32_t z)
 {
-    Impl& l = *impl_;
-    if (!l.graphics_rs || parameter >= l.graphics_rs->parameters().size()) {
-        l.fail(E_INVALIDARG);
-        return;
-    }
-    const auto& p = l.graphics_rs->parameters()[parameter];
-    DescriptorHeap::Impl* heap = p.sampler_table ? l.sampler_heap : l.resource_heap;
-    const uint64_t base = heap ? reinterpret_cast<uint64_t>(heap->records.get()) : 0;
-    if (p.type != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE || !heap || gpu_handle < base ||
-        gpu_handle >= base + uint64_t(heap->count) * kDescriptorStride) {
-        log(LogLevel::warn, "descriptor table %u: handle 0x%llx is not in the bound %s heap", parameter,
-            static_cast<unsigned long long>(gpu_handle), p.sampler_table ? "sampler" : "CBV/SRV/UAV");
-        l.fail(E_INVALIDARG);
-        return;
-    }
-    // The table becomes its first descriptor's index in the heap, in the root data word dxil-spirv reads.
-    const uint32_t index = static_cast<uint32_t>((gpu_handle - base) / kDescriptorStride);
-    std::memcpy(l.root_data.data() + p.offset, &index, 4);
-    l.root_dirty = true;
+    if (impl_->prepare_dispatch())
+        impl_->device->vk.vkCmdDispatch(impl_->cmd, x, y, z);
 }
 
 void CommandList::set_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY topology)
@@ -813,6 +890,104 @@ void CommandList::draw_indexed_instanced(uint32_t index_count, uint32_t instance
     }
     if (l.prepare_draw())
         l.device->vk.vkCmdDrawIndexed(l.cmd, index_count, instance_count, start_index, base_vertex, start_instance);
+}
+
+// --- UAV clears --------------------------------------------------------------------------------------------
+
+namespace {
+
+bool is_float32(VkFormat f)
+{
+    return f == VK_FORMAT_R32_SFLOAT || f == VK_FORMAT_R32G32_SFLOAT || f == VK_FORMAT_R32G32B32_SFLOAT ||
+           f == VK_FORMAT_R32G32B32A32_SFLOAT;
+}
+
+bool is_unorm8(VkFormat f)
+{
+    switch (f) {
+    case VK_FORMAT_R8_UNORM:
+    case VK_FORMAT_R8G8_UNORM:
+    case VK_FORMAT_R8G8B8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_UNORM: return true;
+    default: return false;
+    }
+}
+
+// Clears what a UAV descriptor covers. `bits` is the 32-bit pattern a buffer fill writes; `color` the value an
+// image clear uses, already in the image format's terms.
+void clear_uav(CommandList::Impl& l, const Descriptor& uav, uint32_t bits, const VkClearColorValue& color)
+{
+    auto& vk = l.device->vk;
+    l.end_rendering();
+    switch (uav.kind) {
+    case Descriptor::Kind::storage_buffer:
+        if (uav.buffer.buffer)
+            vk.vkCmdFillBuffer(l.cmd, uav.buffer.buffer, uav.buffer.offset, uav.buffer.range & ~VkDeviceSize(3), bits);
+        return;
+    case Descriptor::Kind::storage_texel:
+        if (!uav.texel.view)
+            return;
+        if (format_block(uav.texel.format).bytes != 4) {
+            log(LogLevel::warn, "UAV clear of a typed buffer with format %d: only 32-bit formats so far",
+                uav.texel.format);
+            l.fail(E_NOTIMPL);
+            return;
+        }
+        vk.vkCmdFillBuffer(l.cmd, uav.texel.buffer, uav.texel.offset, uav.texel.range & ~VkDeviceSize(3), bits);
+        return;
+    case Descriptor::Kind::storage_image: {
+        if (!uav.image.view)
+            return;
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, uav.image.mip, 1, uav.image.first_layer,
+                                            uav.image.layers};
+        vk.vkCmdClearColorImage(l.cmd, uav.image.resource->impl().image, VK_IMAGE_LAYOUT_GENERAL, &color, 1, &range);
+        return;
+    }
+    default:
+        l.fail(E_INVALIDARG);
+        return;
+    }
+}
+
+VkFormat uav_format(const Descriptor& uav)
+{
+    return uav.kind == Descriptor::Kind::storage_image ? uav.image.format
+         : uav.kind == Descriptor::Kind::storage_texel ? uav.texel.format
+                                                        : VK_FORMAT_R32_UINT;
+}
+
+} // namespace
+
+void CommandList::clear_unordered_access_view_uint(const Descriptor& uav, const uint32_t values[4])
+{
+    const VkFormat f = uav_format(uav);
+    VkClearColorValue color{};
+    if (is_integer(f)) {
+        std::memcpy(color.uint32, values, 16);
+    } else {
+        // D3D12 writes the integers' bits into non-integer formats: for 8-bit UNORM that is v / 255, for 32-bit
+        // floats the bit pattern. Other formats get the plain value (approximate).
+        for (int i = 0; i < 4; i++)
+            color.float32[i] = is_unorm8(f) ? float(values[i] & 0xff) / 255.0f
+                               : is_float32(f)  ? std::bit_cast<float>(values[i])
+                                                : float(values[i]);
+    }
+    clear_uav(*impl_, uav, values[0], color);
+}
+
+void CommandList::clear_unordered_access_view_float(const Descriptor& uav, const float values[4])
+{
+    const VkFormat f = uav_format(uav);
+    VkClearColorValue color{};
+    if (is_integer(f)) {
+        for (int i = 0; i < 4; i++)
+            color.uint32[i] = static_cast<uint32_t>(values[i]);
+    } else {
+        std::memcpy(color.float32, values, 16);
+    }
+    // A float clear of a buffer writes the value converted to the view's 32-bit format.
+    const uint32_t bits = is_integer(f) ? static_cast<uint32_t>(values[0]) : std::bit_cast<uint32_t>(values[0]);
+    clear_uav(*impl_, uav, bits, color);
 }
 
 // --- Queues ------------------------------------------------------------------------------------------------

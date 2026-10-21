@@ -262,8 +262,9 @@ HRESULT Device::create_shader_resource_view(Resource* resource, const D3D12_SHAD
         if (out->kind == Descriptor::Kind::storage_buffer) {
             out->buffer = {r.buffer, offset, range};
         } else {
-            out->texel = r.buffer_view({impl_->resolve_format(desc->Format), offset, range});
-            if (!out->texel)
+            const VkFormat format = impl_->resolve_format(desc->Format);
+            out->texel = {r.buffer_view({format, offset, range}), r.buffer, offset, range, format};
+            if (!out->texel.view)
                 return E_OUTOFMEMORY;
         }
         return S_OK;
@@ -359,8 +360,8 @@ HRESULT Device::create_shader_resource_view(Resource* resource, const D3D12_SHAD
     if (key.format == VK_FORMAT_UNDEFINED || key.mip + key.mips > rd.MipLevels || key.mips == 0 ||
         key.layer + key.layers > r.array_layers() || key.layers == 0)
         return E_INVALIDARG;
-    out->image = r.view(key);
-    return out->image ? S_OK : E_OUTOFMEMORY;
+    out->image = {r.view(key), resource, key.format, key.mip, key.layer, key.layers};
+    return out->image.view ? S_OK : E_OUTOFMEMORY;
 }
 
 HRESULT Device::create_unordered_access_view(Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* desc,
@@ -387,8 +388,9 @@ HRESULT Device::create_unordered_access_view(Resource* resource, const D3D12_UNO
         if (out->kind == Descriptor::Kind::storage_buffer) {
             out->buffer = {r.buffer, offset, range};
         } else {
-            out->texel = r.buffer_view({impl_->resolve_format(desc->Format), offset, range});
-            if (!out->texel)
+            const VkFormat format = impl_->resolve_format(desc->Format);
+            out->texel = {r.buffer_view({format, offset, range}), r.buffer, offset, range, format};
+            if (!out->texel.view)
                 return E_OUTOFMEMORY;
         }
         return S_OK;
@@ -446,8 +448,8 @@ HRESULT Device::create_unordered_access_view(Resource* resource, const D3D12_UNO
     if (key.format == VK_FORMAT_UNDEFINED || key.mip >= rd.MipLevels || key.layer + key.layers > r.array_layers() ||
         key.layers == 0)
         return E_INVALIDARG;
-    out->image = r.view(key);
-    return out->image ? S_OK : E_OUTOFMEMORY;
+    out->image = {r.view(key), resource, key.format, key.mip, key.layer, key.layers};
+    return out->image.view ? S_OK : E_OUTOFMEMORY;
 }
 
 HRESULT Device::create_constant_buffer_view(const D3D12_CONSTANT_BUFFER_VIEW_DESC& desc, Descriptor* out)
@@ -583,9 +585,9 @@ void DescriptorHeap::Impl::flush(uint32_t first, uint32_t n)
         switch (d.kind) {
         case Descriptor::Kind::sampled_image:
         case Descriptor::Kind::storage_image:
-            if (!d.image && !device->physical->null_descriptor)
+            if (!d.image.view && !device->physical->null_descriptor)
                 continue;
-            images.push_back({VK_NULL_HANDLE, d.image, VK_IMAGE_LAYOUT_GENERAL});
+            images.push_back({VK_NULL_HANDLE, d.image.view, VK_IMAGE_LAYOUT_GENERAL});
             w.pImageInfo = &images.back();
             break;
         case Descriptor::Kind::sampler:
@@ -594,9 +596,9 @@ void DescriptorHeap::Impl::flush(uint32_t first, uint32_t n)
             break;
         case Descriptor::Kind::uniform_texel:
         case Descriptor::Kind::storage_texel:
-            if (!d.texel && !device->physical->null_descriptor)
+            if (!d.texel.view && !device->physical->null_descriptor)
                 continue;
-            w.pTexelBufferView = &d.texel;
+            w.pTexelBufferView = &d.texel.view;
             break;
         default:
             if (!d.buffer.buffer && !device->physical->null_descriptor)
