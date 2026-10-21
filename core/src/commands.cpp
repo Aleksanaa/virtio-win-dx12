@@ -421,7 +421,7 @@ bool CommandList::Impl::prepare_draw()
             area.extent = {1, 1};
             for (const VkViewport& v : viewports) {
                 area.extent.width = std::max(area.extent.width, static_cast<uint32_t>(v.x + v.width));
-                area.extent.height = std::max(area.extent.height, static_cast<uint32_t>(v.y));
+                area.extent.height = std::max(area.extent.height, static_cast<uint32_t>(v.y + v.height));
             }
             layers = 1;
         }
@@ -828,7 +828,9 @@ void CommandList::clear_render_target_view(const RenderTargetView& rtv, const fl
     Impl& l = *impl_;
     auto& vk = l.device->vk;
     l.end_rendering();
-    if (!rtv.resource || !rtv.view) {
+    if (!rtv.resource)
+        return;   // a null RTV: its writes are discarded
+    if (!rtv.view) {
         l.fail(E_INVALIDARG);
         return;
     }
