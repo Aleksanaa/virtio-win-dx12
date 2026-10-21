@@ -1,0 +1,23 @@
+From: vgd3d12
+Subject: venus: expose external memory fd export on Windows
+
+The d3dkmt renderer already exports a shareable bo as an fd wrapping the NT handle of its
+allocation (virtgpu_d3dkmt_prime_handle_to_fd) and imports such fds, and the host side exports
+the memory as dma-buf. Advertise VK_KHR_external_memory_fd and VK_EXT_external_memory_dma_buf
+so an application on the same device can hand its memory to the kernel driver.
+
+diff --git a/src/virtio/vulkan/vn_physical_device.c b/src/virtio/vulkan/vn_physical_device.c
+index 2d2e22b..db8b4b9 100644
+--- a/src/virtio/vulkan/vn_physical_device.c
++++ b/src/virtio/vulkan/vn_physical_device.c
+@@ -1208,10 +1208,8 @@ vn_physical_device_get_native_extensions(
+    }
+ #else  /* VK_USE_PLATFORM_ANDROID_KHR */
+    if (physical_dev->external_memory.renderer_handle_type) {
+-#if !DETECT_OS_WINDOWS
+       exts->KHR_external_memory_fd = true;
+       exts->EXT_external_memory_dma_buf = true;
+-#endif /* !DETECT_OS_WINDOWS */
+    }
+ #endif /* VK_USE_PLATFORM_ANDROID_KHR */
+ 

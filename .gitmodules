@@ -7,3 +7,7 @@
 [submodule "third_party/DirectX-Headers"]
 	path = third_party/DirectX-Headers
 	url = https://github.com/microsoft/DirectX-Headers.git
+[submodule "third_party/virtio-win-mesa"]
+	path = third_party/virtio-win-mesa
+	url = https://github.com/arehnman/virtio-win-mesa.git
+	branch = yttrium-experimental

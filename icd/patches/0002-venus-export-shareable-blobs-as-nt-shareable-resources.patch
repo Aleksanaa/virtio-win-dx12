@@ -1,0 +1,172 @@
+From: vgd3d12
+Subject: venus: export shareable blobs as NT-shareable resources on Windows
+
+virtgpu_d3dkmt_prime_handle_to_fd shared the allocation handle of a bo created without NT security
+sharing, which D3DKMTShareObjects refuses, so vkGetMemoryFdKHR failed with VK_ERROR_TOO_MANY_OBJECTS.
+Create shareable blobs as NT-shareable resources, export the resource handle, and destroy them
+through it.
+
+diff --git a/src/virtio/vulkan/vn_renderer_d3dkmt.c b/src/virtio/vulkan/vn_renderer_d3dkmt.c
+index 16a040a..3eacb91 100644
+--- a/src/virtio/vulkan/vn_renderer_d3dkmt.c
++++ b/src/virtio/vulkan/vn_renderer_d3dkmt.c
+@@ -64,6 +64,11 @@ struct virtgpu_bo {
+     * allocation handle alone.
+     */
+    uint32_t open_resource_handle;
++   /* Non-zero for a shareable bo this renderer created: the NT-shareable
++    * resource that owns the allocation, which is what D3DKMTShareObjects
++    * exports and what destroys it.
++    */
++   uint32_t own_resource_handle;
+    uint32_t blob_flags;
+ };
+ 
+@@ -615,6 +620,9 @@ virtgpu_context_init(struct virtgpu *gpu, uint32_t capset_id)
+ 
+ static void
+ virtgpu_d3dkmt_gem_close(struct virtgpu *gpu, uint32_t alloc_handle);
++static void
++virtgpu_d3dkmt_gem_close_resource(struct virtgpu *gpu, uint32_t alloc_handle,
++                                  uint32_t resource_handle);
+ 
+ static uint32_t
+ virtgpu_d3dkmt_resource_create_blob(struct virtgpu *gpu,
+@@ -622,7 +630,8 @@ virtgpu_d3dkmt_resource_create_blob(struct virtgpu *gpu,
+                                    uint32_t blob_flags,
+                                    size_t blob_size,
+                                    uint64_t blob_id,
+-                                   uint32_t *res_id)
++                                   uint32_t *res_id,
++                                   uint32_t *out_resource_handle)
+ {
+ #ifdef SIMULATE_BO_SIZE_FIX
+    blob_size = align64(blob_size, 4096);
+@@ -664,6 +673,13 @@ virtgpu_d3dkmt_resource_create_blob(struct virtgpu *gpu,
+    create.pPrivateDriverData = &res_exchange;
+    create.PrivateDriverDataSize = sizeof(res_exchange);
+    create.Flags.CreateResource = TRUE;
++   /* A shareable blob is created as an NT-shareable resource, so that
++    * D3DKMTShareObjects can export it (vkGetMemoryFdKHR).
++    */
++   if (blob_flags & VIRTGPU_BLOB_FLAG_USE_SHAREABLE) {
++      create.Flags.CreateShared = TRUE;
++      create.Flags.NtSecuritySharing = TRUE;
++   }
+ 
+    NTSTATUS status = gpu->pfnCreateAllocation(&create);
+    if (!NT_SUCCESS(status))
+@@ -679,13 +695,18 @@ virtgpu_d3dkmt_resource_create_blob(struct virtgpu *gpu,
+    resinfo.Type = VIOGPU_RES_INFO;
+    resinfo.DataLength = sizeof(VIOGPU_RES_INFO_REQ);
+    resinfo.ResourceInfo.ResHandle = alloc_info.hAllocation;
++   const uint32_t shared_resource =
++      create.Flags.CreateShared ? (uint32_t)create.hResource : 0;
+    if (!virtgpu_d3dkmt_escape(gpu, &resinfo)) {
+       vn_log(gpu->instance,"virtgpu_d3dkmt_escape failed");
+-      virtgpu_d3dkmt_gem_close(gpu, (uint32_t)alloc_info.hAllocation);
++      virtgpu_d3dkmt_gem_close_resource(gpu, (uint32_t)alloc_info.hAllocation,
++                                        shared_resource);
+       return 0;
+    }
+ 
+    *res_id = resinfo.ResourceInfo.Id;
++   if (out_resource_handle)
++      *out_resource_handle = shared_resource;
+    return (uint32_t)alloc_info.hAllocation;
+ }
+ 
+@@ -794,8 +815,11 @@ virtgpu_d3dkmt_prime_handle_to_fd(struct virtgpu *gpu,
+                                  uint32_t alloc_handle,
+                                  bool mappable)
+ {
+-   if (!gpu->pfnShareObjects || !alloc_handle)
++   if (!gpu->pfnShareObjects || !alloc_handle) {
++      mesa_logw("venus: cannot share handle 0x%x (ShareObjects %p)",
++                alloc_handle, (void *)gpu->pfnShareObjects);
+       return -1;
++   }
+ 
+    D3DKMT_HANDLE handle = (D3DKMT_HANDLE)alloc_handle;
+    OBJECT_ATTRIBUTES attrs = {0};
+@@ -804,13 +828,18 @@ virtgpu_d3dkmt_prime_handle_to_fd(struct virtgpu *gpu,
+    NTSTATUS status = gpu->pfnShareObjects(1, &handle, &attrs,
+                                           SHARED_ALLOCATION_ALL_ACCESS,
+                                           &shared);
+-   if (!NT_SUCCESS(status) || !shared)
++   if (!NT_SUCCESS(status) || !shared) {
++      mesa_logw("venus: D3DKMTShareObjects(0x%x) failed status=0x%lx",
++                alloc_handle, (unsigned long)status);
+       return -1;
++   }
+ 
+    const intptr_t os_handle = (intptr_t)shared;
+    int fd = _open_osfhandle(os_handle, 0);
+-   if (fd < 0)
++   if (fd < 0) {
++      mesa_logw("venus: _open_osfhandle(%p) failed errno=%d", shared, errno);
+       CloseHandle(shared);
++   }
+ 
+    return fd;
+ }
+@@ -1504,8 +1533,15 @@ virtgpu_bo_export_dma_buf(struct vn_renderer *renderer,
+    const bool mappable = bo->blob_flags & VIRTGPU_BLOB_FLAG_USE_MAPPABLE;
+    const bool shareable = bo->blob_flags & VIRTGPU_BLOB_FLAG_USE_SHAREABLE;
+ 
++   if (!shareable) {
++      mesa_logw("venus: bo res_id=%u alloc=0x%x is not shareable (blob flags 0x%x)",
++                bo->base.res_id, bo->alloc_handle, bo->blob_flags);
++   }
+    return shareable
+-             ? virtgpu_d3dkmt_prime_handle_to_fd(gpu, bo->alloc_handle,
++             ? virtgpu_d3dkmt_prime_handle_to_fd(gpu,
++                                                bo->own_resource_handle
++                                                   ? bo->own_resource_handle
++                                                   : bo->alloc_handle,
+                                                 mappable)
+              : -1;
+ }
+@@ -1534,9 +1570,12 @@ virtgpu_bo_destroy(struct vn_renderer *renderer, struct vn_renderer_bo *_bo)
+     * by another newly created bo and unexpectedly zeroed in the tracker.
+     */
+    const uint32_t alloc_handle = bo->alloc_handle;
+-   const uint32_t resource_handle = bo->open_resource_handle;
++   const uint32_t resource_handle = bo->open_resource_handle
++                                       ? bo->open_resource_handle
++                                       : bo->own_resource_handle;
+    bo->alloc_handle = 0;
+    bo->open_resource_handle = 0;
++   bo->own_resource_handle = 0;
+    virtgpu_d3dkmt_gem_close_resource(gpu, alloc_handle, resource_handle);
+ 
+    mtx_unlock(&gpu->import_mutex);
+@@ -1716,8 +1755,10 @@ virtgpu_bo_create_from_device_memory(
+    vn_log(gpu->instance, "resource_create_blob path=bo_create size=0x%llx mem_id=0x%llx flags=0x%x ext=0x%x",
+            (unsigned long long)size, (unsigned long long)mem_id, flags, external_handles);
+ #endif
++   uint32_t own_resource_handle = 0;
+    uint32_t alloc_handle = virtgpu_d3dkmt_resource_create_blob(
+-      gpu, gpu->bo_blob_mem, blob_flags, size, mem_id, &res_id);
++      gpu, gpu->bo_blob_mem, blob_flags, size, mem_id, &res_id,
++      &own_resource_handle);
+ 
+    if (!alloc_handle)
+       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+@@ -1731,6 +1772,7 @@ virtgpu_bo_create_from_device_memory(
+          .mmap_size = size,
+       },
+       .alloc_handle = alloc_handle,
++      .own_resource_handle = own_resource_handle,
+       .blob_flags = blob_flags,
+    };
+ 
+@@ -1789,7 +1831,7 @@ virtgpu_shmem_create(struct vn_renderer *renderer, size_t size)
+    uint32_t res_id;
+    uint32_t alloc_handle = virtgpu_d3dkmt_resource_create_blob(
+       gpu, gpu->shmem_blob_mem, VIRTGPU_BLOB_FLAG_USE_MAPPABLE, alloc_size, 0,
+-      &res_id);
++      &res_id, NULL);
+ 
+    if (!alloc_handle)
+       return NULL;

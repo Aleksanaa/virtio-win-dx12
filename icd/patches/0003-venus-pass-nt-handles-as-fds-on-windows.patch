@@ -1,0 +1,75 @@
+From: vgd3d12
+Subject: venus: pass NT handles as fds on Windows
+
+The CRT cannot wrap the NT handle of a shared graphics resource in a file descriptor:
+_open_osfhandle fails with EBADF, so vkGetMemoryFdKHR failed after D3DKMTShareObjects succeeded.
+On Windows the fd of an exported or imported memory is the NT handle value itself, and closing an
+imported one closes the handle.
+
+diff -ru a/src/virtio/vulkan/vn_device_memory.c b/src/virtio/vulkan/vn_device_memory.c
+--- a/src/virtio/vulkan/vn_device_memory.c
++++ b/src/virtio/vulkan/vn_device_memory.c
+@@ -10,6 +10,11 @@
+ 
+ #include "vn_device_memory.h"
+ 
++#include "util/detect_os.h"
++#if DETECT_OS_WINDOWS
++#include <windows.h>
++#endif
++
+ #include "venus-protocol/vn_protocol_driver_device_memory.h"
+ #if defined(HAVE_YTTRIUM)
+ #include "venus-protocol/vn_protocol_driver_image.h"
+@@ -146,7 +151,12 @@
+    }
+ 
+    /* need to close import fd on success to avoid fd leak */
++#if DETECT_OS_WINDOWS
++   /* On Windows the "fd" is an NT handle (vn_renderer_d3dkmt.c). */
++   CloseHandle((HANDLE)(intptr_t)fd);
++#else
+    close(fd);
++#endif
+    mem->base_bo = bo;
+ 
+    return VK_SUCCESS;
+diff -ru a/src/virtio/vulkan/vn_renderer_d3dkmt.c b/src/virtio/vulkan/vn_renderer_d3dkmt.c
+--- a/src/virtio/vulkan/vn_renderer_d3dkmt.c
++++ b/src/virtio/vulkan/vn_renderer_d3dkmt.c
+@@ -834,14 +834,17 @@
+       return -1;
+    }
+ 
+-   const intptr_t os_handle = (intptr_t)shared;
+-   int fd = _open_osfhandle(os_handle, 0);
+-   if (fd < 0) {
+-      mesa_logw("venus: _open_osfhandle(%p) failed errno=%d", shared, errno);
++   /* The "fd" of a Windows export is the NT handle value itself: the CRT
++    * refuses to wrap a shared graphics resource handle in a descriptor
++    * (_open_osfhandle fails with EBADF). Imports take it back the same way
++    * (virtgpu_d3dkmt_prime_fd_to_handle). Handle values are small.
++    */
++   if ((uintptr_t)shared > INT_MAX) {
++      mesa_logw("venus: shared handle %p does not fit an fd", shared);
+       CloseHandle(shared);
++      return -1;
+    }
+-
+-   return fd;
++   return (int)(intptr_t)shared;
+ }
+ 
+ #if defined(HAVE_YTTRIUM)
+@@ -911,8 +914,9 @@
+    if (!gpu->pfnOpenResourceFromNtHandle)
+       return 0;
+ 
+-   HANDLE shared = (HANDLE)_get_osfhandle(fd);
+-   if (shared == INVALID_HANDLE_VALUE)
++   /* An NT handle value, as virtgpu_d3dkmt_prime_handle_to_fd exports. */
++   HANDLE shared = (HANDLE)(intptr_t)fd;
++   if (fd < 0)
+       return 0;
+ 
+    D3DDDI_OPENALLOCATIONINFO2 alloc_info = {0};

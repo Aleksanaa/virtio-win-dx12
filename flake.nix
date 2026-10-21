@@ -12,9 +12,12 @@
     in {
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
-          cmake ninja pkg-config python3 gdb
+          cmake ninja pkg-config gdb
           vulkan-loader vulkan-tools vulkan-validation-layers spirv-tools
           unzip osslsigncode
+          # Mesa (icd/build.sh): meson and its Python code generators.
+          meson bison flex
+          (python3.withPackages (p: [ p.mako p.pyyaml p.packaging ]))
           mingw.buildPackages.gcc
           mingw.buildPackages.binutils
         ];
