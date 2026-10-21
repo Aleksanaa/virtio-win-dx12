@@ -129,6 +129,10 @@ HRESULT Instance::create_device(size_t adapter_index, std::unique_ptr<Device>* o
         exts.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
     if (phys.needs_maintenance5_ext)
         exts.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+    if (phys.desc.external_memory) {
+        exts.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+        exts.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+    }
     VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mut{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT};
     mut.mutableDescriptorType = VK_TRUE;
     VkPhysicalDeviceRobustness2FeaturesEXT rob{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};

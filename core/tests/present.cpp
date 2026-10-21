@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: MIT
+// Plan Phase 3 milestone 5: presentable textures. A linear texture on exported memory is rendered to through its
+// RTV (clear, then a clear of a rectangle), and read back twice: through D3D12's copy path, and through the exported
+// dma-buf mapped on the CPU at the reported row pitch, which is how another process (the compositor) sees it.
+#include "test_util.h"
+
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+#include <cstdint>
+
+namespace {
+
+constexpr uint32_t kWidth = 100, kHeight = 60;   // odd sizes, so the row pitch is padded
+constexpr uint32_t kCopyPitch = 512;             // D3D12 footprints are 256-byte aligned
+
+bool present(vgd::Device& dev)
+{
+    if (!dev.adapter().external_memory) {
+        std::fprintf(stderr, "  no VK_KHR_external_memory_fd + VK_EXT_external_memory_dma_buf: nothing to test\n");
+        return true;
+    }
+    D3D12_RESOURCE_DESC td{};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = kWidth;
+    td.Height = kHeight;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc = {1, 0};
+    td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    const DXGI_FORMAT castable[] = {DXGI_FORMAT_B8G8R8A8_UNORM_SRGB};
+    std::unique_ptr<vgd::Resource> target, readback;
+    vgd::Device::ExportedTexture exported;
+    CHECK_HR(dev.create_presentable_texture(td, castable, 1, &target, &exported));
+    CHECK(exported.fd >= 0);
+    CHECK(exported.row_pitch >= kWidth * 4);
+    CHECK(exported.size >= uint64_t(exported.row_pitch) * kHeight);
+    std::fprintf(stderr, "  exported fd %d, %llu bytes, row pitch %u\n", exported.fd,
+                 static_cast<unsigned long long>(exported.size), exported.row_pitch);
+
+    // An sRGB view must exist on the UNORM image.
+    D3D12_RENDER_TARGET_VIEW_DESC srgb{};
+    srgb.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    srgb.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    vgd::RenderTargetView rtv, rtv_srgb;
+    CHECK_HR(dev.create_render_target_view(*target, nullptr, &rtv));
+    CHECK_HR(dev.create_render_target_view(*target, &srgb, &rtv_srgb));
+    CHECK_HR(dev.create_committed_buffer(D3D12_HEAP_TYPE_READBACK, kCopyPitch * kHeight, D3D12_RESOURCE_FLAG_NONE,
+                                         &readback));
+
+    D3D12_COMMAND_QUEUE_DESC qd{};
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    std::unique_ptr<vgd::CommandQueue> queue;
+    CHECK_HR(dev.create_command_queue(qd, &queue));
+    std::unique_ptr<vgd::CommandAllocator> alloc;
+    CHECK_HR(dev.create_command_allocator(D3D12_COMMAND_LIST_TYPE_DIRECT, &alloc));
+    std::unique_ptr<vgd::CommandList> list;
+    CHECK_HR(dev.create_command_list(D3D12_COMMAND_LIST_TYPE_DIRECT, *alloc, &list));
+    std::unique_ptr<vgd::Fence> fence;
+    CHECK_HR(dev.create_fence(0, &fence));
+
+    // RGBA floats; BGRA8 stores them as B, G, R, A bytes.
+    const float red[4] = {1, 0, 0, 1}, blue[4] = {0, 0, 1, 1};
+    const D3D12_RECT rect{10, 20, 50, 40};
+    list->clear_render_target_view(rtv, red, {});
+    list->clear_render_target_view(rtv_srgb, blue, {&rect, 1});
+    // D3D12 requires the transition; the clears must be complete before the copy reads.
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition = {nullptr, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                          D3D12_RESOURCE_STATE_COPY_SOURCE};
+    list->resource_barrier({&barrier, 1});
+    vgd::TextureCopyLocation dst, src;
+    dst.resource = readback.get();
+    dst.is_footprint = true;
+    dst.footprint.Footprint = {DXGI_FORMAT_B8G8R8A8_UNORM, kWidth, kHeight, 1, kCopyPitch};
+    src.resource = target.get();
+    list->copy_texture_region(dst, 0, 0, 0, src, nullptr);
+    CHECK_HR(list->close());
+    vgd::CommandList* cl = list.get();
+    CHECK_HR(queue->execute_command_lists({&cl, 1}, fence.get(), 1));
+    CHECK(fence->wait(1, 5'000'000'000ull) == S_OK);
+
+    auto expected = [&](uint32_t x, uint32_t y) -> uint32_t {
+        const bool in = x >= 10 && x < 50 && y >= 20 && y < 40;
+        return in ? 0xff0000ffu : 0xffff0000u;   // little-endian BGRA: blue is 0x..0000ff, red 0x..ff0000
+    };
+    auto verify = [&](const char* what, const uint8_t* base, uint32_t pitch) {
+        for (uint32_t y = 0; y < kHeight; y++)
+            for (uint32_t x = 0; x < kWidth; x++) {
+                uint32_t px;
+                std::memcpy(&px, base + y * pitch + x * 4, 4);
+                if (px != expected(x, y)) {
+                    std::fprintf(stderr, "  %s: pixel (%u, %u) = 0x%08x, expected 0x%08x\n", what, x, y, px,
+                                 expected(x, y));
+                    return false;
+                }
+            }
+        return true;
+    };
+    CHECK(verify("copy", static_cast<const uint8_t*>(readback->cpu_pointer()), kCopyPitch));
+
+    // The exporter's view of the same bytes.
+    void* map = mmap(nullptr, exported.size, PROT_READ, MAP_SHARED, exported.fd, 0);
+    if (map == MAP_FAILED) {
+        std::fprintf(stderr, "  dma-buf cannot be mapped here; skipping the CPU check\n");
+    } else {
+        dma_buf_sync sync{DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
+        ioctl(exported.fd, DMA_BUF_IOCTL_SYNC, &sync);
+        const bool ok = verify("dma-buf", static_cast<const uint8_t*>(map), exported.row_pitch);
+        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+        ioctl(exported.fd, DMA_BUF_IOCTL_SYNC, &sync);
+        munmap(map, exported.size);
+        CHECK(ok);
+    }
+    close(exported.fd);
+
+    // Only single-mip 2D colour textures are presentable.
+    td.MipLevels = 2;
+    std::unique_ptr<vgd::Resource> bad;
+    CHECK(dev.create_presentable_texture(td, nullptr, 0, &bad, &exported) == E_NOTIMPL);
+    return true;
+}
+
+} // namespace
+
+int main() { return vgd_test::run_on_adapters("present", present); }

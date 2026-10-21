@@ -34,6 +34,8 @@ struct AdapterDesc {
     bool descriptor_heap = false;
     // VK_EXT_mutable_descriptor_type with descriptor indexing: shader-visible descriptor heaps and descriptor tables.
     bool bindless = false;
+    // VK_KHR_external_memory_fd with VK_EXT_external_memory_dma_buf: presentable textures (create_presentable_texture).
+    bool external_memory = false;
     // Features this driver requires but the Vulkan device lacks. Empty means the adapter is usable.
     std::vector<std::string> missing;
     bool usable() const { return missing.empty(); }
@@ -161,6 +163,18 @@ public:
     // Committed resource of any dimension. Textures live in DEFAULT heaps only.
     HRESULT create_committed_resource(D3D12_HEAP_TYPE heap_type, const D3D12_RESOURCE_DESC& desc,
                                       std::unique_ptr<Resource>* out);
+    // A texture another process reads, such as a swapchain buffer the compositor shows: one 2D mip, linear, on
+    // its own memory exported as a dma-buf. `castable` lists other formats views may use (the sRGB sibling).
+    // The fd belongs to the caller; on Windows our ICD build (icd/) returns the NT handle value instead.
+    // Needs AdapterDesc::external_memory.
+    struct ExportedTexture {
+        int fd = -1;
+        uint64_t size = 0;        // bytes of the exported memory
+        uint32_t row_pitch = 0;   // bytes between rows of the linear image
+    };
+    HRESULT create_presentable_texture(const D3D12_RESOURCE_DESC& desc, const DXGI_FORMAT* castable,
+                                       uint32_t castable_count, std::unique_ptr<Resource>* out,
+                                       ExportedTexture* exported);
     // What a texture needs from a heap (GetResourceAllocationInfo); buffers need their size at 64 KiB alignment.
     HRESULT resource_allocation_info(const D3D12_RESOURCE_DESC& desc, uint64_t* size, uint64_t* alignment) const;
     // A view of a texture for OMSetRenderTargets / ClearRenderTargetView. `desc` may be null (whole mip 0).

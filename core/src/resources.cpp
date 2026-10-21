@@ -387,6 +387,114 @@ HRESULT Device::create_committed_resource(D3D12_HEAP_TYPE heap_type, const D3D12
     return S_OK;
 }
 
+HRESULT Device::create_presentable_texture(const D3D12_RESOURCE_DESC& in_desc, const DXGI_FORMAT* castable,
+                                           uint32_t castable_count, std::unique_ptr<Resource>* out,
+                                           ExportedTexture* exported)
+{
+    if (!out || !exported)
+        return E_INVALIDARG;
+    Impl& d = *impl_;
+    if (!d.physical->desc.external_memory || !d.vk.vkGetMemoryFdKHR)
+        return E_NOTIMPL;
+    const D3D12_RESOURCE_DESC desc = normalized(in_desc);
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.MipLevels != 1 || desc.DepthOrArraySize != 1 ||
+        desc.SampleDesc.Count != 1 || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL))
+        return E_NOTIMPL;
+
+    ImageInfo info;
+    HRESULT hr = image_info(d, desc, &info);
+    if (FAILED(hr))
+        return hr;
+    // Other processes read it by row pitch; a shared image cannot use device-private tiling.
+    info.ci.tiling = VK_IMAGE_TILING_LINEAR;
+    std::vector<VkFormat> view_formats{info.ci.format};
+    for (uint32_t i = 0; i < castable_count; i++) {
+        const VkFormat f = d.resolve_format(castable[i]);
+        if (f != VK_FORMAT_UNDEFINED && std::find(view_formats.begin(), view_formats.end(), f) == view_formats.end())
+            view_formats.push_back(f);
+    }
+    VkImageFormatListCreateInfo list{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+    if (view_formats.size() > 1) {
+        info.ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        list.viewFormatCount = static_cast<uint32_t>(view_formats.size());
+        list.pViewFormats = view_formats.data();
+    }
+    info.ci.pNext = view_formats.size() > 1 ? &list : nullptr;
+
+    // The layout contract with the importers (yttrium's D3D10 UMD in the compositor, and its Vulkan WSI): a linear
+    // image of the same size and format, bound at offset 0 of the imported memory, whose layout they query from
+    // their own image. Like yttrium's own shared images, the image itself is not declared external: RADV offers
+    // dma-buf images only with DRM format modifiers, while exporting the memory of a linear image works.
+    VkImageFormatProperties2 props{VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
+    VkPhysicalDeviceImageFormatInfo2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, info.ci.pNext};
+    query.format = info.ci.format;
+    query.type = info.ci.imageType;
+    query.tiling = info.ci.tiling;
+    query.usage = info.ci.usage;
+    query.flags = info.ci.flags;
+    VkResult r = d.ivk->vkGetPhysicalDeviceImageFormatProperties2(d.physical->handle, &query, &props);
+    if (r != VK_SUCCESS) {
+        log(LogLevel::warn, "presentable texture: format %d, usage 0x%x, flags 0x%x has no linear image (%d)",
+            info.ci.format, info.ci.usage, info.ci.flags, r);
+        return E_NOTIMPL;
+    }
+    auto res = std::make_unique<Resource::Impl>();
+    res->device = &d;
+    res->desc = desc;
+    res->format = info.ci.format;
+    res->aspects = format_aspects(info.ci.format);
+    r = d.vk.vkCreateImage(d.device, &info.ci, nullptr, &res->image);
+    if (r != VK_SUCCESS) {
+        log(LogLevel::warn, "presentable texture: vkCreateImage failed: %d", r);
+        return hresult_from_vk(r);
+    }
+    VkMemoryRequirements req;
+    d.vk.vkGetImageMemoryRequirements(d.device, res->image, &req);
+    res->size = req.size;
+
+    VkExportMemoryAllocateInfo export_info{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
+    export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &export_info};
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = d.find_memory_type(req.memoryTypeBits, D3D12_HEAP_TYPE_DEFAULT);
+    if (mai.memoryTypeIndex == UINT32_MAX)
+        return E_OUTOFMEMORY;
+    r = d.vk.vkAllocateMemory(d.device, &mai, nullptr, &res->memory);
+    if (r != VK_SUCCESS)
+        return hresult_from_vk(r);
+    r = d.vk.vkBindImageMemory(d.device, res->image, res->memory, 0);
+    if (r != VK_SUCCESS)
+        return hresult_from_vk(r);
+
+    VkImageSubresource sub{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+    VkSubresourceLayout layout{};
+    d.vk.vkGetImageSubresourceLayout(d.device, res->image, &sub, &layout);
+    if (layout.offset != 0 || layout.rowPitch > UINT32_MAX) {
+        log(LogLevel::warn, "presentable texture: unexpected layout (offset %llu, pitch %llu)",
+            static_cast<unsigned long long>(layout.offset), static_cast<unsigned long long>(layout.rowPitch));
+        return E_NOTIMPL;
+    }
+
+    hr = d.init_image(res->image, res->aspects);
+    if (FAILED(hr))
+        return hr;
+
+    VkMemoryGetFdInfoKHR get{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+    get.memory = res->memory;
+    get.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    int fd = -1;
+    r = d.vk.vkGetMemoryFdKHR(d.device, &get, &fd);
+    if (r != VK_SUCCESS || fd < 0) {
+        log(LogLevel::warn, "presentable texture: vkGetMemoryFdKHR failed: %d", r);
+        return r != VK_SUCCESS ? hresult_from_vk(r) : E_FAIL;
+    }
+    exported->fd = fd;
+    exported->size = req.size;
+    exported->row_pitch = static_cast<uint32_t>(layout.rowPitch);
+    out->reset(new Resource(std::move(res)));
+    return S_OK;
+}
+
 HRESULT Device::resource_allocation_info(const D3D12_RESOURCE_DESC& in_desc, uint64_t* size,
                                          uint64_t* alignment) const
 {

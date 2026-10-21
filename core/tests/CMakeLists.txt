@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-foreach(t copy_path formats root_signature pipeline triangle descriptors depth_stencil compute queries indirect)
+foreach(t copy_path formats root_signature pipeline triangle descriptors depth_stencil compute queries indirect
+          present)
   add_executable(${t} ${t}.cpp)
   target_link_libraries(${t} PRIVATE vgd-core ${CMAKE_DL_LIBS})
   target_include_directories(${t} PRIVATE ${CMAKE_SOURCE_DIR}/tests/shaders)
