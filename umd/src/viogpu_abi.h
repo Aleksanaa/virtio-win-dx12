@@ -70,11 +70,12 @@ static_assert(sizeof(AllocationAlias) == 80, "must match viogpum.h VIOGPU_CREATE
 constexpr ULONG kBlobMemHost3d = 2;
 constexpr ULONG kBlobFlagShareable = 2;
 
-// What yttrium's D3D10 UMD decodes when it opens an allocation: a gallium target, gallium bind flags (these four
-// have the same values in virgl; scanout does not, and is left out) and a virgl format.
+// What yttrium's D3D10 UMD decodes when it opens an allocation (and writes in those it shares): a gallium target,
+// gallium bind flags (we set the first four, which have the same values in virgl; scanout does not, and is left out)
+// and a virgl format.
 constexpr ULONG kPipeTexture2d = 2;
 constexpr ULONG kBindRenderTarget = 1u << 1, kBindSamplerView = 1u << 3, kBindDisplayTarget = 1u << 7,
-                kBindShared = 1u << 20;
+                kBindShaderImage = 1u << 15, kBindShared = 1u << 20;
 constexpr ULONG kVirglFormatB8G8R8A8Unorm = 1, kVirglFormatB8G8R8X8Unorm = 2, kVirglFormatR10G10B10A2Unorm = 8,
                 kVirglFormatR8G8B8A8Unorm = 67, kVirglFormatB8G8R8A8Srgb = 100, kVirglFormatR8G8B8A8Srgb = 104;
 // The importer (yttrium_resource_to_pipe_format) translates only the virgl formats above and takes any other value

@@ -5,6 +5,7 @@
 #include "log.h"
 #include "objects.h"
 
+#include <cstring>
 #include <new>
 
 namespace vgd::umd {
@@ -237,10 +238,64 @@ void APIENTRY destroy_pipeline_state(D3D12DDI_HDEVICE, D3D12DDI_HPIPELINESTATE h
     object<PipelineStateObject>(hp)->~PipelineStateObject();
 }
 
+
+// --- Pipeline libraries --------------------------------------------------------------------------------------
+// ID3D12PipelineLibrary is the application's cache of compiled pipelines. The runtime keeps the names: a pipeline
+// loaded from a library reaches CreatePipelineState with its whole description and a LibraryReference, so a library
+// that holds nothing is correct, and loads cost a compile (Dawn creates one for its cache). Its serialized form is a
+// header only, and any initial data is accepted: nothing in it is used.
+
+struct PipelineLibraryObject {};
+
+constexpr char kLibraryHeader[16] = "vgd3d12 pplib 1";
+
+SIZE_T APIENTRY calc_private_pipeline_library_size(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATE_PIPELINE_LIBRARY_0010*)
+{
+    return sizeof(PipelineLibraryObject);
+}
+
+HRESULT APIENTRY create_pipeline_library(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATE_PIPELINE_LIBRARY_0010* a,
+                                         D3D12DDI_HPIPELINELIBRARY h)
+{
+    new (h.pDrvPrivate) PipelineLibraryObject;
+    VGD_TRACE("CreatePipelineLibrary: %llu bytes of initial data",
+              static_cast<unsigned long long>(a ? a->InitialDataSize : 0));
+    return S_OK;
+}
+
+void APIENTRY destroy_pipeline_library(D3D12DDI_HDEVICE, D3D12DDI_HPIPELINELIBRARY h)
+{
+    object<PipelineLibraryObject>(h)->~PipelineLibraryObject();
+}
+
+HRESULT APIENTRY add_pipeline_state_to_library(D3D12DDI_HDEVICE, D3D12DDI_HPIPELINELIBRARY, D3D12DDI_HPIPELINESTATE,
+                                               UINT)
+{
+    return S_OK;
+}
+
+SIZE_T APIENTRY calc_serialized_library_size(D3D12DDI_HDEVICE, D3D12DDI_HPIPELINELIBRARY)
+{
+    return sizeof(kLibraryHeader);
+}
+
+HRESULT APIENTRY serialize_library(D3D12DDI_HDEVICE, D3D12DDI_HPIPELINELIBRARY, void* blob)
+{
+    std::memcpy(blob, kLibraryHeader, sizeof(kLibraryHeader));
+    return S_OK;
+}
+
 } // namespace
 
 void fill_pipeline_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& t)
 {
+    t.pfnCalcPrivatePipelineLibrarySize = calc_private_pipeline_library_size;
+    t.pfnCreatePipelineLibrary = create_pipeline_library;
+    t.pfnDestroyPipelineLibrary = destroy_pipeline_library;
+    t.pfnAddPipelineStateToLibrary = add_pipeline_state_to_library;
+    t.pfnCalcSerializedLibrarySize = calc_serialized_library_size;
+    t.pfnSerializeLibrary = serialize_library;
+
     using vgd::ShaderStage;
     t.pfnCalcPrivateShaderSize = calc_private_shader_size;
     t.pfnCalcPrivateTessellationShaderSize = calc_private_shader_size;

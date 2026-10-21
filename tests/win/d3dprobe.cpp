@@ -9,6 +9,7 @@
 //   --compute  on each device created, clear UAVs and dispatch on a compute queue, check the values.
 //   --queries  on each device created, run occlusion, pipeline statistics and timestamp queries, check results.
 //   --indirect  on each device created, ExecuteIndirect draws and dispatches, counted by queries and the shader.
+//   --placed  on each device created, heaps and placed buffers and a texture, mapped and copied through.
 //   --present  on each device created, a flip-model swapchain for a few seconds per phase (watch it): windowed,
 //            ResizeBuffers to other sizes and formats, borderless fullscreen; a screen readback ends each phase.
 #include <windows.h>
@@ -1688,6 +1689,184 @@ out:
     return ok;
 }
 
+// Heaps and placed resources, as Dawn and most engines allocate: buffers at non-zero offsets in UPLOAD, DEFAULT and
+// READBACK heaps, a texture in a texture heap, mapped and copied through: upload -> buffer -> texture -> readback.
+// A second upload buffer at offset 0 holds other bytes, so a mapping that ignores the placement offset shows.
+bool placed_test(ID3D12Device* device)
+{
+    constexpr UINT64 k64K = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT, kSize = 64 * 1024;
+    constexpr UINT kTexW = 64, kTexH = 256;   // RGBA8, kSize bytes
+    auto step = [](const char* what, HRESULT hr) {
+        std::printf("  placed: %-28s 0x%08lx %s\n", what, hr, SUCCEEDED(hr) ? "ok" : "FAIL");
+        print_messages();
+        return SUCCEEDED(hr);
+    };
+    auto heap = [&](D3D12_HEAP_TYPE type, UINT64 size, D3D12_HEAP_FLAGS flags, ID3D12Heap** out) {
+        D3D12_HEAP_DESC hd{};
+        hd.SizeInBytes = size;
+        hd.Properties.Type = type;
+        hd.Flags = flags;
+        return device->CreateHeap(&hd, IID_PPV_ARGS(out));
+    };
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = kSize;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    D3D12_RESOURCE_DESC td{};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = kTexW;
+    td.Height = kTexH;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+
+    ID3D12Heap *upload_heap = nullptr, *buffer_heap = nullptr, *texture_heap = nullptr, *readback_heap = nullptr;
+    ID3D12Resource *decoy = nullptr, *upload = nullptr, *gpu = nullptr, *texture = nullptr, *readback = nullptr;
+    ID3D12CommandQueue* queue = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    bool ok = false;
+    void *p = nullptr, *q = nullptr;
+    D3D12_RANGE none{0, 0};
+    D3D12_COMMAND_QUEUE_DESC qd{D3D12_COMMAND_LIST_TYPE_DIRECT};
+    // DirectX-Headers declare struct returns of COM methods with an out-parameter for GCC (the MSVC ABI).
+    D3D12_RESOURCE_ALLOCATION_INFO tex_info{};
+    device->GetResourceAllocationInfo(&tex_info, 0, 1, &td);
+    std::printf("  placed: texture needs %llu bytes at %llu alignment\n",
+                static_cast<unsigned long long>(tex_info.SizeInBytes),
+                static_cast<unsigned long long>(tex_info.Alignment));
+    {
+        // What Dawn's requestDevice does first: its 4 MiB zero buffer, placed at 0 in a 4 MiB buffer heap aligned
+        // to 4 MiB and not zeroed (dawn/native/d3d12 DeviceD3D12.cpp CreateZeroBuffer, HeapAllocatorD3D12.cpp).
+        D3D12_RESOURCE_DESC zd = bd;
+        zd.Width = 4 << 20;
+        zd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        D3D12_RESOURCE_ALLOCATION_INFO zi{};
+        device->GetResourceAllocationInfo(&zi, 0, 1, &zd);
+        std::printf("  placed: Dawn's zero buffer needs %llu bytes at %llu alignment\n",
+                    static_cast<unsigned long long>(zi.SizeInBytes), static_cast<unsigned long long>(zi.Alignment));
+        D3D12_HEAP_DESC hd{};
+        hd.SizeInBytes = 4 << 20;
+        hd.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        hd.Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+        hd.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS | D3D12_HEAP_FLAG_CREATE_NOT_ZEROED;
+        ID3D12Heap* zh = nullptr;
+        ID3D12Resource* zb = nullptr;
+        const bool made = step("Dawn-like heap", device->CreateHeap(&hd, IID_PPV_ARGS(&zh))) &&
+                          step("Dawn-like zero buffer",
+                               device->CreatePlacedResource(zh, 0, &zd, D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                            IID_PPV_ARGS(&zb)));
+        if (zb)
+            zb->Release();
+        if (zh)
+            zh->Release();
+        if (!made)
+            goto out;
+    }
+
+    if (!step("upload heap", heap(D3D12_HEAP_TYPE_UPLOAD, 4 * k64K, D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS, &upload_heap)) ||
+        !step("default buffer heap",
+              heap(D3D12_HEAP_TYPE_DEFAULT, 4 * k64K, D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS, &buffer_heap)) ||
+        !step("default texture heap", heap(D3D12_HEAP_TYPE_DEFAULT, tex_info.Alignment + tex_info.SizeInBytes,
+                                           D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES, &texture_heap)) ||
+        !step("readback heap",
+              heap(D3D12_HEAP_TYPE_READBACK, 4 * k64K, D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS, &readback_heap)) ||
+        !step("upload buffer at 0", device->CreatePlacedResource(upload_heap, 0, &bd, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                                 nullptr, IID_PPV_ARGS(&decoy))) ||
+        !step("upload buffer at 64K", device->CreatePlacedResource(upload_heap, k64K, &bd,
+                                                                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                                   IID_PPV_ARGS(&upload))) ||
+        !step("default buffer at 128K", device->CreatePlacedResource(buffer_heap, 2 * k64K, &bd,
+                                                                     D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                                     IID_PPV_ARGS(&gpu))) ||
+        !step("texture", device->CreatePlacedResource(texture_heap, tex_info.Alignment, &td,
+                                                      D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                      IID_PPV_ARGS(&texture))) ||
+        !step("readback buffer at 192K", device->CreatePlacedResource(readback_heap, 3 * k64K, &bd,
+                                                                      D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                                      IID_PPV_ARGS(&readback))) ||
+        !step("command queue", device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue))) ||
+        !step("command allocator",
+              device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
+        !step("command list", device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr,
+                                                        IID_PPV_ARGS(&list))) ||
+        !step("fence", device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))) ||
+        !step("map upload at 0", decoy->Map(0, &none, &q)) || !step("map upload at 64K", upload->Map(0, &none, &p)))
+        goto out;
+    std::printf("  placed: gpu va upload 0x%llx / 0x%llx, default 0x%llx, readback 0x%llx; maps %p / %p (%lld apart)\n",
+                static_cast<unsigned long long>(decoy->GetGPUVirtualAddress()),
+                static_cast<unsigned long long>(upload->GetGPUVirtualAddress()),
+                static_cast<unsigned long long>(gpu->GetGPUVirtualAddress()),
+                static_cast<unsigned long long>(readback->GetGPUVirtualAddress()), q, p,
+                static_cast<long long>(static_cast<char*>(p) - static_cast<char*>(q)));
+    std::memset(q, 0xee, kSize);
+    for (UINT64 i = 0; i < kSize / 4; i++)
+        static_cast<uint32_t*>(p)[i] = static_cast<uint32_t>(i * 2654435761u);
+    {
+        list->CopyBufferRegion(gpu, 0, upload, 0, kSize);
+        D3D12_RESOURCE_BARRIER b[2]{};
+        b[0].Type = b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b[0].Transition = {gpu, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST,
+                           D3D12_RESOURCE_STATE_COPY_SOURCE};
+        list->ResourceBarrier(1, b);
+        D3D12_TEXTURE_COPY_LOCATION tex{texture, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {}};
+        D3D12_TEXTURE_COPY_LOCATION foot{gpu, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {}};
+        foot.PlacedFootprint.Footprint = {DXGI_FORMAT_R8G8B8A8_UNORM, kTexW, kTexH, 1, kTexW * 4};
+        list->CopyTextureRegion(&tex, 0, 0, 0, &foot, nullptr);
+        b[1].Transition = {texture, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST,
+                           D3D12_RESOURCE_STATE_COPY_SOURCE};
+        list->ResourceBarrier(1, &b[1]);
+        foot.pResource = readback;
+        list->CopyTextureRegion(&foot, 0, 0, 0, &tex, nullptr);
+        if (!step("close", list->Close()))
+            goto out;
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+        queue->Signal(fence, 1);
+        fence->SetEventOnCompletion(1, event);
+        if (WaitForSingleObject(event, 5000) != WAIT_OBJECT_0) {
+            std::printf("  placed: copies did not complete in 5 s\n");
+            goto out;
+        }
+    }
+    {
+        D3D12_RANGE all{0, kSize};
+        void* r = nullptr;
+        if (!step("map readback", readback->Map(0, &all, &r)))
+            goto out;
+        const auto* got = static_cast<const uint32_t*>(r);
+        UINT64 bad = kSize / 4;
+        for (UINT64 i = 0; i < kSize / 4 && bad == kSize / 4; i++)
+            if (got[i] != static_cast<uint32_t>(i * 2654435761u))
+                bad = i;
+        if (bad == kSize / 4)
+            std::printf("  placed: %llu bytes back through buffer and texture: match\n",
+                        static_cast<unsigned long long>(kSize));
+        else
+            std::printf("  placed: word %llu is 0x%08x, expected 0x%08x\n", static_cast<unsigned long long>(bad),
+                        got[bad], static_cast<uint32_t>(bad * 2654435761u));
+        readback->Unmap(0, &none);
+        ok = bad == kSize / 4;
+    }
+    std::printf("  placed: device removed reason 0x%08lx\n", device->GetDeviceRemovedReason());
+
+out:
+    std::printf("  placed test: %s\n", ok ? "PASS" : "FAIL");
+    for (IUnknown* u : std::initializer_list<IUnknown*>{fence, list, alloc, queue, readback, texture, gpu, upload, decoy,
+                                                         readback_heap, texture_heap, buffer_heap, upload_heap})
+        if (u)
+            u->Release();
+    CloseHandle(event);
+    return ok;
+}
+
 LRESULT CALLBACK present_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -1978,7 +2157,7 @@ int main(int argc, char** argv)
         std::printf(" %s", argv[i]);
     std::printf("\n");
     bool copy = false, triangle = false, textured = false, depth = false, compute = false, queries = false,
-         indirect = false, present = false;
+         indirect = false, present = false, placed = false;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--debug"))
             enable_debug_layer();
@@ -1992,6 +2171,8 @@ int main(int argc, char** argv)
             depth = true;
         else if (!std::strcmp(argv[i], "--indirect"))
             indirect = true;
+        else if (!std::strcmp(argv[i], "--placed"))
+            placed = true;
         else if (!std::strcmp(argv[i], "--present"))
             present = true;
         else if (!std::strcmp(argv[i], "--queries"))
@@ -2035,6 +2216,8 @@ int main(int argc, char** argv)
             if (queries && !queries_test(device))
                 failures++;
             if (compute && !compute_test(device))
+                failures++;
+            if (placed && !placed_test(device))
                 failures++;
             if (present && !present_test(device, factory, desc.Description))
                 failures++;

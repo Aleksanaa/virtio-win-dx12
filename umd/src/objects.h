@@ -61,9 +61,14 @@ struct CommandListObject {
     void error(HRESULT hr) const;
 };
 
-// CreateHeapAndResource gives the heap and the resource separate storage. A committed resource is both at once: the
-// heap owns the core resource and the resource handle refers to it. Placed resources come later.
+// CreateHeapAndResource gives the heap and the resource separate storage, in three shapes:
+//   - committed (both descriptions): the heap owns the core resource and the resource handle refers to it. For a
+//     buffer the heap also owns a core heap the resource is placed in at 0: CreateHeap arrives in this shape;
+//   - a heap alone: the heap owns a core heap, and the runtime's resource handle for it names the heap;
+//   - placed (a resource description alone): the resource owns a core resource in the heap its
+//     ReuseBufferGPUVA names (by that heap's resource handle) at the offset given there.
 struct HeapObject {
+    std::unique_ptr<vgd::Heap> heap;            // before the resource, which may be placed in it
     std::unique_ptr<vgd::Resource> resource;
     // Swapchain buffers (PRIMARY heaps) also own a runtime allocation sharing the resource's memory (present.cpp).
     D3DKMT_HANDLE allocation = 0;
@@ -71,8 +76,11 @@ struct HeapObject {
 };
 
 struct ResourceObject {
-    HeapObject* heap;
-    vgd::Resource* resource;
+    HeapObject* heap = nullptr;          // committed resources and heaps; null for placed resources
+    vgd::Resource* resource = nullptr;   // null for a heap's resource handle
+    std::unique_ptr<vgd::Resource> placed;
+    HeapObject* placed_in = nullptr;     // placed resources: their heap, and where in it
+    uint64_t offset = 0;
 };
 
 // Descriptors are core records (vgd::Descriptor) in core descriptor heaps, kDescriptorSize bytes apart. The runtime
@@ -112,6 +120,8 @@ struct CommandQueueObject {
 HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const D3D12DDIARG_CREATERESOURCE_0088& args,
                        const D3D12_RESOURCE_DESC& desc, D3D12DDI_HRTRESOURCE rt_resource, HeapObject& out);
 void destroy_primary(Device& d, HeapObject& heap);
+// OpenHeapAndResource of a texture yttrium's D3D10/11 UMD shares: `out` gets an imported core texture.
+HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject& out);
 void fill_present_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
 void fill_present_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& table);
 void fill_dxgi_ddi(DXGI1_4_DDI_BASE_FUNCTIONS& table);

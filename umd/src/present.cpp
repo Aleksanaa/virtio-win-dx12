@@ -16,6 +16,8 @@
 #include "objects.h"
 #include "viogpu_abi.h"
 
+#include <winternl.h>   // OBJECT_ATTRIBUTES, for D3DKMTShareObjects
+
 #include <atomic>
 #include <memory>
 #include <new>
@@ -34,6 +36,7 @@ struct KmtDevice {
     PFND3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query_resource_info = nullptr;
     PFND3DKMT_OPENRESOURCEFROMNTHANDLE open_resource = nullptr;
     PFND3DKMT_DESTROYALLOCATION destroy_allocation = nullptr;
+    PFND3DKMT_SHAREOBJECTS share_objects = nullptr;
     D3DKMT_HANDLE adapter = 0;
     D3DKMT_HANDLE device = 0;
 
@@ -121,7 +124,8 @@ KmtDevice* kmt_device(Device& d)
         !get(k->destroy_device, "D3DKMTDestroyDevice") ||
         !get(k->query_resource_info, "D3DKMTQueryResourceInfoFromNtHandle") ||
         !get(k->open_resource, "D3DKMTOpenResourceFromNtHandle") ||
-        !get(k->destroy_allocation, "D3DKMTDestroyAllocation")) {
+        !get(k->destroy_allocation, "D3DKMTDestroyAllocation") ||
+        !get(k->share_objects, "D3DKMTShareObjects")) {
         VGD_WARN("present: gdi32 lacks the D3DKMT entry points we need");
         return nullptr;
     }
@@ -293,6 +297,110 @@ void destroy_primary(Device& d, HeapObject& heap)
     if (FAILED(hr))
         VGD_WARN("present: DeallocateCb(0x%x) failed: 0x%08lx", heap.allocation, hr);
     heap.allocation = 0;
+}
+
+// --- Textures other drivers share ----------------------------------------------------------------------------
+// ID3D12Device::OpenSharedHandle on a texture yttrium's D3D10/11 UMD created shared (a browser compositor's canvas,
+// for WebGPU): the runtime has opened its allocation, whose private data is yttrium's allocation exchange. Its
+// memory is Venus memory exported as a shareable blob, under a linear image (yttrium_venus2_resource.c), so it is
+// imported like the reverse of a swapchain buffer: an NT handle of the opened resource goes to our ICD's dma-buf
+// import (icd/patches/0003, 0005), under a linear image of the same size and format (core import_texture).
+
+namespace {
+
+// The DXGI format of a format yttrium's D3D10 UMD knows a buffer by (virgl_format's inverse), with its sRGB
+// sibling for views (UNKNOWN if none); UNKNOWN if none.
+DXGI_FORMAT dxgi_format(ULONG format, DXGI_FORMAT* srgb)
+{
+    *srgb = DXGI_FORMAT_UNKNOWN;
+    switch (format) {
+    case viogpu::kVirglFormatB8G8R8A8Unorm:
+    case viogpu::kVirglFormatB8G8R8A8Srgb:
+        *srgb = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case viogpu::kVirglFormatB8G8R8X8Unorm: return DXGI_FORMAT_B8G8R8X8_UNORM;
+    case viogpu::kVirglFormatR8G8B8A8Unorm:
+    case viogpu::kVirglFormatR8G8B8A8Srgb:
+        *srgb = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case viogpu::kVirglFormatR10G10B10A2Unorm: return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case viogpu::kPipeFormatR16G16B16A16Float: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    default: return DXGI_FORMAT_UNKNOWN;
+    }
+}
+
+} // namespace
+
+HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject& out)
+{
+    if (args.NumAllocations != 1 || !args.pOpenAllocationInfo ||
+        args.pOpenAllocationInfo[0].PrivateDriverDataSize < sizeof(viogpu::AllocationExchange)) {
+        VGD_WARN("OpenHeapAndResource: %u allocations, private data %u bytes: not one of yttrium's allocations",
+                 args.NumAllocations,
+                 args.pOpenAllocationInfo ? args.pOpenAllocationInfo[0].PrivateDriverDataSize : 0);
+        return E_OUTOFMEMORY;
+    }
+    const auto& e = *static_cast<const viogpu::AllocationExchange*>(args.pOpenAllocationInfo[0].pPrivateDriverData);
+    const viogpu::ResourceOptions& o = e.options;
+    VGD_TRACE("OpenHeapAndResource: allocation 0x%x, km resource 0x%x: target %lu format %lu bind 0x%lx %lux%lux%lu "
+              "array %lu levels %lu samples %lu; size %llu, blob mem %lu, blob flags 0x%lx, stride %lu",
+              args.pOpenAllocationInfo[0].hAllocation, static_cast<unsigned>(args.hKMResource.handle), o.target,
+              o.format, o.bind, o.width, o.height, o.depth, o.array_size, o.last_level + 1, o.nr_samples,
+              static_cast<unsigned long long>(e.Size), e.BlobMem, e.BlobFlags, e.Stride);
+    DXGI_FORMAT srgb;
+    const DXGI_FORMAT format = dxgi_format(o.format, &srgb);
+    if (o.target != viogpu::kPipeTexture2d || o.depth > 1 || o.array_size > 1 || o.last_level || o.nr_samples > 1 ||
+        e.BlobMem != viogpu::kBlobMemHost3d || !(e.BlobFlags & viogpu::kBlobFlagShareable) ||
+        format == DXGI_FORMAT_UNKNOWN) {
+        VGD_WARN("OpenHeapAndResource: only shareable single 2D textures of swapchain formats so far");
+        return E_OUTOFMEMORY;
+    }
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = o.width;
+    desc.Height = o.height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Format = format;
+    desc.SampleDesc = {1, 0};
+    if (o.bind & viogpu::kBindRenderTarget)
+        desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    if (o.bind & viogpu::kBindShaderImage)
+        desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (!(o.bind & viogpu::kBindSamplerView))
+        desc.Flags |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+    KmtDevice* kmt = kmt_device(d);
+    if (!kmt)
+        return E_OUTOFMEMORY;
+    D3DKMT_HANDLE resource = args.hKMResource.handle;
+    OBJECT_ATTRIBUTES attrs{};
+    attrs.Length = sizeof(attrs);
+    HANDLE nt = nullptr;
+    NTSTATUS s = kmt->share_objects(1, &resource, &attrs, SHARED_ALLOCATION_ALL_ACCESS, &nt);
+    if (s < 0 || !nt) {
+        VGD_WARN("OpenHeapAndResource: D3DKMTShareObjects(0x%x) failed: 0x%08lx", resource, s);
+        return E_OUTOFMEMORY;
+    }
+    if (reinterpret_cast<uintptr_t>(nt) > INT_MAX) {
+        CloseHandle(nt);
+        return E_OUTOFMEMORY;
+    }
+    bool consumed = false;
+    HRESULT hr = d.core->import_texture(desc, &srgb, srgb != DXGI_FORMAT_UNKNOWN ? 1 : 0,
+                                        static_cast<int>(reinterpret_cast<intptr_t>(nt)), e.Size, &out.resource,
+                                        &consumed);
+    if (!consumed)
+        CloseHandle(nt);
+    if (FAILED(hr)) {
+        VGD_WARN("OpenHeapAndResource: import of %lux%lu format %d failed: 0x%08lx", o.width, o.height,
+                 static_cast<int>(format), hr);
+        return E_OUTOFMEMORY;
+    }
+    if (out.resource->size() != e.Size)
+        VGD_TRACE("OpenHeapAndResource: our linear image needs %llu bytes of the %llu shared",
+                  static_cast<unsigned long long>(out.resource->size()), static_cast<unsigned long long>(e.Size));
+    return S_OK;
 }
 
 namespace {

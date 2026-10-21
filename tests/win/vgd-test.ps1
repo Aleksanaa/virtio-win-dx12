@@ -31,7 +31,9 @@ param(
     # Probe only: also run ExecuteIndirect draws and dispatches
     [switch]$Indirect,
     # Probe only: also present a flip-model swapchain in phases (resizes, 10-bit, FP16, borderless fullscreen)
-    [switch]$Present
+    [switch]$Present,
+    # Probe only: also create heaps and placed resources, map and copy through them
+    [switch]$Placed
 )
 
 $ErrorActionPreference = 'Stop'
@@ -136,6 +138,7 @@ switch ($Action) {
         if ($Queries) { $probeArgs += '--queries' }
         if ($Indirect) { $probeArgs += '--indirect' }
         if ($Present) { $probeArgs += '--present' }
+        if ($Placed) { $probeArgs += '--placed' }
         & $exe @probeArgs
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"

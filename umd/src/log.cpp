@@ -17,6 +17,19 @@ bool g_verbose = false;
 
 void sink(LogLevel level, const char* msg) { logf(level, "core: %s", msg); }
 
+// The environment variable, or else the same-named value under HKLM\SOFTWARE\vgd3d12: processes that do not
+// inherit the environment (Chromium's GPU process gets a filtered one) still read the registry.
+bool setting(const char* name, char* out, DWORD size)
+{
+    const DWORD len = GetEnvironmentVariableA(name, out, size);
+    if (len > 0 && len < size)
+        return true;
+    DWORD bytes = size;
+    return RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\vgd3d12", name, RRF_RT_REG_SZ, nullptr, out, &bytes) ==
+               ERROR_SUCCESS &&
+           out[0];
+}
+
 } // namespace
 
 void log_init()
@@ -25,11 +38,10 @@ void log_init()
     if (g_file)
         return;
     char path[MAX_PATH];
-    const DWORD len = GetEnvironmentVariableA("VGD_LOG", path, sizeof(path));
-    if (len > 0 && len < sizeof(path))
+    if (setting("VGD_LOG", path, sizeof(path)))
         g_file = std::fopen(path, "a");
     char v[8];
-    g_verbose = GetEnvironmentVariableA("VGD_VERBOSE", v, sizeof(v)) > 0 && v[0] == '1';
+    g_verbose = setting("VGD_VERBOSE", v, sizeof(v)) && v[0] == '1';
     set_log_sink(sink);
 }
 
