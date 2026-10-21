@@ -32,6 +32,8 @@ struct AdapterDesc {
     // VK_EXT_descriptor_heap. Required for descriptors and root signatures, but not for bring-up of devices,
     // memory, copies and fences, so it is reported rather than required (Venus needs virglrenderer >= 2a671dbf).
     bool descriptor_heap = false;
+    // VK_EXT_mutable_descriptor_type with descriptor indexing: shader-visible descriptor heaps and descriptor tables.
+    bool bindless = false;
     // Features this driver requires but the Vulkan device lacks. Empty means the adapter is usable.
     std::vector<std::string> missing;
     bool usable() const { return missing.empty(); }
@@ -52,6 +54,39 @@ struct RenderTargetView {
     uint32_t mip = 0, first_layer = 0, layers = 1;
 };
 
+// A descriptor: plain data, kDescriptorStride bytes apart in descriptor heap memory, so the UMD can hand out
+// CPU handles that are addresses of these records. Views and samplers it names belong to their resource (or, for
+// samplers, to the device), as D3D12 descriptors do not own what they describe.
+constexpr uint32_t kDescriptorStride = 64;
+
+struct alignas(8) Descriptor {
+    enum class Kind : uint32_t {
+        none,
+        rtv,
+        sampled_image,    // texture SRV
+        storage_image,    // texture UAV
+        uniform_texel,    // typed buffer SRV
+        storage_texel,    // typed buffer UAV
+        uniform_buffer,   // CBV
+        storage_buffer,   // raw or structured buffer SRV/UAV
+        sampler,
+    };
+    Kind kind = Kind::none;
+    union {
+        RenderTargetView rtv;
+        VkImageView image;   // VK_NULL_HANDLE: a null descriptor
+        VkBufferView texel;
+        struct {
+            VkBuffer buffer;
+            VkDeviceSize offset, range;
+        } buffer;
+        VkSampler sampler;
+    };
+    uint64_t reserved[2] = {};   // pads the record to kDescriptorStride: heap memory is an array of these
+    Descriptor() : rtv() {}
+};
+static_assert(sizeof(Descriptor) == kDescriptorStride);
+
 // One side of CopyTextureRegion: a texture subresource, or a placed footprint in a buffer.
 struct TextureCopyLocation {
     Resource* resource = nullptr;
@@ -64,6 +99,7 @@ class CommandAllocator;
 class CommandList;
 class CommandQueue;
 class Fence;
+class DescriptorHeap;
 
 class Instance {
 public:
@@ -98,6 +134,24 @@ public:
     // A view of a texture for OMSetRenderTargets / ClearRenderTargetView. `desc` may be null (whole mip 0).
     HRESULT create_render_target_view(Resource& resource, const D3D12_RENDER_TARGET_VIEW_DESC* desc,
                                       RenderTargetView* out);
+
+    // Descriptor heaps. Shader-visible CBV/SRV/UAV and sampler heaps are backed by a Vulkan descriptor set
+    // (needs mutable descriptors: AdapterDesc::bindless).
+    HRESULT create_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE type, uint32_t count, bool shader_visible,
+                                   std::unique_ptr<DescriptorHeap>* out);
+    // View and sampler descriptors, returned by value; write_descriptor() stores one. A null `resource` makes a
+    // null descriptor of the view's kind.
+    HRESULT create_shader_resource_view(Resource* resource, const D3D12_SHADER_RESOURCE_VIEW_DESC* desc,
+                                        Descriptor* out);
+    HRESULT create_unordered_access_view(Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* desc,
+                                         Descriptor* out);
+    HRESULT create_constant_buffer_view(const D3D12_CONSTANT_BUFFER_VIEW_DESC& desc, Descriptor* out);
+    HRESULT create_sampler(const D3D12_SAMPLER_DESC& desc, Descriptor* out);
+    // Stores `value` at `dst`, a descriptor in any heap of this device, and in the heap's descriptor set if it has
+    // one. Safe from any thread, like the D3D12 calls it serves.
+    void write_descriptor(Descriptor* dst, const Descriptor& value);
+    // CopyDescriptors: `count` descriptors from `src` (a CPU-only heap, as D3D12 requires) to `dst`.
+    void copy_descriptors(Descriptor* dst, const Descriptor* src, uint32_t count);
     HRESULT create_fence(uint64_t initial_value, std::unique_ptr<Fence>* out);
     HRESULT create_command_queue(const D3D12_COMMAND_QUEUE_DESC& desc, std::unique_ptr<CommandQueue>* out);
     HRESULT create_command_allocator(D3D12_COMMAND_LIST_TYPE type, std::unique_ptr<CommandAllocator>* out);
@@ -132,6 +186,25 @@ public:
 private:
     friend class Device;
     explicit Resource(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+};
+
+// A D3D12 descriptor heap: kDescriptorStride-spaced records, plus a descriptor set when shader-visible.
+class DescriptorHeap {
+public:
+    ~DescriptorHeap();
+    D3D12_DESCRIPTOR_HEAP_TYPE type() const;
+    uint32_t count() const;
+    bool shader_visible() const;
+    Descriptor* cpu_start();
+    // Shader-visible heaps: the GPU handle of descriptor 0 (an opaque value; handles step by kDescriptorStride).
+    uint64_t gpu_start() const;
+
+    struct Impl;
+    Impl& impl() { return *impl_; }
+private:
+    friend class Device;
+    explicit DescriptorHeap(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;
 };
 
@@ -187,6 +260,9 @@ public:
     void set_graphics_root_32bit_constants(uint32_t parameter, std::span<const uint32_t> values, uint32_t dest_offset);
     // Root CBV/SRV/UAV.
     void set_graphics_root_descriptor(uint32_t parameter, D3D12_GPU_VIRTUAL_ADDRESS address);
+    // The shader-visible heaps descriptor tables point into (at most one CBV/SRV/UAV heap and one sampler heap).
+    void set_descriptor_heaps(std::span<DescriptorHeap* const> heaps);
+    void set_graphics_root_descriptor_table(uint32_t parameter, uint64_t gpu_handle);
     void set_primitive_topology(D3D12_PRIMITIVE_TOPOLOGY topology);
     void set_viewports(std::span<const D3D12_VIEWPORT> viewports);
     void set_scissor_rects(std::span<const D3D12_RECT> rects);

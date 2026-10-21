@@ -37,6 +37,14 @@ Device::Impl::~Impl()
 {
     if (device) {
         vk.vkDeviceWaitIdle(device);
+        for (auto& [key, s] : samplers)
+            vk.vkDestroySampler(device, s, nullptr);
+        if (resource_set_layout)
+            vk.vkDestroyDescriptorSetLayout(device, resource_set_layout, nullptr);
+        if (sampler_set_layout)
+            vk.vkDestroyDescriptorSetLayout(device, sampler_set_layout, nullptr);
+        if (empty_set_layout)
+            vk.vkDestroyDescriptorSetLayout(device, empty_set_layout, nullptr);
         if (init_pool)
             vk.vkDestroyCommandPool(device, init_pool, nullptr);
         if (init_timeline)
@@ -120,6 +128,14 @@ HRESULT Instance::create_device(size_t adapter_index, std::unique_ptr<Device>* o
         exts.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
     if (phys.needs_maintenance5_ext)
         exts.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mut{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT};
+    mut.mutableDescriptorType = VK_TRUE;
+    VkPhysicalDeviceRobustness2FeaturesEXT rob{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+    rob.nullDescriptor = VK_TRUE;   // null descriptors only, not the robust access modes
+    if (phys.mutable_descriptors)
+        exts.push_back(phys.mutable_ext_name);
+    if (phys.null_descriptor)
+        exts.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
 
     VkPhysicalDeviceDescriptorHeapFeaturesEXT heap{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT};
     heap.descriptorHeap = VK_TRUE;
@@ -127,8 +143,18 @@ HRESULT Instance::create_device(size_t adapter_index, std::unique_ptr<Device>* o
                                                phys.desc.descriptor_heap ? &heap : nullptr};
     m5.maintenance5 = VK_TRUE;
     // Every supported core feature is enabled; the ones we require were checked when the adapter was probed.
+    // Optional extension features go first in the chain.
+    void* chain = &m5;
+    if (phys.mutable_descriptors) {
+        mut.pNext = chain;
+        chain = &mut;
+    }
+    if (phys.null_descriptor) {
+        rob.pNext = chain;
+        chain = &rob;
+    }
     VkPhysicalDeviceVulkan13Features v13 = phys.v13;
-    v13.pNext = &m5;
+    v13.pNext = chain;
     VkPhysicalDeviceVulkan12Features v12 = phys.v12;
     v12.pNext = &v13;
     VkPhysicalDeviceVulkan11Features v11 = phys.v11;
@@ -168,6 +194,9 @@ HRESULT Instance::create_device(size_t adapter_index, std::unique_ptr<Device>* o
     for (const auto& q : queue_infos)
         impl->families.push_back(q.queueFamilyIndex);
     HRESULT hr = impl->create_init_objects();
+    if (FAILED(hr))
+        return hr;
+    hr = impl->create_bindless_layouts();
     if (FAILED(hr))
         return hr;
     {

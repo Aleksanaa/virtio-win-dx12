@@ -110,6 +110,10 @@ PipelineState::Impl::~Impl()
         device->vk.vkDestroyPipeline(device->device, pipeline, nullptr);
     if (layout)
         device->vk.vkDestroyPipelineLayout(device->device, layout, nullptr);
+    if (static_pool)
+        device->vk.vkDestroyDescriptorPool(device->device, static_pool, nullptr);
+    if (static_layout)
+        device->vk.vkDestroyDescriptorSetLayout(device->device, static_layout, nullptr);
 }
 
 namespace {
@@ -193,11 +197,11 @@ struct Stages {
             d.vk.vkDestroyShaderModule(d.device, m, nullptr);
     }
 
-    HRESULT add(const Shader& shader, const RootSignature& rs)
+    HRESULT add(const Shader& shader, const RootSignature& rs, const ShaderOptions& options)
     {
         std::vector<uint32_t> spirv;
         std::string entry;
-        HRESULT hr = translate_shader(shader, rs, &spirv, &entry);
+        HRESULT hr = translate_shader(shader, rs, options, &spirv, &entry);
         if (FAILED(hr))
             return hr;
         VkShaderModuleCreateInfo mci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -220,6 +224,53 @@ struct Stages {
 
 } // namespace
 
+// Static samplers: a set layout with one immutable sampler per binding, and the one set it needs, which the
+// command list binds with the pipeline.
+HRESULT PipelineState::Impl::create_static_samplers(const RootSignature& rs)
+{
+    const auto& desc = rs.desc();
+    if (!desc.NumStaticSamplers)
+        return S_OK;
+    std::vector<VkSampler> samplers(desc.NumStaticSamplers);
+    std::vector<VkDescriptorSetLayoutBinding> bindings(desc.NumStaticSamplers);
+    for (uint32_t i = 0; i < desc.NumStaticSamplers; i++) {
+        const D3D12_STATIC_SAMPLER_DESC& s = desc.pStaticSamplers[i];
+        D3D12_SAMPLER_DESC sd{s.Filter, s.AddressU, s.AddressV, s.AddressW, s.MipLODBias, s.MaxAnisotropy,
+                              s.ComparisonFunc, {}, s.MinLOD, s.MaxLOD};
+        const bool white = s.BorderColor == D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE ||
+                           s.BorderColor == D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE_UINT;
+        const bool opaque = white || s.BorderColor == D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK ||
+                            s.BorderColor == D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK_UINT;
+        const float c = white ? 1.0f : 0.0f;
+        sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = c;
+        sd.BorderColor[3] = opaque ? 1.0f : 0.0f;
+        samplers[i] = device->get_sampler(sd);
+        if (!samplers[i])
+            return E_OUTOFMEMORY;
+        bindings[i] = {i, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_ALL, &samplers[i]};
+    }
+    auto& vk = device->vk;
+    VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    ci.bindingCount = desc.NumStaticSamplers;
+    ci.pBindings = bindings.data();
+    VkResult r = vk.vkCreateDescriptorSetLayout(device->device, &ci, nullptr, &static_layout);
+    if (r != VK_SUCCESS)
+        return hresult_from_vk(r);
+    const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_SAMPLER, desc.NumStaticSamplers};
+    VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pci.maxSets = 1;
+    pci.poolSizeCount = 1;
+    pci.pPoolSizes = &size;
+    r = vk.vkCreateDescriptorPool(device->device, &pci, nullptr, &static_pool);
+    if (r != VK_SUCCESS)
+        return hresult_from_vk(r);
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = static_pool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &static_layout;
+    return hresult_from_vk(vk.vkAllocateDescriptorSets(device->device, &ai, &static_set));
+}
+
 HRESULT PipelineState::compile(Device& device)
 {
     Device::Impl& d = device.impl();
@@ -232,17 +283,34 @@ HRESULT PipelineState::compile(Device& device)
             d.physical->limits.maxPushConstantsSize);
         return E_NOTIMPL;
     }
+    HRESULT hr = impl->create_static_samplers(rs);
+    if (FAILED(hr))
+        return hr;
+    // Sets 0 and 1 are the heaps; set 2 the static samplers. Without bindless layouts the heap sets are empty.
+    std::vector<VkDescriptorSetLayout> sets;
+    if (d.resource_set_layout)
+        sets = {d.resource_set_layout, d.sampler_set_layout};
+    else if (impl->static_layout)
+        sets = {d.empty_set_layout, d.empty_set_layout};
+    if (impl->static_layout)
+        sets.push_back(impl->static_layout);
     VkPushConstantRange push{VK_SHADER_STAGE_ALL, 0, impl->push_size};
     VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    lci.setLayoutCount = static_cast<uint32_t>(sets.size());
+    lci.pSetLayouts = sets.data();
     lci.pushConstantRangeCount = impl->push_size ? 1 : 0;
     lci.pPushConstantRanges = &push;
     VkResult r = d.vk.vkCreatePipelineLayout(d.device, &lci, nullptr, &impl->layout);
     if (r != VK_SUCCESS)
         return hresult_from_vk(r);
 
+    ShaderOptions options;
+    options.ssbo_alignment = static_cast<uint32_t>(d.physical->limits.minStorageBufferOffsetAlignment);
+    options.typed_uav_read_without_format = d.physical->features.shaderStorageImageReadWithoutFormat;
+    options.bindless = d.resource_set_layout != VK_NULL_HANDLE;
     Stages stages(d);
     if (compute_) {
-        HRESULT hr = stages.add(*compute_desc_.cs, rs);
+        hr = stages.add(*compute_desc_.cs, rs, options);
         if (FAILED(hr))
             return hr;
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
@@ -263,7 +331,7 @@ HRESULT PipelineState::compile(Device& device)
     }
     for (const auto* s : {g.vs.get(), g.gs.get(), g.ps.get()})
         if (s) {
-            HRESULT hr = stages.add(*s, rs);
+            hr = stages.add(*s, rs, options);
             if (FAILED(hr))
                 return hr;
         }

@@ -24,6 +24,8 @@ public:
         uint32_t size;     // bytes
         // Root descriptors: the Nth root descriptor. Constants and tables: the first word in the 32-bit word area.
         uint32_t index;
+        // Descriptor tables: the table points into the sampler heap (its ranges are samplers), not the CBV/SRV/UAV heap.
+        bool sampler_table;
     };
 
     static HRESULT create(const D3D12_ROOT_SIGNATURE_DESC1& desc, std::unique_ptr<RootSignature>* out);

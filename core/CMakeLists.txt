@@ -5,6 +5,7 @@ add_library(vgd-core STATIC
     src/commands.cpp
     src/formats.cpp
     src/resources.cpp
+    src/descriptors.cpp
     src/shader.cpp
     src/root_signature.cpp
     src/pipeline.cpp)

@@ -55,6 +55,9 @@ struct PhysicalDevice {
     VkPhysicalDeviceVulkan11Features v11{};
     VkPhysicalDeviceVulkan12Features v12{};
     VkPhysicalDeviceVulkan13Features v13{};
+    bool mutable_descriptors = false;   // VK_EXT_mutable_descriptor_type (or the VALVE original)
+    const char* mutable_ext_name = nullptr;
+    bool null_descriptor = false;       // VK_EXT_robustness2 nullDescriptor
 };
 
 struct Instance::Impl {
@@ -101,6 +104,28 @@ struct Device::Impl {
     HRESULT create_init_objects();
     HRESULT init_image(VkImage image, VkImageAspectFlags aspects);
 
+    // Bindless descriptors (null layouts without mutable descriptors). Every pipeline layout starts with these
+    // two sets: the CBV/SRV/UAV heap at set 0 and the sampler heap at set 1, one binding each, sized per heap.
+    VkDescriptorSetLayout resource_set_layout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout sampler_set_layout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout empty_set_layout = VK_NULL_HANDLE;   // stands in for the heap sets without bindless
+    uint32_t max_resource_descriptors = 0, max_sampler_descriptors = 0;
+    HRESULT create_bindless_layouts();
+
+    // Samplers by description; D3D12 sampler descriptors do not own them, so they live as long as the device.
+    std::mutex samplers_lock;
+    struct SamplerKey {
+        uint8_t fields[sizeof(VkSamplerCreateInfo) - offsetof(VkSamplerCreateInfo, flags)];
+        VkSamplerReductionMode reduction;
+    };
+    std::vector<std::pair<SamplerKey, VkSampler>> samplers;
+    VkSampler get_sampler(const D3D12_SAMPLER_DESC& desc);
+
+    // Descriptor heaps by the address range of their records, for write_descriptor().
+    std::shared_mutex heaps_lock;
+    std::map<uintptr_t, DescriptorHeap::Impl*> heaps_by_address;
+    DescriptorHeap::Impl* find_heap(const Descriptor* d);
+
     QueueSlot& slot_for(D3D12_COMMAND_LIST_TYPE type);
     uint32_t find_memory_type(uint32_t type_bits, D3D12_HEAP_TYPE heap_type) const;
     // The Vulkan format this device stores a DXGI format as: vk_format() plus device-specific substitutions
@@ -115,6 +140,8 @@ struct ImageViewKey {
     VkFormat format;
     VkImageAspectFlags aspects;
     uint32_t mip, mips, layer, layers;
+    uint32_t swizzle;            // VkComponentSwizzle r | g << 8 | b << 16 | a << 24 (0: identity)
+    VkImageUsageFlags usage;     // what the view is for (VkImageViewUsageCreateInfo)
     bool operator==(const ImageViewKey&) const = default;
 };
 
@@ -131,10 +158,17 @@ struct Resource::Impl {
     void* mapped = nullptr;
     std::mutex views_lock;
     std::vector<std::pair<ImageViewKey, VkImageView>> views;
+    struct BufferViewKey {
+        VkFormat format;
+        VkDeviceSize offset, range;
+        bool operator==(const BufferViewKey&) const = default;
+    };
+    std::vector<std::pair<BufferViewKey, VkBufferView>> buffer_views;
     ~Impl();
 
     // A cached view; VK_NULL_HANDLE on failure.
     VkImageView view(const ImageViewKey& key);
+    VkBufferView buffer_view(const BufferViewKey& key);
     uint32_t array_layers() const
     {
         return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize;
@@ -167,12 +201,41 @@ struct PipelineState::Impl {
     uint32_t push_size = 0;               // the root signature's root data
     uint32_t vertex_binding_mask = 0;     // input slots the vertex input state declares
     bool primitive_restart = false;       // a strip cut value is set
+    // Static samplers: set 2, one immutable sampler per binding, with a set of its own to bind.
+    VkDescriptorSetLayout static_layout = VK_NULL_HANDLE;
+    VkDescriptorPool static_pool = VK_NULL_HANDLE;
+    VkDescriptorSet static_set = VK_NULL_HANDLE;
+    HRESULT create_static_samplers(const RootSignature& rs);
     ~Impl();
 };
 
 // Converts one shader to SPIR-V, mapping its root parameters onto `rs`'s root data (shader.cpp).
-HRESULT translate_shader(const Shader& shader, const RootSignature& rs, std::vector<uint32_t>* spirv,
-                         std::string* entry_point);
+// Descriptor set numbers in every pipeline layout.
+constexpr uint32_t kResourceHeapSet = 0, kSamplerHeapSet = 1, kStaticSamplerSet = 2;
+
+struct ShaderOptions {
+    uint32_t ssbo_alignment = 16;            // minStorageBufferOffsetAlignment
+    bool typed_uav_read_without_format = false;
+    bool bindless = false;                   // descriptor tables map to the heap sets
+};
+HRESULT translate_shader(const Shader& shader, const RootSignature& rs, const ShaderOptions& options,
+                         std::vector<uint32_t>* spirv, std::string* entry_point);
+
+// The descriptor type a descriptor kind is written as.
+VkDescriptorType vk_descriptor_type(Descriptor::Kind kind);
+
+struct DescriptorHeap::Impl {
+    Device::Impl* device = nullptr;
+    D3D12_DESCRIPTOR_HEAP_TYPE type{};
+    uint32_t count = 0;
+    std::unique_ptr<Descriptor[]> records;
+    VkDescriptorPool pool = VK_NULL_HANDLE;   // shader-visible heaps only
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    std::mutex set_lock;                       // vkUpdateDescriptorSets needs the set externally synchronized
+    ~Impl();
+    // Writes records [first, first + n) to the descriptor set (a no-op without one).
+    void flush(uint32_t first, uint32_t n);
+};
 
 // The Vulkan stage of a D3D12 shader stage.
 VkShaderStageFlagBits vk_stage(ShaderStage stage);
@@ -188,6 +251,9 @@ struct CommandList::Impl {
     const PipelineState* pso = nullptr;
     const PipelineState* bound_pso = nullptr;
     const RootSignature* graphics_rs = nullptr;
+    DescriptorHeap::Impl* resource_heap = nullptr;   // shader-visible heaps from SetDescriptorHeaps
+    DescriptorHeap::Impl* sampler_heap = nullptr;
+    bool heaps_dirty = false;
     std::array<uint8_t, 256> root_data{};
     bool root_dirty = false;
     D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;

@@ -71,23 +71,17 @@ struct ResourceObject {
     vgd::Resource* resource;
 };
 
-// Descriptors are records of ours in descriptor heap memory, kDescriptorSize bytes apart. The runtime hands out
-// CPU handles that are plain addresses into that memory, and copies descriptors through CopyDescriptors.
-constexpr UINT kDescriptorSize = 64;
+// Descriptors are core records (vgd::Descriptor) in core descriptor heaps, kDescriptorSize bytes apart. The runtime
+// hands out CPU handles that are plain addresses of those records.
+constexpr UINT kDescriptorSize = vgd::kDescriptorStride;
 
-struct Descriptor {
-    enum class Kind : uint32_t { none, rtv } kind;
-    vgd::RenderTargetView rtv;
-
-    static Descriptor* at(D3D12DDI_CPU_DESCRIPTOR_HANDLE h) { return reinterpret_cast<Descriptor*>(h.ptr); }
-};
-static_assert(sizeof(Descriptor) <= kDescriptorSize);
+inline vgd::Descriptor* descriptor_at(D3D12DDI_CPU_DESCRIPTOR_HANDLE h)
+{
+    return reinterpret_cast<vgd::Descriptor*>(h.ptr);
+}
 
 struct DescriptorHeapObject {
-    D3D12DDI_DESCRIPTOR_HEAP_TYPE type;
-    UINT count;
-    bool shader_visible;
-    std::unique_ptr<std::byte[]> memory;   // count * kDescriptorSize, zeroed (Kind::none)
+    std::unique_ptr<vgd::DescriptorHeap> heap;
 };
 
 // The runtime owns D3D12 fences (kernel monitored fences it signals and waits on our queues' contexts); the driver

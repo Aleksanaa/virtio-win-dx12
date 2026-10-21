@@ -224,6 +224,8 @@ Resource::Impl::~Impl()
     auto& vk = device->vk;
     for (auto& [key, v] : views)
         vk.vkDestroyImageView(device->device, v, nullptr);
+    for (auto& [key, v] : buffer_views)
+        vk.vkDestroyBufferView(device->device, v, nullptr);
     if (mapped)
         vk.vkUnmapMemory(device->device, memory);
     if (buffer) {
@@ -247,6 +249,13 @@ VkImageView Resource::Impl::view(const ImageViewKey& key)
     ci.viewType = key.type;
     ci.format = key.format;
     ci.subresourceRange = {key.aspects, key.mip, key.mips, key.layer, key.layers};
+    if (key.swizzle)
+        ci.components = {VkComponentSwizzle(key.swizzle & 0xff), VkComponentSwizzle(key.swizzle >> 8 & 0xff),
+                         VkComponentSwizzle(key.swizzle >> 16 & 0xff), VkComponentSwizzle(key.swizzle >> 24)};
+    // Only the usage this view is for: a view format may not support everything the image was created for.
+    VkImageViewUsageCreateInfo usage{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
+    usage.usage = key.usage;
+    ci.pNext = &usage;
     VkImageView v = VK_NULL_HANDLE;
     VkResult r = device->vk.vkCreateImageView(device->device, &ci, nullptr, &v);
     if (r != VK_SUCCESS) {
@@ -406,7 +415,8 @@ HRESULT Device::create_render_target_view(Resource& resource, const D3D12_RENDER
     if (!out || !r.image)
         return E_INVALIDARG;
     const auto& rd = r.desc;
-    ImageViewKey key{VK_IMAGE_VIEW_TYPE_2D, r.format, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    ImageViewKey key{VK_IMAGE_VIEW_TYPE_2D, r.format, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1, 0,
+                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
     if (desc && desc->Format != DXGI_FORMAT_UNKNOWN)
         key.format = impl_->resolve_format(desc->Format);
     auto layers = [&](UINT first, UINT size) {

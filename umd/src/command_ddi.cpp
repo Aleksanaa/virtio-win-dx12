@@ -305,6 +305,20 @@ void APIENTRY set_graphics_root_buffer_view(D3D12DDI_HCOMMANDLIST hl, UINT index
     list_of(hl).set_graphics_root_descriptor(index, va);
 }
 
+void APIENTRY set_descriptor_heaps(D3D12DDI_HCOMMANDLIST hl, UINT count, D3D12DDI_HDESCRIPTORHEAP* heaps)
+{
+    std::array<vgd::DescriptorHeap*, 2> core_heaps{};
+    count = std::min<UINT>(count, core_heaps.size());
+    for (UINT i = 0; i < count; i++)
+        core_heaps[i] = heaps[i].pDrvPrivate ? object<DescriptorHeapObject>(heaps[i])->heap.get() : nullptr;
+    list_of(hl).set_descriptor_heaps({core_heaps.data(), count});
+}
+
+void APIENTRY set_graphics_root_descriptor_table(D3D12DDI_HCOMMANDLIST hl, UINT index, D3D12DDI_GPU_DESCRIPTOR_HANDLE base)
+{
+    list_of(hl).set_graphics_root_descriptor_table(index, base.ptr);
+}
+
 void APIENTRY clear_root_arguments(D3D12DDI_HCOMMANDLIST hl)
 {
     list_of(hl).set_graphics_root_signature(nullptr);
@@ -356,8 +370,8 @@ void APIENTRY om_set_render_targets(D3D12DDI_HCOMMANDLIST hl, UINT count, const 
     for (UINT i = 0; i < count; i++) {
         const D3D12DDI_CPU_DESCRIPTOR_HANDLE h =
             single_range ? D3D12DDI_CPU_DESCRIPTOR_HANDLE{rtvs[0].ptr + SIZE_T(i) * kDescriptorSize} : rtvs[i];
-        const Descriptor* d = h.ptr ? Descriptor::at(h) : nullptr;
-        if (d && d->kind == Descriptor::Kind::rtv)
+        const vgd::Descriptor* d = h.ptr ? descriptor_at(h) : nullptr;
+        if (d && d->kind == vgd::Descriptor::Kind::rtv)
             views[i] = d->rtv;
     }
     if (dsv && dsv->ptr)
@@ -368,8 +382,8 @@ void APIENTRY om_set_render_targets(D3D12DDI_HCOMMANDLIST hl, UINT count, const 
 void APIENTRY clear_render_target_view(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_CPU_DESCRIPTOR_HANDLE h,
                                        const FLOAT color[4], UINT count, const D3D12DDI_RECT* rects)
 {
-    const Descriptor* d = Descriptor::at(h);
-    if (d->kind != Descriptor::Kind::rtv) {
+    const vgd::Descriptor* d = descriptor_at(h);
+    if (d->kind != vgd::Descriptor::Kind::rtv || !d->rtv.view) {
         object<CommandListObject>(hl)->error(E_INVALIDARG);
         return;
     }
@@ -484,9 +498,9 @@ void fill_command_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& t)
     t.pfnClearRenderTargetView = clear_render_target_view;
     t.pfnDrawInstanced = draw_instanced;
     t.pfnDrawIndexedInstanced = draw_indexed_instanced;
-    // Default state the runtime sets on every reset, with nothing to record yet: descriptor heaps are not read
-    // (tables are not mapped), and there is no stream output or predication.
-    set_noop(t.pfnSetDescriptorHeaps);
+    // Default state the runtime sets on every reset, with nothing to record yet: no stream output or predication.
+    t.pfnSetDescriptorHeaps = set_descriptor_heaps;
+    t.pfnSetGraphicsRootDescriptorTable = set_graphics_root_descriptor_table;
     set_noop(t.pfnSOSetTargets);
     set_noop(t.pfnSetPredication);
 }

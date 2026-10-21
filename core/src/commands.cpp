@@ -301,6 +301,8 @@ void CommandList::Impl::reset_state()
     pso = bound_pso = nullptr;
     rendering_pso = nullptr;
     graphics_rs = nullptr;
+    resource_heap = sampler_heap = nullptr;
+    heaps_dirty = false;
     root_data.fill(0);
     root_dirty = false;
     topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
@@ -423,6 +425,20 @@ bool CommandList::Impl::prepare_draw()
         vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline);
         bound_pso = pso;
     }
+    if (heaps_dirty || new_pipeline) {
+        // Pipeline layouts all start with the two heap sets, so the bound heaps survive pipeline changes in Vulkan
+        // terms too; rebinding on a new pipeline also covers its static sampler set.
+        if (resource_heap && resource_heap->set)
+            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout, kResourceHeapSet, 1,
+                                       &resource_heap->set, 0, nullptr);
+        if (sampler_heap && sampler_heap->set)
+            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout, kSamplerHeapSet, 1,
+                                       &sampler_heap->set, 0, nullptr);
+        if (p.static_set)
+            vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layout, kStaticSamplerSet, 1,
+                                       &p.static_set, 0, nullptr);
+        heaps_dirty = false;
+    }
     if (p.push_size && (root_dirty || new_pipeline)) {
         vk.vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_ALL, 0, p.push_size, root_data.data());
         root_dirty = false;
@@ -492,6 +508,44 @@ void CommandList::set_graphics_root_descriptor(uint32_t parameter, D3D12_GPU_VIR
         return;
     }
     std::memcpy(l.root_data.data() + l.graphics_rs->parameters()[parameter].offset, &address, 8);
+    l.root_dirty = true;
+}
+
+void CommandList::set_descriptor_heaps(std::span<DescriptorHeap* const> heaps)
+{
+    Impl& l = *impl_;
+    l.resource_heap = l.sampler_heap = nullptr;
+    for (DescriptorHeap* h : heaps) {
+        if (!h)
+            continue;
+        if (h->type() == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
+            l.sampler_heap = &h->impl();
+        else
+            l.resource_heap = &h->impl();
+    }
+    l.heaps_dirty = true;
+}
+
+void CommandList::set_graphics_root_descriptor_table(uint32_t parameter, uint64_t gpu_handle)
+{
+    Impl& l = *impl_;
+    if (!l.graphics_rs || parameter >= l.graphics_rs->parameters().size()) {
+        l.fail(E_INVALIDARG);
+        return;
+    }
+    const auto& p = l.graphics_rs->parameters()[parameter];
+    DescriptorHeap::Impl* heap = p.sampler_table ? l.sampler_heap : l.resource_heap;
+    const uint64_t base = heap ? reinterpret_cast<uint64_t>(heap->records.get()) : 0;
+    if (p.type != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE || !heap || gpu_handle < base ||
+        gpu_handle >= base + uint64_t(heap->count) * kDescriptorStride) {
+        log(LogLevel::warn, "descriptor table %u: handle 0x%llx is not in the bound %s heap", parameter,
+            static_cast<unsigned long long>(gpu_handle), p.sampler_table ? "sampler" : "CBV/SRV/UAV");
+        l.fail(E_INVALIDARG);
+        return;
+    }
+    // The table becomes its first descriptor's index in the heap, in the root data word dxil-spirv reads.
+    const uint32_t index = static_cast<uint32_t>((gpu_handle - base) / kDescriptorStride);
+    std::memcpy(l.root_data.data() + p.offset, &index, 4);
     l.root_dirty = true;
 }
 

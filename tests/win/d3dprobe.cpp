@@ -4,6 +4,7 @@
 //            messages after each attempt.
 //   --copy   on each device created, copy a buffer upload -> default -> readback and check the bytes.
 //   --triangle  on each device created, draw off-screen and check pixels (shaders from tests/shaders).
+//   --textured  on each device created, sample a texture through descriptor heaps and tables, check pixels.
 #include <windows.h>
 #include <dxgi1_4.h>
 #include <dxgidebug.h>
@@ -16,6 +17,7 @@
 #include <initializer_list>
 #include <vector>
 
+#include <textured_dxil.h>
 #include <triangle_dxil.h>
 
 namespace {
@@ -423,6 +425,291 @@ out:
     return ok;
 }
 
+
+// Descriptor heaps and tables, the same scene as core/tests/descriptors.cpp: a fullscreen triangle samples a 4x4
+// texture (SRV made in a CPU heap and copied to the shader-visible one) through a heap sampler on the left half and a
+// static sampler on the right, and adds a table CBV, a structured buffer from the table and a root CBV.
+bool textured_test(ID3D12Device* device)
+{
+    constexpr UINT kSize = 64, kTex = 4;
+    auto step = [](const char* what, HRESULT hr) {
+        std::printf("  textured: %-26s 0x%08lx %s\n", what, hr, SUCCEEDED(hr) ? "ok" : "FAIL");
+        print_messages();
+        return SUCCEEDED(hr);
+    };
+    auto rgba = [](uint32_t r, uint32_t g, uint32_t b, uint32_t a) { return r | g << 8 | b << 16 | a << 24; };
+
+    ID3DBlob *rs_blob = nullptr, *rs_error = nullptr;
+    ID3D12RootSignature* rs = nullptr;
+    ID3D12PipelineState* pso = nullptr;
+    ID3D12Resource *tex = nullptr, *upload = nullptr, *constants = nullptr, *offsets = nullptr, *target = nullptr,
+                   *readback = nullptr;
+    ID3D12DescriptorHeap *rtv_heap = nullptr, *cpu_heap = nullptr, *gpu_heap = nullptr, *sampler_heap = nullptr;
+    ID3D12CommandQueue* queue = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12Fence* fence = nullptr;
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    bool ok = false;
+
+    D3D12_DESCRIPTOR_RANGE1 resource_ranges[2] = {
+        {D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_NONE, 0},
+        {D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_NONE,
+         D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND},
+    };
+    D3D12_DESCRIPTOR_RANGE1 sampler_range{D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0, 0,
+                                          D3D12_DESCRIPTOR_RANGE_FLAG_NONE, 0};
+    D3D12_ROOT_PARAMETER1 params[3] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[0].DescriptorTable = {2, resource_ranges};
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable = {1, &sampler_range};
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[2].Descriptor = {1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE};
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_SAMPLER_DESC point{};
+    point.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    point.AddressU = point.AddressV = point.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    point.MaxLOD = D3D12_FLOAT32_MAX;
+    D3D12_STATIC_SAMPLER_DESC static_sampler{point.Filter, point.AddressU, point.AddressV, point.AddressW, 0, 1,
+                                             D3D12_COMPARISON_FUNC_NEVER, D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
+                                             0, D3D12_FLOAT32_MAX, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL};
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsd{D3D_ROOT_SIGNATURE_VERSION_1_1};
+    rsd.Desc_1_1 = {3, params, 1, &static_sampler, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+    pd.VS = {k_vs_fullscreen, sizeof(k_vs_fullscreen)};
+    pd.PS = {k_ps_textured, sizeof(k_ps_textured)};
+    for (auto& rt : pd.BlendState.RenderTarget)
+        rt = {FALSE, FALSE, D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD, D3D12_BLEND_ONE, D3D12_BLEND_ZERO,
+              D3D12_BLEND_OP_ADD, D3D12_LOGIC_OP_NOOP, D3D12_COLOR_WRITE_ENABLE_ALL};
+    pd.SampleMask = UINT_MAX;
+    pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pd.RasterizerState.DepthClipEnable = TRUE;
+    pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pd.NumRenderTargets = 1;
+    pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pd.SampleDesc.Count = 1;
+
+    D3D12_HEAP_PROPERTIES default_heap{D3D12_HEAP_TYPE_DEFAULT}, upload_heap{D3D12_HEAP_TYPE_UPLOAD},
+        readback_heap{D3D12_HEAP_TYPE_READBACK};
+    auto texture_desc = [](UINT size, D3D12_RESOURCE_FLAGS flags) {
+        D3D12_RESOURCE_DESC d{};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        d.Width = d.Height = size;
+        d.DepthOrArraySize = 1;
+        d.MipLevels = 1;
+        d.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.SampleDesc.Count = 1;
+        d.Flags = flags;
+        return d;
+    };
+    auto buffer_desc = [](UINT64 size) {
+        D3D12_RESOURCE_DESC d{};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        d.Width = size;
+        d.Height = 1;
+        d.DepthOrArraySize = 1;
+        d.MipLevels = 1;
+        d.SampleDesc.Count = 1;
+        d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        return d;
+    };
+    const D3D12_RESOURCE_DESC tex_desc = texture_desc(kTex, D3D12_RESOURCE_FLAG_NONE),
+                              target_desc = texture_desc(kSize, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT tex_fp{}, target_fp{};
+    UINT64 upload_size = 0, readback_size = 0;
+    device->GetCopyableFootprints(&tex_desc, 0, 1, 0, &tex_fp, nullptr, nullptr, &upload_size);
+    device->GetCopyableFootprints(&target_desc, 0, 1, 0, &target_fp, nullptr, nullptr, &readback_size);
+    const D3D12_RESOURCE_DESC upload_desc = buffer_desc(upload_size), constants_desc = buffer_desc(512),
+                              offsets_desc = buffer_desc(32), readback_desc = buffer_desc(readback_size);
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_hd{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1},
+        cpu_hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 8},
+        gpu_hd{D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE},
+        sampler_hd{D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 4, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE};
+    D3D12_COMMAND_QUEUE_DESC qd{D3D12_COMMAND_LIST_TYPE_DIRECT};
+    void* p = nullptr;
+    D3D12_RANGE none{0, 0};
+
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&rsd, &rs_blob, &rs_error);
+    if (!step("serialize root signature", hr) ||
+        !step("root signature", device->CreateRootSignature(0, rs_blob->GetBufferPointer(), rs_blob->GetBufferSize(),
+                                                            IID_PPV_ARGS(&rs))))
+        goto out;
+    pd.pRootSignature = rs;
+    if (!step("pipeline", device->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso))) ||
+        !step("texture", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &tex_desc,
+                                                         D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&tex))) ||
+        !step("upload buffer", device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
+                                                               D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                               IID_PPV_ARGS(&upload))) ||
+        !step("constants", device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &constants_desc,
+                                                           D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                           IID_PPV_ARGS(&constants))) ||
+        !step("structured buffer", device->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &offsets_desc,
+                                                                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                                   IID_PPV_ARGS(&offsets))) ||
+        !step("render target", device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &target_desc,
+                                                               D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+                                                               IID_PPV_ARGS(&target))) ||
+        !step("readback buffer", device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &readback_desc,
+                                                                 D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                                 IID_PPV_ARGS(&readback))) ||
+        !step("rtv heap", device->CreateDescriptorHeap(&rtv_hd, IID_PPV_ARGS(&rtv_heap))) ||
+        !step("cpu heap", device->CreateDescriptorHeap(&cpu_hd, IID_PPV_ARGS(&cpu_heap))) ||
+        !step("shader-visible heap", device->CreateDescriptorHeap(&gpu_hd, IID_PPV_ARGS(&gpu_heap))) ||
+        !step("sampler heap", device->CreateDescriptorHeap(&sampler_hd, IID_PPV_ARGS(&sampler_heap))) ||
+        !step("command queue", device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue))) ||
+        !step("command allocator",
+              device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
+        !step("command list", device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, pso,
+                                                        IID_PPV_ARGS(&list))) ||
+        !step("fence", device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+        goto out;
+
+    // Data: texels (x * 64, y * 64, 128, 255); scale (1, 1, 1, 0) at 0 and bias (0, 0, 0, 0.4) at 256; offsets[1].
+    if (!step("map upload", upload->Map(0, &none, &p)))
+        goto out;
+    for (UINT y = 0; y < kTex; y++)
+        for (UINT x = 0; x < kTex; x++) {
+            const uint32_t texel = rgba(x * 64, y * 64, 128, 255);
+            std::memcpy(static_cast<uint8_t*>(p) + tex_fp.Offset + y * tex_fp.Footprint.RowPitch + x * 4, &texel, 4);
+        }
+    upload->Unmap(0, nullptr);
+    if (!step("map constants", constants->Map(0, &none, &p)))
+        goto out;
+    {
+        const float scale[4] = {1, 1, 1, 0}, bias[4] = {0, 0, 0, 0.4f};
+        std::memcpy(p, scale, sizeof(scale));
+        std::memcpy(static_cast<uint8_t*>(p) + 256, bias, sizeof(bias));
+    }
+    constants->Unmap(0, nullptr);
+    if (!step("map structured buffer", offsets->Map(0, &none, &p)))
+        goto out;
+    {
+        const float data[8] = {0.5f, 0.5f, 0.5f, 0.5f, 0, 0, 0, 0.2f};   // [0] would show a wrong index
+        std::memcpy(p, data, sizeof(data));
+    }
+    offsets->Unmap(0, nullptr);
+
+    {
+        const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        const UINT sampler_inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv, cpu, gpu_cpu, sampler_cpu;
+        D3D12_GPU_DESCRIPTOR_HANDLE gpu, sampler_gpu;
+        rtv_heap->GetCPUDescriptorHandleForHeapStart(&rtv);   // the MinGW form of the struct-returning methods
+        cpu_heap->GetCPUDescriptorHandleForHeapStart(&cpu);
+        gpu_heap->GetCPUDescriptorHandleForHeapStart(&gpu_cpu);
+        gpu_heap->GetGPUDescriptorHandleForHeapStart(&gpu);
+        sampler_heap->GetCPUDescriptorHandleForHeapStart(&sampler_cpu);
+        sampler_heap->GetGPUDescriptorHandleForHeapStart(&sampler_gpu);
+        std::printf("  textured: increments %u / %u, gpu heap start 0x%llx, sampler heap start 0x%llx\n", inc,
+                    sampler_inc, static_cast<unsigned long long>(gpu.ptr),
+                    static_cast<unsigned long long>(sampler_gpu.ptr));
+        auto at = [](D3D12_CPU_DESCRIPTOR_HANDLE h, UINT i, UINT step_size) {
+            return D3D12_CPU_DESCRIPTOR_HANDLE{h.ptr + SIZE_T(i) * step_size};
+        };
+
+        // The table starts at slot 5: CBV, texture (copied from the CPU heap), structured buffer. Sampler at slot 2.
+        device->CreateShaderResourceView(tex, nullptr, at(cpu, 3, inc));
+        device->CopyDescriptorsSimple(1, at(gpu_cpu, 6, inc), at(cpu, 3, inc), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        const D3D12_CONSTANT_BUFFER_VIEW_DESC cbv{constants->GetGPUVirtualAddress(), 256};
+        device->CreateConstantBufferView(&cbv, at(gpu_cpu, 5, inc));
+        D3D12_SHADER_RESOURCE_VIEW_DESC sb{};
+        sb.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        sb.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sb.Buffer = {0, 2, 16, D3D12_BUFFER_SRV_FLAG_NONE};
+        device->CreateShaderResourceView(offsets, &sb, at(gpu_cpu, 7, inc));
+        device->CreateSampler(&point, at(sampler_cpu, 2, sampler_inc));
+        device->CreateRenderTargetView(target, nullptr, rtv);
+        print_messages();
+
+        D3D12_TEXTURE_COPY_LOCATION tex_dst{tex, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX},
+            tex_src{upload, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+        tex_dst.SubresourceIndex = 0;
+        tex_src.PlacedFootprint = tex_fp;
+        list->CopyTextureRegion(&tex_dst, 0, 0, 0, &tex_src, nullptr);
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = tex;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        list->ResourceBarrier(1, &b);
+
+        const D3D12_VIEWPORT viewport{0, 0, kSize, kSize, 0, 1};
+        const D3D12_RECT scissor{0, 0, kSize, kSize};
+        ID3D12DescriptorHeap* heaps[] = {gpu_heap, sampler_heap};
+        list->SetDescriptorHeaps(2, heaps);
+        list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        list->RSSetViewports(1, &viewport);
+        list->RSSetScissorRects(1, &scissor);
+        list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        list->SetGraphicsRootSignature(rs);
+        list->SetGraphicsRootDescriptorTable(0, {gpu.ptr + 5 * inc});
+        list->SetGraphicsRootDescriptorTable(1, {sampler_gpu.ptr + 2 * sampler_inc});
+        list->SetGraphicsRootConstantBufferView(2, constants->GetGPUVirtualAddress() + 256);
+        list->DrawInstanced(3, 1, 0, 0);
+
+        b.Transition.pResource = target;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        list->ResourceBarrier(1, &b);
+        D3D12_TEXTURE_COPY_LOCATION dst{readback, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT},
+            src{target, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        dst.PlacedFootprint = target_fp;
+        src.SubresourceIndex = 0;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        std::printf("  textured: recorded\n");
+    }
+    if (!step("close list", list->Close()))
+        goto out;
+    {
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+    }
+    if (!step("signal fence", queue->Signal(fence, 1)) || !step("set event", fence->SetEventOnCompletion(1, event)))
+        goto out;
+    if (WaitForSingleObject(event, 5000) != WAIT_OBJECT_0) {
+        std::printf("  textured: fence did not reach 1 within 5 s (completed value %llu)\n",
+                    static_cast<unsigned long long>(fence->GetCompletedValue()));
+        goto out;
+    }
+    {
+        D3D12_RANGE all{0, static_cast<SIZE_T>(readback_size)};
+        if (!step("map readback", readback->Map(0, &all, &p)))
+            goto out;
+        const auto* bytes = static_cast<const uint8_t*>(p) + target_fp.Offset;
+        ok = true;
+        // Pixel (x, y) shows texel (x / 16, y / 16); alpha is 1 * 0 + 0.2 + 0.4.
+        for (UINT y : {8u, 24u, 40u, 56u})
+            for (UINT x : {8u, 24u, 40u, 56u}) {
+                uint32_t v;
+                std::memcpy(&v, bytes + y * target_fp.Footprint.RowPitch + x * 4, 4);
+                const uint32_t expected = rgba(x / 16 * 64, y / 16 * 64, 128, 153);
+                std::printf("  textured: pixel (%2u, %2u) 0x%08x %s %s sampler\n", x, y, v,
+                            v == expected ? "ok  " : "FAIL", x < 32 ? "heap" : "static");
+                ok &= v == expected;
+            }
+        readback->Unmap(0, &none);
+    }
+out:
+    if (rs_error)
+        std::printf("  textured: root signature error: %.*s\n", static_cast<int>(rs_error->GetBufferSize()),
+                    static_cast<const char*>(rs_error->GetBufferPointer()));
+    std::printf("  textured test: %s\n", ok ? "PASS" : "FAIL");
+    for (IUnknown* u : std::initializer_list<IUnknown*>{fence, list, alloc, queue, sampler_heap, gpu_heap, cpu_heap,
+                                                         rtv_heap, readback, target, offsets, constants, upload, tex,
+                                                         pso, rs, rs_error, rs_blob})
+        if (u)
+            u->Release();
+    CloseHandle(event);
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -434,7 +721,7 @@ int main(int argc, char** argv)
     for (int i = 1; i < argc; i++)
         std::printf(" %s", argv[i]);
     std::printf("\n");
-    bool copy = false, triangle = false;
+    bool copy = false, triangle = false, textured = false;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--debug"))
             enable_debug_layer();
@@ -442,6 +729,8 @@ int main(int argc, char** argv)
             copy = true;
         else if (!std::strcmp(argv[i], "--triangle"))
             triangle = true;
+        else if (!std::strcmp(argv[i], "--textured"))
+            textured = true;
     }
 
     IDXGIFactory1* factory = nullptr;
@@ -469,6 +758,8 @@ int main(int argc, char** argv)
             if (copy && !copy_test(device))
                 failures++;
             if (triangle && !triangle_test(device))
+                failures++;
+            if (textured && !textured_test(device))
                 failures++;
             device->Release();
         } else if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {

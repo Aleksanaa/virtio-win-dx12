@@ -58,6 +58,73 @@ Instance::~Instance() = default;
 
 const std::vector<AdapterDesc>& Instance::adapters() const { return impl_->adapters; }
 
+// What the bindless descriptor model (D3D12 heaps as large descriptor sets of mutable descriptors) needs, logged
+// once per adapter: Venus passes through only what the host's virglrenderer knows, so this is checked in the guest
+// before descriptor heaps are built on it.
+static void report_descriptor_caps(Instance::Impl& in, PhysicalDevice& phys,
+                                   const std::vector<VkExtensionProperties>& exts)
+{
+    const VkPhysicalDevice pd = phys.handle;
+    const char* name = phys.desc.name.c_str();
+    const bool mutable_ext = has_extension(exts, VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME);
+    const bool valve_ext = has_extension(exts, VK_VALVE_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME);
+    const bool robustness2_ext = has_extension(exts, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+    const bool buffer_ext = has_extension(exts, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
+
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mut{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT};
+    VkPhysicalDeviceRobustness2FeaturesEXT rob{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+    VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    if (mutable_ext || valve_ext) {   // the VALVE struct is the same struct with the same sType value
+        mut.pNext = f2.pNext;
+        f2.pNext = &mut;
+    }
+    if (robustness2_ext) {
+        rob.pNext = f2.pNext;
+        f2.pNext = &rob;
+    }
+    in.vk.vkGetPhysicalDeviceFeatures2(pd, &f2);
+    phys.mutable_descriptors = (mutable_ext || valve_ext) && mut.mutableDescriptorType;
+    phys.mutable_ext_name = mutable_ext ? VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME : VK_VALVE_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME;
+    const auto& i12 = phys.v12;
+    phys.mutable_descriptors = phys.mutable_descriptors && i12.descriptorIndexing && i12.runtimeDescriptorArray &&
+                               i12.descriptorBindingPartiallyBound && i12.descriptorBindingVariableDescriptorCount &&
+                               i12.descriptorBindingSampledImageUpdateAfterBind &&
+                               i12.descriptorBindingStorageImageUpdateAfterBind &&
+                               i12.descriptorBindingUniformBufferUpdateAfterBind &&
+                               i12.descriptorBindingStorageBufferUpdateAfterBind &&
+                               i12.descriptorBindingUniformTexelBufferUpdateAfterBind &&
+                               i12.descriptorBindingStorageTexelBufferUpdateAfterBind;
+    phys.desc.bindless = phys.mutable_descriptors;
+    phys.null_descriptor = robustness2_ext && rob.nullDescriptor;
+
+    VkPhysicalDeviceVulkan12Properties p12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+    VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p12};
+    in.vk.vkGetPhysicalDeviceProperties2(pd, &props);
+
+    const auto& v = phys.v12;
+    log(LogLevel::debug, "[%s] descriptors: mutable %s (ext %d, valve %d), nullDescriptor %d, descriptor_buffer ext %d, "
+        "descriptor_heap ext %d", name, phys.mutable_descriptors ? "yes" : "NO", mutable_ext, valve_ext,
+        phys.null_descriptor, buffer_ext, has_extension(exts, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME));
+    log(LogLevel::debug, "[%s] descriptor indexing: %d, runtime arrays %d, partially bound %d, variable count %d; "
+        "update after bind: sampled %d storage image %d uniform buffer %d storage buffer %d uniform texel %d "
+        "storage texel %d; non-uniform: sampled %d storage image %d storage buffer %d uniform buffer %d", name,
+        v.descriptorIndexing, v.runtimeDescriptorArray, v.descriptorBindingPartiallyBound,
+        v.descriptorBindingVariableDescriptorCount, v.descriptorBindingSampledImageUpdateAfterBind,
+        v.descriptorBindingStorageImageUpdateAfterBind, v.descriptorBindingUniformBufferUpdateAfterBind,
+        v.descriptorBindingStorageBufferUpdateAfterBind, v.descriptorBindingUniformTexelBufferUpdateAfterBind,
+        v.descriptorBindingStorageTexelBufferUpdateAfterBind, v.shaderSampledImageArrayNonUniformIndexing,
+        v.shaderStorageImageArrayNonUniformIndexing, v.shaderStorageBufferArrayNonUniformIndexing,
+        v.shaderUniformBufferArrayNonUniformIndexing);
+    log(LogLevel::debug, "[%s] update-after-bind limits: all pools %u; per stage: samplers %u sampled %u storage "
+        "images %u uniform buffers %u storage buffers %u; per set: samplers %u sampled %u; push constants %u bytes",
+        name, p12.maxUpdateAfterBindDescriptorsInAllPools, p12.maxPerStageDescriptorUpdateAfterBindSamplers,
+        p12.maxPerStageDescriptorUpdateAfterBindSampledImages, p12.maxPerStageDescriptorUpdateAfterBindStorageImages,
+        p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers, p12.maxPerStageDescriptorUpdateAfterBindStorageBuffers,
+        p12.maxDescriptorSetUpdateAfterBindSamplers, p12.maxDescriptorSetUpdateAfterBindSampledImages,
+        phys.limits.maxPushConstantsSize);
+}
+
 static void probe_physical_device(Instance::Impl& in, VkPhysicalDevice pd)
 {
     PhysicalDevice phys;
@@ -122,6 +189,7 @@ static void probe_physical_device(Instance::Impl& in, VkPhysicalDevice pd)
         if (!v13.dynamicRendering) d.missing.push_back("dynamicRendering");
         if ((is_1_4 || phys.needs_maintenance5_ext) && !m5.maintenance5) d.missing.push_back("maintenance5");
         d.descriptor_heap = has_heap_ext && heap.descriptorHeap;
+        report_descriptor_caps(in, phys, exts);
     }
 
     in.vk.vkGetPhysicalDeviceMemoryProperties(pd, &phys.memory);

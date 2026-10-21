@@ -19,7 +19,9 @@ param(
     # Probe only: also run the buffer copy test (upload -> default -> readback, fence) on each device
     [switch]$Copy,
     # Probe only: also draw off-screen and check pixels (render target, shaders, root constants, vertex buffer)
-    [switch]$Triangle
+    [switch]$Triangle,
+    # Probe only: also sample a texture through descriptor heaps, tables, a heap and a static sampler
+    [switch]$Textured
 )
 
 $ErrorActionPreference = 'Stop'
@@ -109,6 +111,7 @@ switch ($Action) {
         if ($DebugLayer) { $probeArgs += '--debug' }
         if ($Copy) { $probeArgs += '--copy' }
         if ($Triangle) { $probeArgs += '--triangle' }
+        if ($Textured) { $probeArgs += '--textured' }
         & $exe @probeArgs
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"
