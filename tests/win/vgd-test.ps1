@@ -5,7 +5,7 @@
 #   Uninstall : restore the saved UserModeDriverName value and remove the DLL (reboot after)
 #   Status    : show the current value
 # Run from an elevated PowerShell:  powershell -ExecutionPolicy Bypass -File .\vgd-test.ps1 Install
-# Expects the build tree layout next to it: umd\vgd3d12.dll, tests\win\d3dprobe.exe.
+# Expects the build tree layout next to it: umd\vgd3d12.dll, icd\vgd_vulkan_virtio.dll, tests\win\d3dprobe.exe.
 
 param(
     [Parameter(Mandatory = $true, Position = 0)]
@@ -29,12 +29,16 @@ param(
     # Probe only: also run occlusion, pipeline statistics and timestamp queries
     [switch]$Queries,
     # Probe only: also run ExecuteIndirect draws and dispatches
-    [switch]$Indirect
+    [switch]$Indirect,
+    # Probe only: also open a window with a flip-model swapchain for a few seconds and check the screen
+    [switch]$Present
 )
 
 $ErrorActionPreference = 'Stop'
 $Work = 'C:\vgd'
 $SysDll = Join-Path $env:SystemRoot 'System32\vgd3d12.dll'
+# Our build of yttrium's Venus ICD (icd/), which vgd3d12.dll loads from its own directory.
+$SysIcd = Join-Path $env:SystemRoot 'System32\vgd_vulkan_virtio.dll'
 $Saved = Join-Path $Work 'original-UserModeDriverName.txt'
 $DisplayClass = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
 
@@ -96,6 +100,13 @@ switch ($Action) {
         $original = @(Get-Content $Saved)
 
         Copy-Item $dll $SysDll -Force
+        $icd = $null
+        try { $icd = Find-BuildFile 'icd\vgd_vulkan_virtio.dll' }
+        catch { Write-Host "No icd\vgd_vulkan_virtio.dll: vgd3d12.dll will fall back to the registered ICD (no present)." -ForegroundColor Yellow }
+        if ($icd) {
+            Copy-Item $icd $SysIcd -Force
+            Write-Host "ICD: $SysIcd sha256 $((Get-FileHash $SysIcd -Algorithm SHA256).Hash.ToLower())"
+        }
         Copy-Item $probe (Join-Path $Work 'd3dprobe.exe') -Force
 
         # Slots: D3D9, D3D10, D3D11 stay yttrium's; the 4th (D3D12) is ours.
@@ -124,6 +135,7 @@ switch ($Action) {
         if ($Compute) { $probeArgs += '--compute' }
         if ($Queries) { $probeArgs += '--queries' }
         if ($Indirect) { $probeArgs += '--indirect' }
+        if ($Present) { $probeArgs += '--present' }
         & $exe @probeArgs
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"
@@ -143,6 +155,8 @@ switch ($Action) {
         # The DLL may be loaded by a running process; then it goes after the reboot.
         try { Remove-Item $SysDll -ErrorAction Stop }
         catch { if (Test-Path $SysDll) { Write-Host "Could not delete $SysDll now (in use); rerun Uninstall after reboot." -ForegroundColor Yellow } }
+        try { if (Test-Path $SysIcd) { Remove-Item $SysIcd -ErrorAction Stop } }
+        catch { Write-Host "Could not delete $SysIcd now (in use); rerun Uninstall after reboot." -ForegroundColor Yellow }
         Show-Status $key
         Write-Host ''
         Write-Host 'Uninstalled. Reboot to make the adapter use the original value.' -ForegroundColor Green

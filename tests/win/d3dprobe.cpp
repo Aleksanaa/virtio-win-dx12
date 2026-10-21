@@ -9,6 +9,8 @@
 //   --compute  on each device created, clear UAVs and dispatch on a compute queue, check the values.
 //   --queries  on each device created, run occlusion, pipeline statistics and timestamp queries, check results.
 //   --indirect  on each device created, ExecuteIndirect draws and dispatches, counted by queries and the shader.
+//   --present  on each device created, a flip-model swapchain in a window for a few seconds (watch it), then a
+//            screen readback of the last frame.
 #include <windows.h>
 #include <dxgi1_4.h>
 #include <dxgidebug.h>
@@ -1686,6 +1688,204 @@ out:
     return ok;
 }
 
+LRESULT CALLBACK present_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void pump_messages()
+{
+    MSG m;
+    while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
+}
+
+// A flip-model swapchain in a window: a few seconds of clears with a moving square (watch it), then one solid
+// colour. Passing means every frame was presented; whether the compositor shows them is for the person watching
+// (the screen readback is a hint only: with WARP it read the desktop behind the window).
+bool present_test(ID3D12Device* device, IDXGIFactory1* factory1, const wchar_t* label)
+{
+    constexpr UINT kWidth = 480, kHeight = 270, kBuffers = 2, kFrames = 240;
+    auto step = [](const char* what, HRESULT hr) {
+        std::printf("  present: %-26s 0x%08lx %s\n", what, hr, SUCCEEDED(hr) ? "ok" : "FAIL");
+        print_messages();
+        return SUCCEEDED(hr);
+    };
+
+    IDXGIFactory2* factory = nullptr;
+    IDXGISwapChain1* swapchain1 = nullptr;
+    IDXGISwapChain3* swapchain = nullptr;
+    ID3D12CommandQueue* queue = nullptr;
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    ID3D12DescriptorHeap* rtv_heap = nullptr;
+    ID3D12Resource* buffers[kBuffers] = {};
+    ID3D12Fence* fence = nullptr;
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    HWND hwnd = nullptr;
+    bool ok = false;
+    UINT64 fence_value = 0;
+    DWORD start = 0, elapsed = 0;
+    UINT presented = 0;
+    HRESULT present_hr = S_OK;
+
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = present_wndproc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"d3dprobe_present";
+    wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
+    RegisterClassW(&wc);
+    wchar_t title[160];
+    swprintf(title, 160, L"d3dprobe present: %ls", label);
+    RECT r{0, 0, static_cast<LONG>(kWidth), static_cast<LONG>(kHeight)};
+    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    hwnd = CreateWindowExW(WS_EX_TOPMOST, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, 100, 100, r.right - r.left,
+                           r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+    if (!hwnd) {
+        std::printf("  present: CreateWindow failed: %lu\n", GetLastError());
+        goto out;
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    SetForegroundWindow(hwnd);
+    pump_messages();
+
+    {
+        D3D12_COMMAND_QUEUE_DESC qd{};
+        qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        if (!step("CreateCommandQueue", device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue))))
+            goto out;
+    }
+    if (!step("QueryInterface(Factory2)", factory1->QueryInterface(IID_PPV_ARGS(&factory))))
+        goto out;
+    {
+        DXGI_SWAP_CHAIN_DESC1 sd{};
+        sd.Width = kWidth;
+        sd.Height = kHeight;
+        sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        sd.SampleDesc = {1, 0};
+        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        sd.BufferCount = kBuffers;
+        sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        if (!step("CreateSwapChainForHwnd",
+                  factory->CreateSwapChainForHwnd(queue, hwnd, &sd, nullptr, nullptr, &swapchain1)))
+            goto out;
+    }
+    if (!step("QueryInterface(SwapChain3)", swapchain1->QueryInterface(IID_PPV_ARGS(&swapchain))))
+        goto out;
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC hd{D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kBuffers, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+        if (!step("CreateDescriptorHeap(RTV)", device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap))))
+            goto out;
+    }
+    {
+        const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        for (UINT i = 0; i < kBuffers; i++) {
+            if (!step("GetBuffer", swapchain->GetBuffer(i, IID_PPV_ARGS(&buffers[i]))))
+                goto out;
+            D3D12_CPU_DESCRIPTOR_HANDLE h;
+            rtv_heap->GetCPUDescriptorHandleForHeapStart(&h);
+            h.ptr += i * inc;
+            device->CreateRenderTargetView(buffers[i], nullptr, h);
+        }
+    }
+    if (!step("CreateCommandAllocator",
+              device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
+        !step("CreateCommandList", device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr,
+                                                             IID_PPV_ARGS(&list))) ||
+        !step("CreateFence", device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+        goto out;
+    list->Close();
+
+    start = GetTickCount();
+    for (UINT frame = 0; frame <= kFrames; frame++) {
+        pump_messages();
+        const bool last = frame == kFrames;
+        const UINT index = swapchain->GetCurrentBackBufferIndex();
+        alloc->Reset();
+        list->Reset(alloc, nullptr);
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition = {buffers[index], D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_PRESENT,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET};
+        list->ResourceBarrier(1, &b);
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+        rtv_heap->GetCPUDescriptorHandleForHeapStart(&rtv);
+        rtv.ptr += index * device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        // Background cycles red, green, blue each second; a white square moves along the diagonal. The last
+        // frame is solid magenta, for the screen readback.
+        static const float backgrounds[3][4] = {{0.8f, 0.1f, 0.1f, 1}, {0.1f, 0.7f, 0.1f, 1}, {0.1f, 0.2f, 0.8f, 1}};
+        const float magenta[4] = {1, 0, 1, 1}, white[4] = {1, 1, 1, 1};
+        list->ClearRenderTargetView(rtv, last ? magenta : backgrounds[(frame / 60) % 3], 0, nullptr);
+        if (!last) {
+            const LONG x = static_cast<LONG>((frame * 2) % (kWidth - 40)), y = static_cast<LONG>(frame % (kHeight - 40));
+            const D3D12_RECT square{x, y, x + 40, y + 40};
+            list->ClearRenderTargetView(rtv, white, 1, &square);
+        }
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        list->ResourceBarrier(1, &b);
+        list->Close();
+        ID3D12CommandList* lists[] = {list};
+        queue->ExecuteCommandLists(1, lists);
+        present_hr = swapchain->Present(1, 0);
+        if (FAILED(present_hr)) {
+            std::printf("  present: Present #%u failed: 0x%08lx (device removed reason 0x%08lx)\n", frame, present_hr,
+                        device->GetDeviceRemovedReason());
+            print_messages();
+            break;
+        }
+        presented++;
+        queue->Signal(fence, ++fence_value);
+        fence->SetEventOnCompletion(fence_value, event);
+        if (WaitForSingleObject(event, 5000) != WAIT_OBJECT_0) {
+            std::printf("  present: frame %u did not complete in 5 s\n", frame);
+            break;
+        }
+    }
+    elapsed = GetTickCount() - start;
+    std::printf("  present: %u of %u frames presented in %lu ms (%.1f fps)\n", presented, kFrames + 1, elapsed,
+                elapsed ? presented * 1000.0 / elapsed : 0.0);
+    {
+        DXGI_FRAME_STATISTICS stats{};
+        HRESULT hr = swapchain->GetFrameStatistics(&stats);
+        std::printf("  present: GetFrameStatistics 0x%08lx, present count %u, refresh count %u\n", hr,
+                    stats.PresentCount, stats.PresentRefreshCount);
+    }
+    {
+        // What the compositor shows: the centre of our client area on the screen, a moment after the last frame.
+        Sleep(500);
+        pump_messages();
+        POINT p{static_cast<LONG>(kWidth / 2), static_cast<LONG>(kHeight / 2)};
+        ClientToScreen(hwnd, &p);
+        HDC screen = GetDC(nullptr);
+        const COLORREF c = GetPixel(screen, p.x, p.y);
+        ReleaseDC(nullptr, screen);
+        const bool magenta = c != CLR_INVALID && GetRValue(c) > 200 && GetGValue(c) < 60 && GetBValue(c) > 200;
+        std::printf("  present: screen pixel at (%ld, %ld) = 0x%06lx (r %u g %u b %u): %s\n", p.x, p.y, c,
+                    GetRValue(c), GetGValue(c), GetBValue(c), magenta ? "magenta" : "not magenta (a hint only, see above)");
+        ok = presented == kFrames + 1;
+    }
+    std::printf("  present: device removed reason 0x%08lx\n", device->GetDeviceRemovedReason());
+
+out:
+    std::printf("  present test: %s\n", ok ? "PASS" : "FAIL");
+    if (queue && fence) {
+        queue->Signal(fence, ++fence_value);
+        fence->SetEventOnCompletion(fence_value, event);
+        WaitForSingleObject(event, 5000);
+    }
+    for (IUnknown* u : std::initializer_list<IUnknown*>{fence, list, alloc, buffers[0], buffers[1], rtv_heap,
+                                                         swapchain, swapchain1, factory, queue})
+        if (u)
+            u->Release();
+    if (hwnd)
+        DestroyWindow(hwnd);
+    CloseHandle(event);
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -1698,7 +1898,7 @@ int main(int argc, char** argv)
         std::printf(" %s", argv[i]);
     std::printf("\n");
     bool copy = false, triangle = false, textured = false, depth = false, compute = false, queries = false,
-         indirect = false;
+         indirect = false, present = false;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--debug"))
             enable_debug_layer();
@@ -1712,6 +1912,8 @@ int main(int argc, char** argv)
             depth = true;
         else if (!std::strcmp(argv[i], "--indirect"))
             indirect = true;
+        else if (!std::strcmp(argv[i], "--present"))
+            present = true;
         else if (!std::strcmp(argv[i], "--queries"))
             queries = true;
         else if (!std::strcmp(argv[i], "--compute"))
@@ -1753,6 +1955,8 @@ int main(int argc, char** argv)
             if (queries && !queries_test(device))
                 failures++;
             if (compute && !compute_test(device))
+                failures++;
+            if (present && !present_test(device, factory, desc.Description))
                 failures++;
             device->Release();
         } else if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {

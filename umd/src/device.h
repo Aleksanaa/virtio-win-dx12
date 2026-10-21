@@ -2,6 +2,7 @@
 #pragma once
 
 #include "wdk.h"
+#include "viogpu_abi.h"
 
 #include <vgd/core.h>
 
@@ -18,6 +19,11 @@ struct CommandListTables {
     UINT count = 0;
 };
 
+struct KmtDevice;
+struct KmtDeviceDeleter {
+    void operator()(KmtDevice* k) const;   // present.cpp
+};
+
 struct Device {
     D3D12DDI_HRTDEVICE rt_device{};
     const CommandListTables* command_list_tables = nullptr;   // owned by the adapter
@@ -25,12 +31,17 @@ struct Device {
     const D3D12DDI_CORELAYER_DEVICECALLBACKS_0062* um_callbacks = nullptr; // runtime callbacks in user mode
     std::unique_ptr<vgd::Instance> instance;
     std::unique_ptr<vgd::Device> core;
+    // The KMD understands viogpu::AllocationAlias (our patch): swapchain buffers can be presented.
+    bool allocation_alias = false;
+    // Our own kernel device, for opening shared handles (present.cpp); created on first use.
+    std::unique_ptr<KmtDevice, KmtDeviceDeleter> kmt;
 
     static Device* from(D3D12DDI_HDEVICE h) { return static_cast<Device*>(h.pDrvPrivate); }
 };
 
 SIZE_T device_private_size();
-HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandListTables& tables);
+HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandListTables& tables,
+                      const viogpu::AdapterInfo& info);
 void destroy_device(D3D12DDI_HDEVICE device);
 // `index` is the table number (the runtime asks for several command-list tables); command-list table handles are
 // recorded in `tables`.

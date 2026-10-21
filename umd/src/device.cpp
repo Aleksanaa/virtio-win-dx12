@@ -43,9 +43,10 @@ HRESULT bring_up_core(Device& d)
         std::string missing;
         for (const auto& m : a.missing)
             missing += " " + m;
-        VGD_TRACE("CreateDevice: Vulkan device %u: %s (api %u.%u.%u, %s) descriptor_heap=%d%s%s", static_cast<unsigned>(i), a.name.c_str(),
+        VGD_TRACE("CreateDevice: Vulkan device %u: %s (api %u.%u.%u, %s) descriptor_heap=%d external_memory=%d%s%s",
+                  static_cast<unsigned>(i), a.name.c_str(),
                   VK_API_VERSION_MAJOR(a.api_version), VK_API_VERSION_MINOR(a.api_version),
-                  VK_API_VERSION_PATCH(a.api_version), a.driver_info.c_str(), a.descriptor_heap,
+                  VK_API_VERSION_PATCH(a.api_version), a.driver_info.c_str(), a.descriptor_heap, a.external_memory,
                   missing.empty() ? "" : " missing:", missing.c_str());
         if (!a.usable() || d.core)
             continue;
@@ -92,7 +93,8 @@ HRESULT APIENTRY set_extended_feature_callbacks(D3D12DDI_HDEVICE, D3D12DDI_TABLE
 
 SIZE_T device_private_size() { return sizeof(Device); }
 
-HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandListTables& tables)
+HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandListTables& tables,
+                      const viogpu::AdapterInfo& info)
 {
     if ((args.Version >> 16) != kBuildVersion) {
         VGD_WARN("CreateDevice: runtime picked build %u, we only fill tables for %u", args.Version >> 16, kBuildVersion);
@@ -103,6 +105,7 @@ HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandLi
     d->command_list_tables = &tables;
     d->kt_callbacks = args.pKTCallbacks;
     d->um_callbacks = args.p12UMCallbacks_0062;
+    d->allocation_alias = info.Flags.supports_allocation_alias;
 
     HRESULT hr = bring_up_core(*d);
     if (FAILED(hr)) {
@@ -138,6 +141,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         auto& t = *static_cast<T*>(table);
         VGD_FILL_STUBS(t, "device", VGD_SLOTS_DEVICE_CORE_0088);
         fill_device_core(t);
+        fill_present_ddi(t);
         break;
     }
     case D3D12DDI_TABLE_TYPE_COMMAND_LIST_3D: {
@@ -149,6 +153,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         fill_command_list_ddi(t);
         fill_query_list_ddi(t);
         fill_indirect_list_ddi(t);
+        fill_present_list_ddi(t);
         if (index < CommandListTables::kMax) {
             tables.rt[index] = rt_table;
             if (index >= tables.count)
@@ -171,7 +176,9 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         using T = DXGI1_4_DDI_BASE_FUNCTIONS;
         if (FAILED(hr = check_table_size<T>(type, size)))
             break;
-        VGD_FILL_STUBS(*static_cast<T*>(table), "dxgi", VGD_SLOTS_DXGI_1_4);
+        auto& t = *static_cast<T*>(table);
+        VGD_FILL_STUBS(t, "dxgi", VGD_SLOTS_DXGI_1_4);
+        fill_dxgi_ddi(t);
         break;
     }
     case D3D12DDI_TABLE_TYPE_0020_EXTENDED_FEATURES: {

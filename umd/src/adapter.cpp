@@ -38,7 +38,8 @@ HRESULT APIENTRY ddi_create_device(D3D12DDI_HADAPTER h, const D3D12DDIARG_CREATE
     if (!args || !args->hDrvDevice.pDrvPrivate)
         return E_INVALIDARG;
     VGD_TRACE("CreateDevice interface=0x%x version=0x%x", args->Interface, args->Version);
-    return create_device(*args, Adapter::from(h)->command_list_tables);
+    Adapter* a = Adapter::from(h);
+    return create_device(*args, a->command_list_tables, a->info);
 }
 
 HRESULT APIENTRY close_adapter(D3D12DDI_HADAPTER h)
@@ -119,9 +120,10 @@ extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter12(D3D12DDIARG_OPEN
         return DXGI_ERROR_UNSUPPORTED;
     }
     const bool venus = adapter->info.SupportedCapsetIDs & (1ull << vgd::viogpu::kCapsetVenus);
-    VGD_TRACE("OpenAdapter12: viogpu flags 3d=%u blob=%u hostvisible=%u ctxinit=%u capsets=0x%llx venus=%d",
+    VGD_TRACE("OpenAdapter12: viogpu flags 3d=%u blob=%u hostvisible=%u ctxinit=%u alias=%u capsets=0x%llx venus=%d",
               adapter->info.Flags.Supports3d, adapter->info.Flags.has_resource_blob,
               adapter->info.Flags.has_host_visible, adapter->info.Flags.has_context_init,
+              adapter->info.Flags.supports_allocation_alias,
               adapter->info.SupportedCapsetIDs, venus);
     if (!venus) {
         delete adapter;

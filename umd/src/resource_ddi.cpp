@@ -56,7 +56,7 @@ D3D12DDI_HEAP_AND_RESOURCE_SIZES APIENTRY calc_private_heap_and_resource_sizes(
 }
 
 HRESULT APIENTRY create_heap_and_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATEHEAP_0001* heap,
-                                          D3D12DDI_HHEAP hh, D3D12DDI_HRTRESOURCE,
+                                          D3D12DDI_HHEAP hh, D3D12DDI_HRTRESOURCE rt_resource,
                                           const D3D12DDIARG_CREATERESOURCE_0088* resource,
                                           const D3D12DDI_CLEAR_VALUES*, D3D12DDI_HPROTECTEDRESOURCESESSION_0030,
                                           D3D12DDI_HRESOURCE hr_)
@@ -69,6 +69,16 @@ HRESULT APIENTRY create_heap_and_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_
     const D3D12_HEAP_TYPE type = heap_type(*heap);
     const D3D12_RESOURCE_DESC desc = resource_desc(*resource);
     auto* ho = new (hh.pDrvPrivate) HeapObject;
+    if (heap->Flags & D3D12DDI_HEAP_FLAG_PRIMARY) {
+        // A swapchain buffer: the compositor reads it through a runtime allocation.
+        HRESULT hr = create_primary(*Device::from(h), *heap, *resource, desc, rt_resource, *ho);
+        if (FAILED(hr)) {
+            ho->~HeapObject();
+            return hr;
+        }
+        new (hr_.pDrvPrivate) ResourceObject{ho, ho->resource.get()};
+        return S_OK;
+    }
     HRESULT hr = Device::from(h)->core->create_committed_resource(type, desc, &ho->resource);
     if (FAILED(hr)) {
         VGD_WARN("CreateHeapAndResource: dimension %d, %llux%ux%u, format %d, flags 0x%x, heap type %d failed: 0x%08lx",
@@ -87,8 +97,10 @@ HRESULT APIENTRY create_heap_and_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_
     return S_OK;
 }
 
-void APIENTRY destroy_heap_and_resource(D3D12DDI_HDEVICE, D3D12DDI_HHEAP hh, D3D12DDI_HRESOURCE hr_)
+void APIENTRY destroy_heap_and_resource(D3D12DDI_HDEVICE h, D3D12DDI_HHEAP hh, D3D12DDI_HRESOURCE hr_)
 {
+    if (hh.pDrvPrivate && object<HeapObject>(hh)->allocation)
+        destroy_primary(*Device::from(h), *object<HeapObject>(hh));
     if (hr_.pDrvPrivate)
         object<ResourceObject>(hr_)->~ResourceObject();
     if (hh.pDrvPrivate)

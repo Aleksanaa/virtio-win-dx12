@@ -54,11 +54,6 @@ struct CommandRecorderObject {
     CommandPoolObject* pool = nullptr;
 };
 
-struct CommandQueueObject {
-    std::unique_ptr<vgd::CommandQueue> queue;
-    std::unique_ptr<QueueBridge> bridge;   // declared last, so destroyed first: its threads use the queue
-};
-
 // --- Pools ---------------------------------------------------------------------------------------------------
 
 SIZE_T APIENTRY calc_private_command_pool_size(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATE_COMMAND_POOL_0040*)

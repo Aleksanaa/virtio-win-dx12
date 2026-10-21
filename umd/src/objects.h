@@ -4,6 +4,7 @@
 // signature the runtime destroys right after creating it.
 #pragma once
 
+#include "queue_bridge.h"
 #include "wdk.h"
 
 #include <vgd/core.h>
@@ -64,6 +65,9 @@ struct CommandListObject {
 // heap owns the core resource and the resource handle refers to it. Placed resources come later.
 struct HeapObject {
     std::unique_ptr<vgd::Resource> resource;
+    // Swapchain buffers (PRIMARY heaps) also own a runtime allocation sharing the resource's memory (present.cpp).
+    D3DKMT_HANDLE allocation = 0;
+    D3D12DDI_HRTRESOURCE rt_resource{};
 };
 
 struct ResourceObject {
@@ -97,6 +101,20 @@ struct CommandSignatureObject {
 struct FenceObject {
     D3D12DDI_FENCE fence;
 };
+
+// Queues (command_ddi.cpp; present.cpp reads the bridge's context).
+struct CommandQueueObject {
+    std::unique_ptr<vgd::CommandQueue> queue;
+    std::unique_ptr<QueueBridge> bridge;   // declared last, so destroyed first: its threads use the queue
+};
+
+// Swapchain buffers, Present and the DXGI table (present.cpp).
+HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const D3D12DDIARG_CREATERESOURCE_0088& args,
+                       const D3D12_RESOURCE_DESC& desc, D3D12DDI_HRTRESOURCE rt_resource, HeapObject& out);
+void destroy_primary(Device& d, HeapObject& heap);
+void fill_present_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
+void fill_present_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& table);
+void fill_dxgi_ddi(DXGI1_4_DDI_BASE_FUNCTIONS& table);
 
 // Descriptor heaps and views (descriptor_ddi.cpp).
 void fill_descriptor_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);

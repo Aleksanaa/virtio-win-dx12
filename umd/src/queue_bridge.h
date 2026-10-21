@@ -34,6 +34,8 @@ public:
     // Creates the kernel context the runtime signals and waits on; failure fails queue creation.
     HRESULT init();
     HRESULT execute(vgd::CommandBatch batch);
+    // The kernel context the runtime fences on; present happens on it too.
+    HANDLE context() const { return context_; }
 
 private:
     struct Job {
