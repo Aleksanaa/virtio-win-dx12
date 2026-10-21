@@ -1,11 +1,16 @@
 From: vgd3d12
-Subject: venus: import NT handles with their private data, and close the opened resource
+Subject: venus: import NT handles with their private data, attached to the context
 
 virtgpu_d3dkmt_prime_fd_to_handle opened the resource of an NT handle without room for its private
 data, which a resource another driver created has (yttrium's D3D11 UMD puts its allocation
 exchange there), and dropped the opened resource, so its teardown destroyed the allocation alone,
 which fails and leaks the resource. Query the sizes first, pass the buffers, and keep the resource
 on the bo as win32 handle imports do.
+
+The kernel driver attaches an opened allocation to the context with a control-queue command it
+does not wait for, so the vkAllocateMemory import that follows on the ring could reach the host
+first: "vkr: failed to import resource: invalid res_id", a fatal ring error, and the ICD aborted
+the process. Wait for the attach with VIOGPU_RES_ATTACH_WAIT, as yttrium's own imports do.
 
 diff --git a/src/virtio/vulkan/vn_renderer_d3dkmt.c b/src/virtio/vulkan/vn_renderer_d3dkmt.c
 --- a/src/virtio/vulkan/vn_renderer_d3dkmt.c
@@ -33,7 +38,7 @@ diff --git a/src/virtio/vulkan/vn_renderer_d3dkmt.c b/src/virtio/vulkan/vn_rende
        return 0;
  
     /* An NT handle value, as virtgpu_d3dkmt_prime_handle_to_fd exports. */
-@@ -919,17 +923,56 @@
+@@ -919,20 +923,74 @@
     if (fd < 0)
        return 0;
  
@@ -92,7 +97,25 @@ diff --git a/src/virtio/vulkan/vn_renderer_d3dkmt.c b/src/virtio/vulkan/vn_rende
     return (uint32_t)alloc_info.hAllocation;
  }
  
-@@ -983,6 +1026,9 @@
++/* Opening the allocation queues its attach to this context on the control
++ * queue without waiting, so a ring command naming its res_id can reach the
++ * host first and fail as an invalid res_id, which is fatal to the ring.
++ * Wait for the attach, as yttrium's own imports of opened resources do.
++ */
++static bool
++virtgpu_d3dkmt_attach_wait(struct virtgpu *gpu, uint32_t alloc_handle)
++{
++   VIOGPU_ESCAPE esc = {0};
++   esc.Type = VIOGPU_RES_ATTACH_WAIT;
++   esc.DataLength = sizeof(VIOGPU_RES_ATTACH_WAIT_REQ);
++   esc.ResourceAttachWait.ResHandle = alloc_handle;
++   return virtgpu_d3dkmt_escape(gpu, &esc);
++}
++
+ static bool
+ virtgpu_load_d3dkmt(struct virtgpu *gpu)
+ {
+@@ -983,6 +1041,9 @@
     gpu->pfnOpenResourceFromNtHandle =
        (PFND3DKMT_OPENRESOURCEFROMNTHANDLE)GetProcAddress(
           gpu->gdi32, "D3DKMTOpenResourceFromNtHandle");
@@ -102,7 +125,7 @@ diff --git a/src/virtio/vulkan/vn_renderer_d3dkmt.c b/src/virtio/vulkan/vn_rende
  #if defined(HAVE_YTTRIUM)
     gpu->pfnQueryResourceInfo = (PFND3DKMT_QUERYRESOURCEINFO)GetProcAddress(
        gpu->gdi32, "D3DKMTQueryResourceInfo");
-@@ -1041,6 +1087,7 @@
+@@ -1041,6 +1102,7 @@
     gpu->pfnDestroyAllocation = NULL;
     gpu->pfnShareObjects = NULL;
     gpu->pfnOpenResourceFromNtHandle = NULL;
@@ -110,7 +133,7 @@ diff --git a/src/virtio/vulkan/vn_renderer_d3dkmt.c b/src/virtio/vulkan/vn_rende
     gpu->pfnOpenAdapterFromHdc = NULL;
     gpu->pfnCloseAdapter = NULL;
  }
-@@ -1683,23 +1730,27 @@
+@@ -1683,23 +1745,29 @@
                                 struct vn_renderer_bo **out_bo)
  {
     struct virtgpu *gpu = (struct virtgpu *)renderer;
@@ -121,6 +144,8 @@ diff --git a/src/virtio/vulkan/vn_renderer_d3dkmt.c b/src/virtio/vulkan/vn_rende
  
 -   alloc_handle = virtgpu_d3dkmt_prime_fd_to_handle(gpu, fd);
 +   alloc_handle = virtgpu_d3dkmt_prime_fd_to_handle(gpu, fd, &resource_handle);
++   if (alloc_handle && !virtgpu_d3dkmt_attach_wait(gpu, alloc_handle))
++      goto fail;
     VkResult result =
        virtgpu_bo_create_from_alloc_handle(gpu, size, alloc_handle, flags,
                                            out_bo);
