@@ -1,0 +1,144 @@
+From: vgd3d12
+Subject: venus: import NT handles with their private data, and close the opened resource
+
+virtgpu_d3dkmt_prime_fd_to_handle opened the resource of an NT handle without room for its private
+data, which a resource another driver created has (yttrium's D3D11 UMD puts its allocation
+exchange there), and dropped the opened resource, so its teardown destroyed the allocation alone,
+which fails and leaks the resource. Query the sizes first, pass the buffers, and keep the resource
+on the bo as win32 handle imports do.
+
+diff --git a/src/virtio/vulkan/vn_renderer_d3dkmt.c b/src/virtio/vulkan/vn_renderer_d3dkmt.c
+--- a/src/virtio/vulkan/vn_renderer_d3dkmt.c
++++ b/src/virtio/vulkan/vn_renderer_d3dkmt.c
+@@ -159,6 +159,7 @@
+    PFND3DKMT_DESTROYALLOCATION pfnDestroyAllocation;
+    PFND3DKMT_SHAREOBJECTS pfnShareObjects;
+    PFND3DKMT_OPENRESOURCEFROMNTHANDLE pfnOpenResourceFromNtHandle;
++   PFND3DKMT_QUERYRESOURCEINFOFROMNTHANDLE pfnQueryResourceInfoFromNtHandle;
+ #if defined(HAVE_YTTRIUM)
+    PFND3DKMT_QUERYRESOURCEINFO pfnQueryResourceInfo;
+    PFND3DKMT_OPENRESOURCE pfnOpenResource;
+@@ -909,9 +910,12 @@
+ #endif
+ 
+ static uint32_t
+-virtgpu_d3dkmt_prime_fd_to_handle(struct virtgpu *gpu, int fd)
++virtgpu_d3dkmt_prime_fd_to_handle(struct virtgpu *gpu, int fd,
++                                  uint32_t *out_resource_handle)
+ {
+-   if (!gpu->pfnOpenResourceFromNtHandle)
++   *out_resource_handle = 0;
++   if (!gpu->pfnOpenResourceFromNtHandle ||
++       !gpu->pfnQueryResourceInfoFromNtHandle)
+       return 0;
+ 
+    /* An NT handle value, as virtgpu_d3dkmt_prime_handle_to_fd exports. */
+@@ -919,17 +923,56 @@
+    if (fd < 0)
+       return 0;
+ 
++   /* The open needs room for the resource's private data, whose sizes only
++    * the query knows; a resource that another driver (or process) created
++    * has some.
++    */
++   D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query = {0};
++   query.hDevice = gpu->hDevice;
++   query.hNtHandle = shared;
++   NTSTATUS status = gpu->pfnQueryResourceInfoFromNtHandle(&query);
++   if (!NT_SUCCESS(status) || query.NumAllocations != 1) {
++      mesa_logw("venus: D3DKMTQueryResourceInfoFromNtHandle(%p) failed "
++                "status=0x%lx allocations=%u",
++                shared, (unsigned long)status, query.NumAllocations);
++      return 0;
++   }
++   void *runtime_private = calloc(1, MAX2(query.PrivateRuntimeDataSize, 1));
++   void *resource_private =
++      calloc(1, MAX2(query.ResourcePrivateDriverDataSize, 1));
++   void *total_private = calloc(1, MAX2(query.TotalPrivateDriverDataSize, 1));
++   if (!runtime_private || !resource_private || !total_private) {
++      free(total_private);
++      free(resource_private);
++      free(runtime_private);
++      return 0;
++   }
++
+    D3DDDI_OPENALLOCATIONINFO2 alloc_info = {0};
+    D3DKMT_OPENRESOURCEFROMNTHANDLE open = {0};
+    open.hDevice = gpu->hDevice;
+    open.hNtHandle = shared;
+    open.NumAllocations = 1;
+    open.pOpenAllocationInfo2 = &alloc_info;
++   open.PrivateRuntimeDataSize = query.PrivateRuntimeDataSize;
++   open.pPrivateRuntimeData = runtime_private;
++   open.ResourcePrivateDriverDataSize = query.ResourcePrivateDriverDataSize;
++   open.pResourcePrivateDriverData = resource_private;
++   open.TotalPrivateDriverDataBufferSize = query.TotalPrivateDriverDataSize;
++   open.pTotalPrivateDriverDataBuffer = total_private;
+ 
+-   NTSTATUS status = gpu->pfnOpenResourceFromNtHandle(&open);
+-   if (!NT_SUCCESS(status))
++   status = gpu->pfnOpenResourceFromNtHandle(&open);
++   free(total_private);
++   free(resource_private);
++   free(runtime_private);
++   if (!NT_SUCCESS(status)) {
++      mesa_logw("venus: D3DKMTOpenResourceFromNtHandle(%p) failed status=0x%lx",
++                shared, (unsigned long)status);
+       return 0;
++   }
+ 
++   /* The allocation belongs to the opened resource; teardown needs it. */
++   *out_resource_handle = (uint32_t)open.hResource;
+    return (uint32_t)alloc_info.hAllocation;
+ }
+ 
+@@ -983,6 +1026,9 @@
+    gpu->pfnOpenResourceFromNtHandle =
+       (PFND3DKMT_OPENRESOURCEFROMNTHANDLE)GetProcAddress(
+          gpu->gdi32, "D3DKMTOpenResourceFromNtHandle");
++   gpu->pfnQueryResourceInfoFromNtHandle =
++      (PFND3DKMT_QUERYRESOURCEINFOFROMNTHANDLE)GetProcAddress(
++         gpu->gdi32, "D3DKMTQueryResourceInfoFromNtHandle");
+ #if defined(HAVE_YTTRIUM)
+    gpu->pfnQueryResourceInfo = (PFND3DKMT_QUERYRESOURCEINFO)GetProcAddress(
+       gpu->gdi32, "D3DKMTQueryResourceInfo");
+@@ -1041,6 +1087,7 @@
+    gpu->pfnDestroyAllocation = NULL;
+    gpu->pfnShareObjects = NULL;
+    gpu->pfnOpenResourceFromNtHandle = NULL;
++   gpu->pfnQueryResourceInfoFromNtHandle = NULL;
+    gpu->pfnOpenAdapterFromHdc = NULL;
+    gpu->pfnCloseAdapter = NULL;
+ }
+@@ -1683,23 +1730,27 @@
+                                struct vn_renderer_bo **out_bo)
+ {
+    struct virtgpu *gpu = (struct virtgpu *)renderer;
+-   uint32_t alloc_handle = 0;
++   uint32_t alloc_handle = 0, resource_handle = 0;
+ 
+    mtx_lock(&gpu->import_mutex);
+ 
+-   alloc_handle = virtgpu_d3dkmt_prime_fd_to_handle(gpu, fd);
++   alloc_handle = virtgpu_d3dkmt_prime_fd_to_handle(gpu, fd, &resource_handle);
+    VkResult result =
+       virtgpu_bo_create_from_alloc_handle(gpu, size, alloc_handle, flags,
+                                           out_bo);
+    if (result != VK_SUCCESS)
+       goto fail;
+ 
++   /* Each open makes a new allocation handle, so the bo is new: it closes the
++    * opened resource at teardown, as win32 handle imports do.
++    */
++   ((struct virtgpu_bo *)*out_bo)->open_resource_handle = resource_handle;
++
+    mtx_unlock(&gpu->import_mutex);
+    return VK_SUCCESS;
+ 
+ fail:
+-   /* prime_fd_to_handle opens a standalone allocation, not a resource. */
+-   virtgpu_bo_close_failed_import_handle(gpu, alloc_handle, 0);
++   virtgpu_bo_close_failed_import_handle(gpu, alloc_handle, resource_handle);
+    mtx_unlock(&gpu->import_mutex);
+    return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+ }
