@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Guest probe: loads a Vulkan ICD directly (as the UMD does, no loader) and reports, for each physical device,
+// Guest probe: loads a Vulkan ICD directly (as the UMDs do, no loader) and reports, for each physical device,
 // whether it meets vkd3d-proton's hard device requirements and what D3D12 features beyond them would need
-// (tiled resources, feature levels 12_0-12_2). Plain-text output.
+// (tiled resources, feature levels 12_0-12_2), then the same for DXVK by the profiles in its
+// VP_DXVK_requirements.json (D3D11 levels 10_1-12_1, D3D9). Plain-text output.
 //   vkprobe [path\to\icd.dll]   default: ..\..\icd\vgd_vulkan_virtio.dll next to this exe (the share layout)
 //   --extensions                also list every device extension
 #include <windows.h>
@@ -131,6 +132,11 @@ int main(int argc, char** argv)
         const bool xfb_ext = has(exts, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
         if (xfb_ext)
             chain(p2, xfb);
+        VkPhysicalDeviceConservativeRasterizationPropertiesEXT cons{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONSERVATIVE_RASTERIZATION_PROPERTIES_EXT};
+        const bool cons_ext = has(exts, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
+        if (cons_ext)
+            chain(p2, cons);
         vkGetPhysicalDeviceProperties2(pd, &p2);
         const VkPhysicalDeviceProperties& p = p2.properties;
         const bool v14 = p.apiVersion >= VK_API_VERSION_1_4;
@@ -154,6 +160,18 @@ int main(int argc, char** argv)
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
         VkPhysicalDeviceFragmentShadingRateFeaturesKHR vrs{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
+        VkPhysicalDeviceMaintenance5FeaturesKHR m5{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
+        VkPhysicalDeviceMaintenance6FeaturesKHR m6{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES_KHR};
+        VkPhysicalDeviceDepthClipEnableFeaturesEXT clip{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
+        VkPhysicalDeviceCustomBorderColorFeaturesEXT border{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
+        VkPhysicalDeviceDepthBiasControlFeaturesEXT bias{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_BIAS_CONTROL_FEATURES_EXT};
+        VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+        VkPhysicalDeviceMultiDrawFeaturesEXT multi{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTI_DRAW_FEATURES_EXT};
+        VkPhysicalDeviceMemoryPriorityFeaturesEXT prio{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT};
         VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         chain(f2, f11);
         chain(f2, f12);
@@ -188,6 +206,30 @@ int main(int argc, char** argv)
         const bool vrs_ext = has(exts, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
         if (vrs_ext)
             chain(f2, vrs);
+        const bool m5_ext = has(exts, VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+        if (m5_ext)
+            chain(f2, m5);
+        const bool m6_ext = has(exts, VK_KHR_MAINTENANCE_6_EXTENSION_NAME);
+        if (m6_ext)
+            chain(f2, m6);
+        const bool clip_ext = has(exts, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
+        if (clip_ext)
+            chain(f2, clip);
+        const bool border_ext = has(exts, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+        if (border_ext)
+            chain(f2, border);
+        const bool bias_ext = has(exts, VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME);
+        if (bias_ext)
+            chain(f2, bias);
+        const bool eds3_ext = has(exts, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+        if (eds3_ext)
+            chain(f2, eds3);
+        const bool multi_ext = has(exts, VK_EXT_MULTI_DRAW_EXTENSION_NAME);
+        if (multi_ext)
+            chain(f2, multi);
+        const bool prio_ext = has(exts, VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
+        if (prio_ext)
+            chain(f2, prio);
         vkGetPhysicalDeviceFeatures2(pd, &f2);
         const VkPhysicalDeviceFeatures& f = f2.features;
 
@@ -269,6 +311,119 @@ int main(int argc, char** argv)
         info("64-bit shader atomics (SM 6.6)", f12.shaderBufferInt64Atomics);
         std::printf(" => %s\n", hard_missing ? "vkd3d-proton would not run on this device"
                                              : "vkd3d-proton's requirements are met");
+
+        // DXVK: the capability blocks of VP_DXVK_requirements.json. MISS = required by the profile it is listed
+        // under; "no" = optional (DXVK has a slower path or reports the feature off).
+        const bool m5_ok = (v14 && f14.maintenance5) || (m5_ext && m5.maintenance5);
+        const bool m6_ok = (v14 && f14.maintenance6) || (m6_ext && m6.maintenance6);
+        const bool divisor_ok = v14 && f14.vertexAttributeInstanceRateDivisor &&
+                                f14.vertexAttributeInstanceRateZeroDivisor;
+        g_missing = 0;
+        std::printf(" DXVK common (Vulkan 1.3 core + dxvk_common_required):\n");
+        check("Vulkan 1.3", p.apiVersion >= VK_API_VERSION_1_3);
+        check("robustBufferAccess", f.robustBufferAccess);
+        check("1.1: multiview (6 views)", f11.multiview && p11.maxMultiviewViewCount >= 6);
+        check("1.2: uniformBufferStandardLayout, subgroupBroadcastDynamicId, imagelessFramebuffer, "
+              "separateDepthStencilLayouts, hostQueryReset, timelineSemaphore, shaderSubgroupExtendedTypes",
+              f12.uniformBufferStandardLayout && f12.subgroupBroadcastDynamicId && f12.imagelessFramebuffer &&
+                  f12.separateDepthStencilLayouts && f12.hostQueryReset && f12.timelineSemaphore &&
+                  f12.shaderSubgroupExtendedTypes);
+        check("1.2: vulkanMemoryModel (+ device scope), bufferDeviceAddress",
+              f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope && f12.bufferDeviceAddress);
+        check("1.3: robustImageAccess, shaderTerminateInvocation, zero-initialized workgroup memory, synchronization2, "
+              "integer dot product, maintenance4, pipelineCreationCacheControl, subgroupSizeControl, "
+              "computeFullSubgroups, demote to helper, inlineUniformBlock, dynamicRendering",
+              f13.robustImageAccess && f13.shaderTerminateInvocation && f13.shaderZeroInitializeWorkgroupMemory &&
+                  f13.synchronization2 && f13.shaderIntegerDotProduct && f13.maintenance4 &&
+                  f13.pipelineCreationCacheControl && f13.subgroupSizeControl && f13.computeFullSubgroups &&
+                  f13.shaderDemoteToHelperInvocation && f13.inlineUniformBlock && f13.dynamicRendering);
+        check("fragmentStoresAndAtomics, samplerAnisotropy, shaderInt16, sampled image array dynamic indexing",
+              f.fragmentStoresAndAtomics && f.samplerAnisotropy && f.shaderInt16 &&
+                  f.shaderSampledImageArrayDynamicIndexing);
+        check("16/8-bit storage, shaderInt8, shaderDrawParameters",
+              f11.storageBuffer16BitAccess && f12.storageBuffer8BitAccess && f12.shaderInt8 &&
+                  f11.shaderDrawParameters);
+        check("descriptor indexing (sampled image update after bind, update unused while pending, partially bound, "
+              "runtime arrays)",
+              f12.descriptorIndexing && f12.descriptorBindingSampledImageUpdateAfterBind &&
+                  f12.descriptorBindingUpdateUnusedWhilePending && f12.descriptorBindingPartiallyBound &&
+                  f12.runtimeDescriptorArray);
+        check("maintenance5 + maintenance6", m5_ok && m6_ok);
+        check("robustness2: nullDescriptor + robustBufferAccess2", rob_ext && rob.nullDescriptor && rob.robustBufferAccess2);
+        check("depth clip enable", clip_ext && clip.depthClipEnable);
+        check("load/store op none", v14 || has(exts, VK_KHR_LOAD_STORE_OP_NONE_EXTENSION_NAME) ||
+                                        has(exts, VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME));
+        check("maxPushConstantsSize >= 256", p.limits.maxPushConstantsSize >= 256);
+        const int dxvk_common_missing = g_missing;
+
+        g_missing = 0;
+        std::printf(" DXVK D3D11 baseline (D3D10.1 / 11):\n");
+        check("transform feedback + geometry streams", xfb_ext && xfbf.transformFeedback && xfbf.geometryStreams);
+        check("depthBiasClamp, depthClamp, dualSrcBlend, fillModeNonSolid, fullDrawIndexUint32, geometryShader, "
+              "imageCubeArray, independentBlend, multiViewport, occlusionQueryPrecise, sampleRateShading",
+              f.depthBiasClamp && f.depthClamp && f.dualSrcBlend && f.fillModeNonSolid && f.fullDrawIndexUint32 &&
+                  f.geometryShader && f.imageCubeArray && f.independentBlend && f.multiViewport &&
+                  f.occlusionQueryPrecise && f.sampleRateShading);
+        check("clip + cull distance, shaderImageGatherExtended, BC compression, samplerMirrorClampToEdge",
+              f.shaderClipDistance && f.shaderCullDistance && f.shaderImageGatherExtended && f.textureCompressionBC &&
+                  f12.samplerMirrorClampToEdge);
+        const int d3d11_missing = dxvk_common_missing + g_missing;
+        g_missing = 0;
+        check("11_0: drawIndirectFirstInstance, multiDrawIndirect, tessellationShader",
+              f.drawIndirectFirstInstance && f.multiDrawIndirect && f.tessellationShader);
+        const int l110_missing = d3d11_missing + g_missing;
+        g_missing = 0;
+        check("11_1: logicOp, vertexPipelineStoresAndAtomics", f.logicOp && f.vertexPipelineStoresAndAtomics);
+        const int l111_missing = l110_missing + g_missing;
+        g_missing = 0;
+        check("12_0: sparse binding + residency (buffer, image2D, aliased), shaderResourceResidency/MinLod, "
+              "samplerFilterMinmax, standard 2D blocks, strict non-resident, no aligned mip size",
+              f.sparseBinding && f.sparseResidencyBuffer && f.sparseResidencyImage2D && f.sparseResidencyAliased &&
+                  f.shaderResourceResidency && f.shaderResourceMinLod && f12.samplerFilterMinmax &&
+                  sp.residencyStandard2DBlockShape && sp.residencyNonResidentStrict && !sp.residencyAlignedMipSize);
+        const int l120_missing = l111_missing + g_missing;
+        g_missing = 0;
+        check("12_1: conservative rasterization (degenerate triangles, fully covered input) + pixel interlock",
+              cons_ext && cons.degenerateTrianglesRasterized && cons.fullyCoveredFragmentShaderInputVariable &&
+                  rov_ext && rov.fragmentShaderPixelInterlock);
+        const int l121_missing = l120_missing + g_missing;
+        std::printf(" DXVK optional (faster paths, more features):\n");
+        info("custom border color (+ without format)",
+             border_ext && border.customBorderColors && border.customBorderColorWithoutFormat);
+        info("depth bias control", bias_ext && bias.depthBiasControl && bias.depthBiasExact);
+        info("extended dynamic state 3 (alpha to coverage, depth clip, samples, sample mask)",
+             eds3_ext && eds3.extendedDynamicState3AlphaToCoverageEnable &&
+                 eds3.extendedDynamicState3DepthClipEnable && eds3.extendedDynamicState3RasterizationSamples &&
+                 eds3.extendedDynamicState3SampleMask);
+        info("vertex attribute divisor (+ zero)", divisor_ok);
+        info("multi draw", multi_ext && multi.multiDraw);
+        info("memory priority", prio_ext && prio.memoryPriority);
+        info("graphics pipeline library (async pipelines, less stutter)",
+             has(exts, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME));
+        info("VK_EXT_descriptor_heap", has(exts, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME));
+        info("depthBounds, pipelineStatisticsQuery, shaderFloat64, shaderInt64",
+             f.depthBounds && f.pipelineStatisticsQuery && f.shaderFloat64 && f.shaderInt64);
+        const char* level = !l121_missing   ? "12_1"
+                            : !l120_missing ? "12_0"
+                            : !l111_missing ? "11_1"
+                            : !l110_missing ? "11_0"
+                            : !d3d11_missing ? "10_1"
+                                             : nullptr;
+        if (level)
+            std::printf(" => DXVK D3D11 runs here, up to feature level %s\n", level);
+        else
+            std::printf(" => DXVK D3D11 would not run on this device\n");
+        g_missing = 0;
+        std::printf(" DXVK D3D9 baseline (beyond the common set):\n");
+        check("geometryShader, imageCubeArray, depthClamp, depthBiasClamp, fillModeNonSolid, sampleRateShading, "
+              "clip + cull distance, BC compression, occlusionQueryPrecise, independentBlend, fullDrawIndexUint32, "
+              "shaderImageGatherExtended, samplerMirrorClampToEdge",
+              f.geometryShader && f.imageCubeArray && f.depthClamp && f.depthBiasClamp && f.fillModeNonSolid &&
+                  f.sampleRateShading && f.shaderClipDistance && f.shaderCullDistance && f.textureCompressionBC &&
+                  f.occlusionQueryPrecise && f.independentBlend && f.fullDrawIndexUint32 &&
+                  f.shaderImageGatherExtended && f12.samplerMirrorClampToEdge);
+        std::printf(" => %s\n", dxvk_common_missing + g_missing ? "DXVK D3D9 would not run on this device"
+                                                                  : "DXVK D3D9 runs here");
 
         if (list_extensions)
             for (const auto& e : exts)
