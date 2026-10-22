@@ -7,3 +7,7 @@ target_link_options(d3dprobe PRIVATE -static -static-libgcc -static-libstdc++)
 add_executable(vkprobe vkprobe.cpp)
 target_link_libraries(vkprobe PRIVATE vgd-vulkan-headers)
 target_link_options(vkprobe PRIVATE -static -static-libgcc -static-libstdc++)
+
+add_executable(d3d11probe d3d11probe.cpp)
+target_link_libraries(d3d11probe PRIVATE d3d11 dxgi dxguid user32)
+target_link_options(d3d11probe PRIVATE -static -static-libgcc -static-libstdc++)
