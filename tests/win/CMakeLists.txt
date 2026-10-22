@@ -20,3 +20,7 @@ endforeach()
 add_executable(stackdump stackdump.cpp)
 target_link_libraries(stackdump PRIVATE dbghelp)
 target_link_options(stackdump PRIVATE -static -static-libgcc -static-libstdc++)
+
+add_executable(d3d11caps d3d11caps.cpp)
+target_link_libraries(d3d11caps PRIVATE d3d11 dxgi dxguid)
+target_link_options(d3d11caps PRIVATE -static -static-libgcc -static-libstdc++)
