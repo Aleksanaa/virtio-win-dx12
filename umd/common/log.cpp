@@ -5,6 +5,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 
 namespace vgd::umd {
@@ -12,7 +13,7 @@ namespace vgd::umd {
 namespace {
 
 std::mutex g_lock;
-FILE* g_file = nullptr;
+HANDLE g_file = INVALID_HANDLE_VALUE;
 bool g_verbose = false;
 const char* g_component = "vgd";
 
@@ -49,11 +50,17 @@ void log_init(const char* component)
 {
     std::lock_guard lock(g_lock);
     g_component = component;
-    if (g_file)
+    if (g_file != INVALID_HANDLE_VALUE)
         return;
     char path[MAX_PATH];
+    // Append-only access makes each line one atomic append, so processes sharing the file do not cut into each
+    // other's lines (the CRT's append mode seeks, then writes). Write-through keeps the log when the VM is killed
+    // because the desktop never came up.
     if (setting("VGD_LOG", path, sizeof(path)))
-        g_file = std::fopen(path, "a");
+        g_file = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (g_file != INVALID_HANDLE_VALUE)
+        log_exceptions();
     char v[8];
     g_verbose = setting("VGD_VERBOSE", v, sizeof(v)) && v[0] == '1';
 }
@@ -78,9 +85,9 @@ void logf(LogLevel level, const char* fmt, ...)
                   names[static_cast<int>(level)], body);
     OutputDebugStringA(line);
     std::lock_guard lock(g_lock);
-    if (g_file) {
-        std::fputs(line, g_file);
-        std::fflush(g_file);
+    if (g_file != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        WriteFile(g_file, line, static_cast<DWORD>(std::strlen(line)), &written, nullptr);
     }
 }
 

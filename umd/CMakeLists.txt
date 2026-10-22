@@ -24,6 +24,7 @@ add_library(vgd-umd-common STATIC
     common/linear_image.cpp
     common/log.cpp
     common/shader_container.cpp
+    common/stacks.cpp
     common/vulkan_device.cpp
     common/vulkan_icd.cpp)
 target_include_directories(vgd-umd-common PUBLIC common)

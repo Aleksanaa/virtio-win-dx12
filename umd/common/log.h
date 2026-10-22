@@ -19,6 +19,11 @@ void forward_settings(std::initializer_list<const char*> names);
 bool setting(const char* name, char* out, unsigned long size);
 // VGD_VERBOSE=1 (likewise): also log every answer of high-volume queries (format support, MSAA levels).
 bool verbose();
+// Logs every thread's stack in the process (module+offset frames, thread names), for hangs: see stacks.cpp.
+void log_thread_stacks(const char* why);
+// Logs first-chance C++ throws and access violations with the raising thread's stack (stacks.cpp); log_init
+// installs it when a log file is configured.
+void log_exceptions();
 void logf(LogLevel level, const char* fmt, ...)
 #if defined(__GNUC__)
     __attribute__((format(printf, 2, 3)))

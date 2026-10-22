@@ -4,6 +4,9 @@
 
 #include <d3d12TokenizedProgramFormat.hpp>
 
+#include <windows.h>
+
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -150,6 +153,27 @@ void assemble(const std::vector<Part>& parts, DxbcChecksum checksum, std::vector
     std::memcpy(c.data() + 4, sum, sizeof(sum));
 }
 
+// With VGD_SHADER_DUMP naming a folder: each container goes there as <checksum>.dxbc, for offline compiles
+// (dxbc-spirv's dxbc_disasm and dxbc_compiler).
+void dump(const std::vector<uint8_t>& container)
+{
+    static char dir[MAX_PATH];
+    static const bool enabled = setting("VGD_SHADER_DUMP", dir, sizeof(dir));
+    if (!enabled || container.size() < 20)
+        return;
+    char path[MAX_PATH + 48];
+    int len = std::snprintf(path, sizeof(path), "%s\\", dir);
+    for (size_t i = 4; i < 20 && len < int(sizeof(path)) - 8; i++)
+        len += std::snprintf(path + len, sizeof(path) - len, "%02x", container[i]);
+    std::snprintf(path + len, sizeof(path) - len, ".dxbc");
+    HANDLE f = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE)
+        return;   // already dumped, or the folder is missing
+    DWORD written;
+    WriteFile(f, container.data(), static_cast<DWORD>(container.size()), &written, nullptr);
+    CloseHandle(f);
+}
+
 } // namespace
 
 const char* generic_semantic(UINT stream)
@@ -210,6 +234,7 @@ HRESULT build_shader_container(const UINT* code, const ShaderSignatures& s, Dxbc
     std::memcpy(program.data.data(), code, program_size);
     parts.push_back(std::move(program));
     assemble(parts, checksum, out);
+    dump(*out);
     return S_OK;
 }
 
