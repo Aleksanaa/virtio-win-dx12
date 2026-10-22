@@ -5,3 +5,6 @@
 	path = third_party/virtio-win-mesa
 	url = https://github.com/arehnman/virtio-win-mesa.git
 	branch = yttrium-experimental
+[submodule "third_party/dxvk"]
+	path = third_party/dxvk
+	url = https://github.com/doitsujin/dxvk.git
