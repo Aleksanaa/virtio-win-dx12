@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Shaders for the triangle tests (core/tests/triangle.cpp, d3dprobe --triangle). Rebuild with build.sh.
+// Shaders for the triangle tests (d3dprobe --triangle). Rebuild with build.sh.
 
 cbuffer Color : register(b0)   // root constants
 {

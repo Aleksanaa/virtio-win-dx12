@@ -1,9 +1,3 @@
-[submodule "third_party/dxil-spirv"]
-	path = third_party/dxil-spirv
-	url = https://github.com/HansKristian-Work/dxil-spirv.git
-[submodule "third_party/Vulkan-Headers"]
-	path = third_party/Vulkan-Headers
-	url = https://github.com/KhronosGroup/Vulkan-Headers.git
 [submodule "third_party/DirectX-Headers"]
 	path = third_party/DirectX-Headers
 	url = https://github.com/microsoft/DirectX-Headers.git

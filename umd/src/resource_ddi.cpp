@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Heaps, resources, CPU mapping and fences. First version: committed buffers and textures, with memory owned by
-// Vulkan (no WDDM allocations; residency is a no-op). Placed resources and heap-only creation come later.
+// Heaps, resources, CPU mapping, fences and tiled resources, on vkd3d-proton's. Memory belongs to vkd3d-proton (no
+// WDDM allocations; residency is a no-op), except for swapchain buffers and opened shared textures (present.cpp).
 #include "device.h"
 #include "log.h"
 #include "objects.h"
@@ -11,24 +11,9 @@
 
 namespace vgd::umd {
 
-namespace {
-
-// The runtime has already turned the API heap type into a memory pool and CPU page property for our caps (UMA, not
-// cache coherent): DEFAULT has no CPU access, UPLOAD is write-combined and READBACK is write-back.
-D3D12_HEAP_TYPE heap_type(const D3D12DDIARG_CREATEHEAP_0001& h)
+D3D12_RESOURCE_DESC1 resource_desc(const D3D12DDIARG_CREATERESOURCE_0088& r)
 {
-    switch (h.CPUPageProperty) {
-    case D3D12DDI_CPU_PAGE_PROPERTY_WRITE_COMBINE: return D3D12_HEAP_TYPE_UPLOAD;
-    case D3D12DDI_CPU_PAGE_PROPERTY_WRITE_BACK: return D3D12_HEAP_TYPE_READBACK;
-    default: return D3D12_HEAP_TYPE_DEFAULT;
-    }
-}
-
-// The DDI resource description as the API's. Dimensions and layouts share values; the flags differ (the DDI says
-// what a resource may be used as, where the API denies shader resource use).
-D3D12_RESOURCE_DESC resource_desc(const D3D12DDIARG_CREATERESOURCE_0088& r)
-{
-    D3D12_RESOURCE_DESC d{};
+    D3D12_RESOURCE_DESC1 d{};
     d.Dimension = static_cast<D3D12_RESOURCE_DIMENSION>(r.ResourceType);
     d.Width = r.Width;
     d.Height = r.Height;
@@ -37,15 +22,69 @@ D3D12_RESOURCE_DESC resource_desc(const D3D12DDIARG_CREATERESOURCE_0088& r)
     d.Format = r.Format;
     d.SampleDesc = r.SampleDesc;
     d.Layout = static_cast<D3D12_TEXTURE_LAYOUT>(r.Layout);
+    // The DDI says what a resource may be used as, where the API denies shader resource use.
     if (r.Flags & D3D12DDI_RESOURCE_FLAG_0003_RENDER_TARGET)
         d.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     if (r.Flags & D3D12DDI_RESOURCE_FLAG_0003_DEPTH_STENCIL)
         d.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
     if (r.Flags & D3D12DDI_RESOURCE_FLAG_0022_UNORDERED_ACCESS)
         d.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (r.Flags & D3D12DDI_RESOURCE_FLAG_0003_SIMULTANEOUS_ACCESS)
+        d.Flags |= D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+    if (r.Flags & D3D12DDI_RESOURCE_FLAG_0003_CROSS_ADAPTER)
+        d.Flags |= D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+    if (r.Flags & D3D12DDI_RESOURCE_FLAG_0088_RAYTRACING_ACCELERATION_STRUCTURE)
+        d.Flags |= D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE;
     if (r.ResourceType != D3D12DDI_RT_BUFFER && !(r.Flags & D3D12DDI_RESOURCE_FLAG_0003_SHADER_RESOURCE))
         d.Flags |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     return d;
+}
+
+namespace {
+
+// The runtime has already turned the API heap type into a memory pool and CPU page property for our caps (UMA, not
+// cache coherent): DEFAULT has no CPU access, UPLOAD is write-combined and READBACK is write-back.
+D3D12_HEAP_PROPERTIES heap_properties(const D3D12DDIARG_CREATEHEAP_0001& h)
+{
+    D3D12_HEAP_PROPERTIES p{};
+    switch (h.CPUPageProperty) {
+    case D3D12DDI_CPU_PAGE_PROPERTY_WRITE_COMBINE: p.Type = D3D12_HEAP_TYPE_UPLOAD; break;
+    case D3D12DDI_CPU_PAGE_PROPERTY_WRITE_BACK: p.Type = D3D12_HEAP_TYPE_READBACK; break;
+    default: p.Type = D3D12_HEAP_TYPE_DEFAULT; break;
+    }
+    return p;
+}
+
+// The API's heap flags of a DDI heap: the categories it allows (none named: no restriction) as denials.
+D3D12_HEAP_FLAGS heap_flags(const D3D12DDIARG_CREATEHEAP_0001& h)
+{
+    constexpr auto kCategories =
+        D3D12DDI_HEAP_FLAG_BUFFERS | D3D12DDI_HEAP_FLAG_NON_RT_DS_TEXTURES | D3D12DDI_HEAP_FLAG_RT_DS_TEXTURES;
+    D3D12_HEAP_FLAGS f = D3D12_HEAP_FLAG_NONE;
+    if (h.Flags & kCategories) {
+        if (!(h.Flags & D3D12DDI_HEAP_FLAG_BUFFERS))
+            f |= D3D12_HEAP_FLAG_DENY_BUFFERS;
+        if (!(h.Flags & D3D12DDI_HEAP_FLAG_NON_RT_DS_TEXTURES))
+            f |= D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES;
+        if (!(h.Flags & D3D12DDI_HEAP_FLAG_RT_DS_TEXTURES))
+            f |= D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES;
+    }
+    return f;
+}
+
+// The DDI tracks no legacy initial state: the states the API requires of resources on each heap type.
+D3D12_RESOURCE_STATES initial_state(D3D12_HEAP_TYPE type)
+{
+    return type == D3D12_HEAP_TYPE_UPLOAD ? D3D12_RESOURCE_STATE_GENERIC_READ
+           : type == D3D12_HEAP_TYPE_READBACK ? D3D12_RESOURCE_STATE_COPY_DEST
+                                              : D3D12_RESOURCE_STATE_COMMON;
+}
+
+void log_failure(const char* what, const D3D12_RESOURCE_DESC1& desc, HRESULT hr)
+{
+    VGD_WARN("CreateHeapAndResource: %s dimension %d, %llux%ux%u, mips %u, format %d, flags 0x%x failed: 0x%08lx", what,
+             static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
+             desc.DepthOrArraySize, desc.MipLevels, static_cast<int>(desc.Format), static_cast<unsigned>(desc.Flags), hr);
 }
 
 // --- Heaps and resources -------------------------------------------------------------------------------------
@@ -58,76 +97,65 @@ D3D12DDI_HEAP_AND_RESOURCE_SIZES APIENTRY calc_private_heap_and_resource_sizes(
     return {heap ? sizeof(HeapObject) : 0, sizeof(ResourceObject)};
 }
 
-// The core heap of a heap description: its type, and the categories it allows (none named: no restriction).
-// `min_size` covers a committed resource when the description leaves ByteSize to it (UINT64_MAX).
-HRESULT create_core_heap(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, uint64_t min_size, HeapObject& ho)
+HRESULT create_heap(Device& d, const D3D12DDIARG_CREATEHEAP_0001& h, uint64_t min_size, HeapObject& out)
 {
-    const D3D12_HEAP_TYPE type = heap_type(heap);
-    constexpr auto kCategories =
-        D3D12DDI_HEAP_FLAG_BUFFERS | D3D12DDI_HEAP_FLAG_NON_RT_DS_TEXTURES | D3D12DDI_HEAP_FLAG_RT_DS_TEXTURES;
-    D3D12_HEAP_FLAGS flags = D3D12_HEAP_FLAG_NONE;
-    if (heap.Flags & kCategories) {
-        if (!(heap.Flags & D3D12DDI_HEAP_FLAG_BUFFERS))
-            flags |= D3D12_HEAP_FLAG_DENY_BUFFERS;
-        if (!(heap.Flags & D3D12DDI_HEAP_FLAG_NON_RT_DS_TEXTURES))
-            flags |= D3D12_HEAP_FLAG_DENY_NON_RT_DS_TEXTURES;
-        if (!(heap.Flags & D3D12DDI_HEAP_FLAG_RT_DS_TEXTURES))
-            flags |= D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES;
-    }
-    const uint64_t size = heap.ByteSize == UINT64_MAX ? min_size : std::max(heap.ByteSize, min_size);
-    HRESULT hr = d.core->create_heap(type, size, flags, &ho.heap);
-    VGD_TRACE("CreateHeap: %llu bytes (asked %llu), alignment %llu, type %d, flags 0x%x: 0x%08lx",
-              static_cast<unsigned long long>(size), static_cast<unsigned long long>(heap.ByteSize),
-              static_cast<unsigned long long>(heap.Alignment), static_cast<int>(type),
-              static_cast<unsigned>(heap.Flags), hr);
+    D3D12_HEAP_DESC desc{};
+    desc.SizeInBytes = h.ByteSize == UINT64_MAX ? min_size : std::max(h.ByteSize, min_size);
+    desc.Properties = heap_properties(h);
+    desc.Alignment = h.Alignment;
+    desc.Flags = heap_flags(h);
+    HRESULT hr = d.d3d->CreateHeap(&desc, __uuidof(ID3D12Heap), out.heap.put_void());
+    if (FAILED(hr))
+        VGD_WARN("CreateHeap: %llu bytes, alignment %llu, type %d, flags 0x%x failed: 0x%08lx",
+                 static_cast<unsigned long long>(desc.SizeInBytes), static_cast<unsigned long long>(desc.Alignment),
+                 static_cast<int>(desc.Properties.Type), static_cast<unsigned>(desc.Flags), hr);
     return hr;
 }
 
-// A heap alone.
-HRESULT create_heap(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, D3D12DDI_HHEAP hh, D3D12DDI_HRESOURCE hr_)
+HRESULT create_placed(Device& d, ID3D12Heap* heap, uint64_t offset, const D3D12DDIARG_CREATERESOURCE_0088& r,
+                      const D3D12_RESOURCE_DESC1& desc, Com<ID3D12Resource>* out)
 {
-    auto* ho = new (hh.pDrvPrivate) HeapObject;
-    if (FAILED(create_core_heap(d, heap, 0, *ho))) {
-        ho->~HeapObject();
-        return E_OUTOFMEMORY;
+    const D3D12_HEAP_DESC hd = desc_of(heap);
+    const D3D12_RESOURCE_STATES state = initial_state(hd.Properties.Type);
+    if (r.NumCastableFormats) {
+        if (auto d10 = d.engine->device.as<ID3D12Device10>())
+            return d10->CreatePlacedResource2(heap, offset, &desc, D3D12_BARRIER_LAYOUT_UNDEFINED, nullptr,
+                                              r.NumCastableFormats, r.pCastableFormats, __uuidof(ID3D12Resource),
+                                              out->put_void());
     }
-    if (hr_.pDrvPrivate)
-        new (hr_.pDrvPrivate) ResourceObject{ho, nullptr};
-    return S_OK;
+    return d.d3d8->CreatePlacedResource1(heap, offset, &desc, state, nullptr, __uuidof(ID3D12Resource),
+                                         out->put_void());
 }
 
-// A placed resource (CreatePlacedResource); reserved (tiled) resources name no heap and are not supported.
-HRESULT create_placed(Device& d, const D3D12DDIARG_CREATERESOURCE_0088& resource, D3D12DDI_HRESOURCE hr_)
+// A placed resource (CreatePlacedResource) or, naming no heap, a reserved (tiled) one.
+HRESULT create_unowned(Device& d, const D3D12DDIARG_CREATERESOURCE_0088& r, D3D12DDI_HRESOURCE hr_)
 {
-    const D3D12DDIARG_HRESOURCE_PLACEMENT& p = resource.ReuseBufferGPUVA.BaseAddress.UMD;
-    const D3D12_RESOURCE_DESC desc = resource_desc(resource);
-    const ResourceObject* base = p.hResource.pDrvPrivate ? object<ResourceObject>(p.hResource) : nullptr;
-    HeapObject* heap = base ? (base->heap ? base->heap : base->placed_in) : nullptr;
-    if (!heap || !heap->heap) {
-        VGD_WARN("CreateHeapAndResource: %s resource (dimension %d, format %d) not supported",
-                 base ? "placed in a committed" : "reserved", static_cast<int>(desc.Dimension),
-                 static_cast<int>(desc.Format));
-        return E_OUTOFMEMORY;
-    }
-    const uint64_t offset = base->offset + p.Offset;
+    const D3D12DDIARG_HRESOURCE_PLACEMENT& p = r.ReuseBufferGPUVA.BaseAddress.UMD;
+    const D3D12_RESOURCE_DESC1 desc = resource_desc(r);
     auto* ro = new (hr_.pDrvPrivate) ResourceObject;
-    HRESULT hr = d.core->create_placed_resource(*heap->heap, offset, desc, &ro->placed);
+    HRESULT hr;
+    if (!p.hResource.pDrvPrivate) {
+        D3D12_RESOURCE_DESC d0{desc.Dimension, desc.Alignment, desc.Width, desc.Height, desc.DepthOrArraySize,
+                               desc.MipLevels, desc.Format, desc.SampleDesc, desc.Layout, desc.Flags};
+        hr = d.d3d->CreateReservedResource(&d0, D3D12_RESOURCE_STATE_COMMON, nullptr, __uuidof(ID3D12Resource),
+                                           ro->placed.put_void());
+        if (FAILED(hr))
+            log_failure("reserved", desc, hr);
+    } else {
+        const ResourceObject* base = object<ResourceObject>(p.hResource);
+        HeapObject* heap = base->heap ? base->heap : base->placed_in;
+        const uint64_t offset = base->offset + p.Offset;
+        hr = heap && heap->heap ? create_placed(d, heap->heap.get(), offset, r, desc, &ro->placed) : E_INVALIDARG;
+        if (FAILED(hr))
+            log_failure("placed", desc, hr);
+        ro->placed_in = heap;
+        ro->offset = offset;
+    }
     if (FAILED(hr)) {
-        VGD_WARN("CreateHeapAndResource: placed dimension %d, %llux%ux%u, format %d, flags 0x%x at %llu failed: "
-                 "0x%08lx",
-                 static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
-                 desc.DepthOrArraySize, static_cast<int>(desc.Format), static_cast<unsigned>(desc.Flags),
-                 static_cast<unsigned long long>(offset), hr);
         ro->~ResourceObject();
         return E_OUTOFMEMORY;
     }
     ro->resource = ro->placed.get();
-    ro->placed_in = heap;
-    ro->offset = offset;
-    VGD_VERBOSE("CreateHeapAndResource: placed dimension %d, %llux%ux%u, format %d at %llu, va 0x%llx",
-                static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
-                desc.DepthOrArraySize, static_cast<int>(desc.Format), static_cast<unsigned long long>(offset),
-                static_cast<unsigned long long>(ro->placed->gpu_virtual_address()));
     return S_OK;
 }
 
@@ -137,54 +165,63 @@ HRESULT APIENTRY create_heap_and_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_
                                           const D3D12DDI_CLEAR_VALUES*, D3D12DDI_HPROTECTEDRESOURCESESSION_0030,
                                           D3D12DDI_HRESOURCE hr_)
 {
+    Device& d = *Device::from(h);
     if (!heap && resource)
-        return create_placed(*Device::from(h), *resource, hr_);
+        return create_unowned(d, *resource, hr_);
     if (!heap) {
         VGD_WARN("CreateHeapAndResource: neither a heap nor a resource description");
         return E_OUTOFMEMORY;
     }
-    if (!resource)
-        return create_heap(*Device::from(h), *heap, hh, hr_);
-    const D3D12_HEAP_TYPE type = heap_type(*heap);
-    const D3D12_RESOURCE_DESC desc = resource_desc(*resource);
     auto* ho = new (hh.pDrvPrivate) HeapObject;
+    auto fail = [&](HRESULT hr) {
+        ho->~HeapObject();
+        return FAILED(hr) ? E_OUTOFMEMORY : hr;
+    };
+    if (!resource) {
+        HRESULT hr = create_heap(d, *heap, 0, *ho);
+        if (FAILED(hr))
+            return fail(hr);
+        if (hr_.pDrvPrivate)
+            new (hr_.pDrvPrivate) ResourceObject{ho, nullptr};
+        return S_OK;
+    }
+    const D3D12_RESOURCE_DESC1 desc = resource_desc(*resource);
     if (heap->Flags & D3D12DDI_HEAP_FLAG_PRIMARY) {
         // A swapchain buffer: the compositor reads it through a runtime allocation.
-        HRESULT hr = create_primary(*Device::from(h), *heap, *resource, desc, rt_resource, *ho);
+        const D3D12_RESOURCE_DESC d0{desc.Dimension, desc.Alignment, desc.Width, desc.Height, desc.DepthOrArraySize,
+                                     desc.MipLevels, desc.Format, desc.SampleDesc, desc.Layout, desc.Flags};
+        HRESULT hr = create_primary(d, *heap, *resource, d0, rt_resource, *ho);
         if (FAILED(hr)) {
             ho->~HeapObject();
             return hr;
         }
-        new (hr_.pDrvPrivate) ResourceObject{ho, ho->resource.get()};
+        new (hr_.pDrvPrivate) ResourceObject{ho, ho->owned()};
         return S_OK;
     }
-    // A buffer is a heap with the buffer placed at 0: CreateHeap reaches us as one (a buffer spanning the heap),
-    // and resources are then placed in it by that buffer's handle. Textures keep memory of their own.
     HRESULT hr;
     if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
-        uint64_t size = 0, alignment = 0;
-        hr = Device::from(h)->core->resource_allocation_info(desc, &size, &alignment);
+        // A heap with the buffer at 0, so placed resources can name the heap by the buffer (see objects.h).
+        const D3D12_RESOURCE_ALLOCATION_INFO info = allocation_info(d.d3d8.get(), desc);
+        hr = create_heap(d, *heap, info.SizeInBytes, *ho);
         if (SUCCEEDED(hr))
-            hr = create_core_heap(*Device::from(h), *heap, size, *ho);
-        if (SUCCEEDED(hr))
-            hr = Device::from(h)->core->create_placed_resource(*ho->heap, 0, desc, &ho->resource);
+            hr = create_placed(d, ho->heap.get(), 0, *resource, desc, &ho->resource);
     } else {
-        hr = Device::from(h)->core->create_committed_resource(type, desc, &ho->resource);
+        const D3D12_HEAP_PROPERTIES props = heap_properties(*heap);
+        auto d10 = resource->NumCastableFormats ? d.engine->device.as<ID3D12Device10>() : Com<ID3D12Device10>();
+        if (d10)
+            hr = d10->CreateCommittedResource3(&props, heap_flags(*heap), &desc, D3D12_BARRIER_LAYOUT_UNDEFINED,
+                                               nullptr, nullptr, resource->NumCastableFormats,
+                                               resource->pCastableFormats, __uuidof(ID3D12Resource),
+                                               ho->resource.put_void());
+        else
+            hr = d.d3d8->CreateCommittedResource2(&props, heap_flags(*heap), &desc, initial_state(props.Type), nullptr,
+                                                  nullptr, __uuidof(ID3D12Resource), ho->resource.put_void());
     }
     if (FAILED(hr)) {
-        VGD_WARN("CreateHeapAndResource: dimension %d, %llux%ux%u, format %d, flags 0x%x, heap type %d failed: 0x%08lx",
-                 static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
-                 desc.DepthOrArraySize, static_cast<int>(desc.Format), static_cast<unsigned>(desc.Flags),
-                 static_cast<int>(type), hr);
-        ho->~HeapObject();
-        return E_OUTOFMEMORY;
+        log_failure("committed", desc, hr);
+        return fail(hr);
     }
-    new (hr_.pDrvPrivate) ResourceObject{ho, ho->resource.get()};
-    VGD_VERBOSE("CreateHeapAndResource: dimension %d, %llux%ux%u, format %d, heap type %d, %llu bytes, va 0x%llx",
-                static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
-                desc.DepthOrArraySize, static_cast<int>(desc.Format), static_cast<int>(type),
-                static_cast<unsigned long long>(ho->resource->size()),
-                static_cast<unsigned long long>(ho->resource->gpu_virtual_address()));
+    new (hr_.pDrvPrivate) ResourceObject{ho, ho->owned()};
     return S_OK;
 }
 
@@ -198,17 +235,31 @@ void APIENTRY destroy_heap_and_resource(D3D12DDI_HDEVICE h, D3D12DDI_HHEAP hh, D
         object<HeapObject>(hh)->~HeapObject();
 }
 
-HRESULT APIENTRY map_heap(D3D12DDI_HDEVICE, D3D12DDI_HHEAP hh, void** data)
+// Placed resources are mapped through their heap, the runtime adding their offset: the heap's mapping is that of the
+// buffer spanning it.
+HRESULT APIENTRY map_heap(D3D12DDI_HDEVICE h, D3D12DDI_HHEAP hh, void** data)
 {
     auto* ho = object<HeapObject>(hh);
-    // Placed resources are mapped through their heap: the runtime adds their offset.
-    void* p = ho->heap ? ho->heap->cpu_pointer() : ho->resource ? ho->resource->cpu_pointer() : nullptr;
-    if (!p) {
+    if (!ho->mapped) {
+        ID3D12Resource* r = ho->resource.get();
+        if (!r && ho->heap) {
+            const D3D12_HEAP_DESC hd = desc_of(ho->heap.get());
+            const D3D12_RESOURCE_DESC1 buffer{D3D12_RESOURCE_DIMENSION_BUFFER, 0, hd.SizeInBytes, 1, 1, 1,
+                                              DXGI_FORMAT_UNKNOWN, {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
+            Device& d = *Device::from(h);
+            if (SUCCEEDED(d.d3d8->CreatePlacedResource1(ho->heap.get(), 0, &buffer, initial_state(hd.Properties.Type),
+                                                        nullptr, __uuidof(ID3D12Resource),
+                                                        ho->map_buffer.put_void())))
+                r = ho->map_buffer.get();
+        }
+        if (!r || FAILED(r->Map(0, nullptr, &ho->mapped)))
+            ho->mapped = nullptr;
+    }
+    if (!ho->mapped) {
         VGD_WARN("MapHeap: heap has no CPU mapping");
         return E_INVALIDARG;
     }
-    *data = p;
-    VGD_VERBOSE("MapHeap: %p", p);
+    *data = ho->mapped;
     return S_OK;
 }
 
@@ -219,72 +270,60 @@ void APIENTRY unmap_heap(D3D12DDI_HDEVICE, D3D12DDI_HHEAP)
 
 D3D12DDI_GPU_VIRTUAL_ADDRESS APIENTRY check_resource_virtual_address(D3D12DDI_HDEVICE, D3D12DDI_HRESOURCE hr_)
 {
-    const auto* r = object<ResourceObject>(hr_);
-    return r->resource ? r->resource->gpu_virtual_address() : 0;
+    ID3D12Resource* r = resource_of(hr_);
+    return r && desc_of(r).Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? r->GetGPUVirtualAddress() : 0;
 }
 
 // We keep no additional data next to a resource. Its alignments must still be powers of two: the runtime aligns its
 // GetResourceAllocationInfo answer up to them, and zero wraps it to 0xFFFFFFFFFFFF0000 (measured in the guest).
-void no_additional_data(D3D12DDI_RESOURCE_ALLOCATION_INFO_0022& info)
+void fill_allocation_info(const D3D12_RESOURCE_ALLOCATION_INFO& a, D3D12_RESOURCE_DIMENSION dim,
+                          D3D12DDI_RESOURCE_ALLOCATION_INFO_0022* info)
 {
-    info.AdditionalDataHeaderSize = 0;
-    info.AdditionalDataSize = 0;
-    info.AdditionalDataHeaderAlignment = info.ResourceDataAlignment;
-    info.AdditionalDataAlignment = info.ResourceDataAlignment;
+    *info = {};
+    const bool ok = a.SizeInBytes != UINT64_MAX;
+    info->ResourceDataSize = ok ? a.SizeInBytes : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+    info->ResourceDataAlignment = ok ? static_cast<UINT32>(a.Alignment) : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+    info->AdditionalDataHeaderAlignment = info->ResourceDataAlignment;
+    info->AdditionalDataAlignment = info->ResourceDataAlignment;
+    info->Layout = dim == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12DDI_TL_ROW_MAJOR : D3D12DDI_TL_UNDEFINED;
 }
 
 void APIENTRY check_resource_allocation_info(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATERESOURCE_0088* resource,
-                                             D3D12DDI_RESOURCE_OPTIMIZATION_FLAGS optimization, UINT32 restriction,
-                                             UINT, D3D12DDI_RESOURCE_ALLOCATION_INFO_0022* info)
+                                             D3D12DDI_RESOURCE_OPTIMIZATION_FLAGS, UINT32, UINT,
+                                             D3D12DDI_RESOURCE_ALLOCATION_INFO_0022* info)
 {
-    *info = {};
-    const D3D12_RESOURCE_DESC desc = resource_desc(*resource);
-    uint64_t size = 0, alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-    if (FAILED(Device::from(h)->core->resource_allocation_info(desc, &size, &alignment))) {
-        // Creation of this resource will fail too. A plausible answer keeps the runtime's bookkeeping consistent.
+    const D3D12_RESOURCE_DESC1 desc = resource_desc(*resource);
+    D3D12_RESOURCE_ALLOCATION_INFO a = allocation_info(Device::from(h)->d3d8.get(), desc);
+    if (a.SizeInBytes == UINT64_MAX)
         VGD_WARN("CheckResourceAllocationInfo: dimension %d, format %d not supported", static_cast<int>(desc.Dimension),
                  static_cast<int>(desc.Format));
-        size = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-    }
-    info->ResourceDataSize = size;
-    info->ResourceDataAlignment = static_cast<UINT32>(alignment);
-    no_additional_data(*info);
-    info->Layout = desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ? D3D12DDI_TL_ROW_MAJOR : D3D12DDI_TL_UNDEFINED;
-    static std::atomic<unsigned> calls{0};
-    if (calls.fetch_add(1, std::memory_order_relaxed) < 16 || verbose())
-        VGD_TRACE("CheckResourceAllocationInfo: dimension %d, %llux%ux%u, mips %u, format %d, flags 0x%x, layout %d, "
-                  "optimization 0x%x, alignment restriction %u -> %llu bytes at %u",
-                  static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
-                  desc.DepthOrArraySize, desc.MipLevels, static_cast<int>(desc.Format),
-                  static_cast<unsigned>(resource->Flags), static_cast<int>(resource->Layout),
-                  static_cast<unsigned>(optimization), restriction, static_cast<unsigned long long>(size),
-                  info->ResourceDataAlignment);
+    fill_allocation_info(a, desc.Dimension, info);
 }
 
 void APIENTRY check_existing_resource_allocation_info(D3D12DDI_HDEVICE h, D3D12DDI_HRESOURCE hr_,
                                                       D3D12DDI_RESOURCE_ALLOCATION_INFO_0022* info)
 {
-    const auto* r = object<ResourceObject>(hr_);
-    *info = {};
-    uint64_t size = 0, alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-    if (r->resource)
-        Device::from(h)->core->resource_allocation_info(r->resource->desc(), &size, &alignment);
-    info->ResourceDataSize = size;
-    info->ResourceDataAlignment = static_cast<UINT32>(alignment);
-    no_additional_data(*info);
-    info->Layout = r->resource && r->resource->is_texture() ? D3D12DDI_TL_UNDEFINED : D3D12DDI_TL_ROW_MAJOR;
+    ID3D12Resource* r = resource_of(hr_);
+    if (!r) {
+        fill_allocation_info({UINT64_MAX, 0}, D3D12_RESOURCE_DIMENSION_BUFFER, info);
+        return;
+    }
+    const D3D12_RESOURCE_DESC desc = desc_of(r);
+    D3D12_RESOURCE_ALLOCATION_INFO a;
+    Device::from(h)->d3d->GetResourceAllocationInfo(&a, 0, 1, &desc);
+    fill_allocation_info(a, desc.Dimension, info);
 }
 
 // Used by the runtime's Map to find a subresource within the heap mapping. A buffer is one subresource at 0.
 void APIENTRY check_subresource_info(D3D12DDI_HDEVICE, D3D12DDI_HRESOURCE hr_, UINT subresource,
                                      D3D12DDI_SUBRESOURCE_INFO* info)
 {
-    const auto* r = object<ResourceObject>(hr_);
+    ID3D12Resource* r = resource_of(hr_);
     *info = {};
-    const UINT64 size = r->resource ? r->resource->size() : 0;
-    info->RowStride = size;
-    info->DepthStride = size;
-    if (subresource != 0 || !r->resource || r->resource->is_texture())
+    const D3D12_RESOURCE_DESC desc = r ? desc_of(r) : D3D12_RESOURCE_DESC{};
+    info->RowStride = desc.Width;
+    info->DepthStride = desc.Width;
+    if (subresource != 0 || desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
         VGD_WARN("CheckSubresourceInfo: subresource %u of a texture (textures have no CPU mapping)", subresource);
 }
 
@@ -302,10 +341,6 @@ HRESULT APIENTRY create_fence(D3D12DDI_HDEVICE, D3D12DDI_HFENCE hf, const D3D12D
         return E_OUTOFMEMORY;
     }
     new (hf.pDrvPrivate) FenceObject{args->Fences[0]};
-    VGD_VERBOSE("CreateFence: value va 0x%llx, monitored va 0x%llx, flags 0x%x",
-                static_cast<unsigned long long>(args->Fences[0].FenceValue.BaseAddress),
-                static_cast<unsigned long long>(args->Fences[0].FenceMonitoredValue.BaseAddress),
-                static_cast<unsigned>(args->Fences[0].Flags));
     return S_OK;
 }
 
@@ -337,8 +372,52 @@ HRESULT APIENTRY open_heap_and_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_OP
         ho->~HeapObject();
         return hr;
     }
-    new (hr_.pDrvPrivate) ResourceObject{ho, ho->resource.get()};
+    new (hr_.pDrvPrivate) ResourceObject{ho, ho->owned()};
     return S_OK;
+}
+
+// --- Tiled resources -----------------------------------------------------------------------------------------
+// The DDI's tile structs are the API's field for field.
+static_assert(sizeof(D3D12DDI_TILED_RESOURCE_COORDINATE) == sizeof(D3D12_TILED_RESOURCE_COORDINATE));
+static_assert(sizeof(D3D12DDI_TILE_REGION_SIZE) == sizeof(D3D12_TILE_REGION_SIZE));
+
+void APIENTRY get_mip_packing(D3D12DDI_HDEVICE h, D3D12DDI_HRESOURCE hr_, UINT* packed_mips, UINT* packed_tiles)
+{
+    D3D12_PACKED_MIP_INFO info{};
+    if (ID3D12Resource* r = resource_of(hr_))
+        Device::from(h)->d3d->GetResourceTiling(r, nullptr, &info, nullptr, nullptr, 0, nullptr);
+    *packed_mips = info.NumPackedMips;
+    *packed_tiles = info.NumTilesForPackedMips;
+}
+
+ID3D12CommandQueue* queue_of(D3D12DDI_HCOMMANDQUEUE hq)
+{
+    return object<CommandQueueObject>(hq)->queue.get();
+}
+
+void APIENTRY update_tile_mappings(D3D12DDI_HCOMMANDQUEUE hq, D3D12DDI_HRESOURCE hr_, UINT regions,
+                                   const D3D12DDI_TILED_RESOURCE_COORDINATE* coords,
+                                   const D3D12DDI_TILE_REGION_SIZE* sizes, D3D12DDI_HHEAP hh, UINT ranges,
+                                   const D3D12DDI_TILE_RANGE_FLAGS* flags, const UINT* heap_offsets,
+                                   const UINT* range_counts, D3D12DDI_TILE_MAPPING_FLAGS mapping_flags)
+{
+    ID3D12Heap* heap = hh.pDrvPrivate ? object<HeapObject>(hh)->heap.get() : nullptr;
+    queue_of(hq)->UpdateTileMappings(resource_of(hr_), regions,
+                                     reinterpret_cast<const D3D12_TILED_RESOURCE_COORDINATE*>(coords),
+                                     reinterpret_cast<const D3D12_TILE_REGION_SIZE*>(sizes), heap, ranges,
+                                     reinterpret_cast<const D3D12_TILE_RANGE_FLAGS*>(flags), heap_offsets,
+                                     range_counts, static_cast<D3D12_TILE_MAPPING_FLAGS>(mapping_flags));
+}
+
+void APIENTRY copy_tile_mappings(D3D12DDI_HCOMMANDQUEUE hq, D3D12DDI_HRESOURCE dst,
+                                 const D3D12DDI_TILED_RESOURCE_COORDINATE* dst_coord, D3D12DDI_HRESOURCE src,
+                                 const D3D12DDI_TILED_RESOURCE_COORDINATE* src_coord,
+                                 const D3D12DDI_TILE_REGION_SIZE* size, D3D12DDI_TILE_MAPPING_FLAGS flags)
+{
+    queue_of(hq)->CopyTileMappings(resource_of(dst), reinterpret_cast<const D3D12_TILED_RESOURCE_COORDINATE*>(dst_coord),
+                                   resource_of(src), reinterpret_cast<const D3D12_TILED_RESOURCE_COORDINATE*>(src_coord),
+                                   reinterpret_cast<const D3D12_TILE_REGION_SIZE*>(size),
+                                   static_cast<D3D12_TILE_MAPPING_FLAGS>(flags));
 }
 
 } // namespace
@@ -359,6 +438,13 @@ void fill_resource_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& t)
     t.pfnCalcPrivateFenceSize = calc_private_fence_size;
     t.pfnCreateFence = create_fence;
     t.pfnDestroyFence = destroy_fence;
+    t.pfnGetMipPacking = get_mip_packing;
+}
+
+void fill_resource_queue_ddi(D3D12DDI_COMMAND_QUEUE_FUNCS_CORE_0001& t)
+{
+    t.pfnUpdateTileMappings = update_tile_mappings;
+    t.pfnCopyTileMappings = copy_tile_mappings;
 }
 
 } // namespace vgd::umd

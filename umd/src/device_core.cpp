@@ -1,122 +1,89 @@
 // SPDX-License-Identifier: MIT
-// D3D12DDI_DEVICE_FUNCS_CORE_0088 slots we implement. Everything else in the table is a logging stub (stubs.h).
+// D3D12DDI_DEVICE_FUNCS_CORE_0088 slots of the device itself: format queries, root signatures, residency and the
+// node map. The other slots are filled by the *_ddi.cpp files; what none fills is a logging stub (stubs.h).
 #include "device_core.h"
 #include "device.h"
 #include "log.h"
 #include "objects.h"
-
-#include <vgd/root_signature.h>
+#include "vkd3d_bridge.h"
 
 #include <cstddef>
-#include <memory>
 #include <new>
 
 namespace vgd::umd {
 
 namespace {
 
-// How D3D lets a DXGI format be used. Depth/stencil formats share one Vulkan format with their plane views, but
-// D3D allows different things on each: the DSV format is only an attachment, its views are only sampled.
-enum class FormatClass { color, depth_stencil, depth_view, stencil_view, depth_typeless };
-
-FormatClass classify(DXGI_FORMAT f)
+// Formats the present path can hand to the compositor (present.cpp virgl_format).
+bool displayable(DXGI_FORMAT f)
 {
     switch (f) {
-    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
-    case DXGI_FORMAT_D32_FLOAT:
-    case DXGI_FORMAT_D24_UNORM_S8_UINT:
-    case DXGI_FORMAT_D16_UNORM: return FormatClass::depth_stencil;
-    case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
-    case DXGI_FORMAT_R24_UNORM_X8_TYPELESS: return FormatClass::depth_view;
-    case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
-    case DXGI_FORMAT_X24_TYPELESS_G8_UINT: return FormatClass::stencil_view;
-    case DXGI_FORMAT_R32G8X24_TYPELESS:
-    case DXGI_FORMAT_R24G8_TYPELESS: return FormatClass::depth_typeless;
-    default: return FormatClass::color;
-    }
-}
-
-// The optional support bits for a format. The runtime knows what each feature level requires; the driver reports
-// what the format can do beyond that, from the Vulkan features of the format it is stored as.
-UINT format_support(Device& d, DXGI_FORMAT format, VkSampleCountFlags* samples_out = nullptr)
-{
-    if (format == DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM)
-        return D3D12DDI_FORMAT_SUPPORT_NOT_SUPPORTED;   // the one format allowed to say so
-    const vgd::FormatFeatures f = d.core->format_features(format);
-    if (samples_out)
-        *samples_out = f.samples;
-    const bool sampled = f.optimal & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT;
-    const bool msaa = f.samples & ~VK_SAMPLE_COUNT_1_BIT;
-    UINT s = 0;
-    switch (classify(format)) {
-    case FormatClass::depth_stencil:
-        if (msaa && (f.optimal & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT))
-            s |= D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET;
-        return s;
-    case FormatClass::depth_view:
-        if (f.optimal & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
-            s |= D3D12DDI_FORMAT_SUPPORT_SHADER_SAMPLE;
-        if (sampled)
-            s |= D3D12DDI_FORMAT_SUPPORT_SHADER_GATHER;
-        if (msaa && sampled)
-            s |= D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_LOAD;
-        return s;
-    case FormatClass::stencil_view:
-        if (msaa && sampled)
-            s |= D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_LOAD;
-        return s;
-    case FormatClass::depth_typeless:
-        if (msaa)
-            s |= D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET;
-        if (msaa && sampled)
-            s |= D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_LOAD;
-        return s;
-    case FormatClass::color:
-        break;
-    }
-
-    if (f.optimal & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
-        s |= D3D12DDI_FORMAT_SUPPORT_SHADER_SAMPLE;
-    if (sampled)
-        s |= D3D12DDI_FORMAT_SUPPORT_SHADER_GATHER;
-    if (f.optimal & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT)
-        s |= D3D12DDI_FORMAT_SUPPORT_RENDERTARGET;
-    if (f.optimal & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT)
-        s |= D3D12DDI_FORMAT_SUPPORT_BLENDABLE;
-    if (f.optimal & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)
-        s |= D3D12DDI_FORMAT_SUPPORT_UAV_WRITES;
-    if (f.optimal & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT)
-        s |= D3D12DDI_FORMAT_SUPPORT_UAV_READS;
-    if (f.buffer & VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT)
-        s |= D3D12DDI_FORMAT_SUPPORT_BUFFER;
-    if (f.buffer & VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT)
-        s |= D3D12DDI_FORMAT_SUPPORT_VERTEX_BUFFER;
-    if (msaa) {
-        if (s & D3D12DDI_FORMAT_SUPPORT_RENDERTARGET)
-            s |= D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET;
-        if (sampled)
-            s |= D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_LOAD;
-    }
-    // Swapchain formats DWM composes from; present copies into the scanout allocation.
-    switch (format) {
     case DXGI_FORMAT_R8G8B8A8_UNORM:
     case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
     case DXGI_FORMAT_B8G8R8A8_UNORM:
     case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
-        if (s & D3D12DDI_FORMAT_SUPPORT_RENDERTARGET)
-            s |= D3D12DDI_FORMAT_SUPPORT_DISPLAY;
-        break;
-    default:
-        break;
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_R16G16B16A16_FLOAT: return true;
+    default: return false;
     }
-    // Not reported yet: tiled (no tiled resources), logic op (caps say no).
+}
+
+// The DDI's optional support bits of a format, from the API's (the runtime knows what each feature level requires
+// of every format; vkd3d-proton reports the rest the same way the API does).
+UINT format_support(ID3D12Device* d, DXGI_FORMAT format)
+{
+    if (format == DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM)
+        return D3D12DDI_FORMAT_SUPPORT_NOT_SUPPORTED;   // the one format allowed to say so
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT f{format};
+    if (FAILED(d->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &f, sizeof(f))))
+        return 0;
+    struct Bit {
+        UINT api, ddi;
+    };
+    static const Bit bits1[] = {
+        {D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE, D3D12DDI_FORMAT_SUPPORT_SHADER_SAMPLE},
+        {D3D12_FORMAT_SUPPORT1_RENDER_TARGET, D3D12DDI_FORMAT_SUPPORT_RENDERTARGET},
+        {D3D12_FORMAT_SUPPORT1_BLENDABLE, D3D12DDI_FORMAT_SUPPORT_BLENDABLE},
+        {D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET, D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET},
+        {D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD, D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_LOAD},
+        {D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER, D3D12DDI_FORMAT_SUPPORT_VERTEX_BUFFER},
+        {D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW, D3D12DDI_FORMAT_SUPPORT_UAV_WRITES},
+        {D3D12_FORMAT_SUPPORT1_BUFFER, D3D12DDI_FORMAT_SUPPORT_BUFFER},
+        {D3D12_FORMAT_SUPPORT1_SHADER_GATHER, D3D12DDI_FORMAT_SUPPORT_SHADER_GATHER},
+    };
+    static const Bit bits2[] = {
+        {D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD, D3D12DDI_FORMAT_SUPPORT_UAV_READS},
+        {D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP, D3D12DDI_FORMAT_SUPPORT_OUTPUT_MERGER_LOGIC_OP},
+        {D3D12_FORMAT_SUPPORT2_TILED, D3D12DDI_FORMAT_SUPPORT_TILED},
+    };
+    UINT s = 0;
+    for (const Bit& b : bits1)
+        if (f.Support1 & b.api)
+            s |= b.ddi;
+    for (const Bit& b : bits2)
+        if (f.Support2 & b.api)
+            s |= b.ddi;
+    if ((s & D3D12DDI_FORMAT_SUPPORT_RENDERTARGET) && displayable(format))
+        s |= D3D12DDI_FORMAT_SUPPORT_DISPLAY;
     return s;
 }
 
 void APIENTRY check_format_support(D3D12DDI_HDEVICE h, DXGI_FORMAT format, UINT* support)
 {
-    *support = format_support(*Device::from(h), format);
+    *support = format_support(Device::from(h)->d3d, format);
     VGD_VERBOSE("CheckFormatSupport format=%d -> 0x%x", static_cast<int>(format), *support);
+}
+
+void APIENTRY check_multisample_quality_levels(D3D12DDI_HDEVICE h, DXGI_FORMAT format, UINT samples,
+                                               D3D12DDI_MULTISAMPLE_QUALITY_LEVEL_FLAGS flags, UINT* levels)
+{
+    D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS q{format, samples,
+                                                    static_cast<D3D12_MULTISAMPLE_QUALITY_LEVEL_FLAGS>(flags), 0};
+    if (FAILED(Device::from(h)->d3d->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &q, sizeof(q))))
+        q.NumQualityLevels = 0;
+    *levels = q.NumQualityLevels;
+    VGD_VERBOSE("CheckMultisampleQualityLevels format=%d samples=%u flags=%d -> %u", static_cast<int>(format), samples,
+                static_cast<int>(flags), *levels);
 }
 
 // One physical adapter, one node: the mask is bit 0 and the node map names physical adapter 0.
@@ -132,31 +99,9 @@ void APIENTRY query_node_map(D3D12DDI_HDEVICE, UINT count, UINT* map)
     VGD_TRACE("QueryNodeMap count=%u", count);
 }
 
-UINT APIENTRY get_descriptor_size_in_bytes(D3D12DDI_HDEVICE, D3D12DDI_DESCRIPTOR_HEAP_TYPE)
+UINT APIENTRY get_descriptor_size_in_bytes(D3D12DDI_HDEVICE h, D3D12DDI_DESCRIPTOR_HEAP_TYPE type)
 {
-    return kDescriptorSize;
-}
-
-// One quality level (the standard pattern) per supported sample count, consistent with format_support(): a count
-// above 1 is offered only for formats that can be multisampled attachments (MULTISAMPLE_RENDERTARGET). View-only
-// formats (e.g. R32_FLOAT_X8X24_TYPELESS) report MULTISAMPLE_LOAD but must answer 0 levels: the runtime checks.
-void APIENTRY check_multisample_quality_levels(D3D12DDI_HDEVICE h, DXGI_FORMAT format, UINT samples,
-                                               D3D12DDI_MULTISAMPLE_QUALITY_LEVEL_FLAGS flags, UINT* levels)
-{
-    *levels = 0;
-    if (flags & D3D12DDI_MULTISAMPLE_QUALITY_LEVEL_FLAG_TILED_RESOURCE)
-        return;   // no tiled resources
-    if (format == DXGI_FORMAT_UNKNOWN) {
-        *levels = samples == 1 ? 1 : 0;
-    } else if (samples && !(samples & (samples - 1))) {
-        VkSampleCountFlags counts = 0;
-        const UINT s = format_support(*Device::from(h), format, &counts);
-        const UINT ms = D3D12DDI_FORMAT_SUPPORT_MULTISAMPLE_RENDERTARGET;
-        if ((counts & samples) && (samples == 1 || (s & ms)))
-            *levels = 1;
-    }
-    VGD_VERBOSE("CheckMultisampleQualityLevels format=%d samples=%u flags=%d -> %u", static_cast<int>(format), samples,
-                static_cast<int>(flags), *levels);
+    return Device::from(h)->d3d->GetDescriptorHandleIncrementSize(static_cast<D3D12_DESCRIPTOR_HEAP_TYPE>(type));
 }
 
 HRESULT APIENTRY enumerate_meta_commands(D3D12DDI_HDEVICE, UINT* count, D3D12DDIARG_META_COMMAND_DESC*)
@@ -179,7 +124,8 @@ void APIENTRY implicit_shader_cache_control(D3D12DDI_HDEVICE, D3D12DDI_IMPLICIT_
 }
 
 // --- Root signatures ---------------------------------------------------------------------------------------
-// The DDI's root signature 1.1 structs are the API's D3D12_*1 structs field for field; core takes the API form.
+// The DDI's root signature 1.1 structs are the API's D3D12_*1 structs field for field; vkd3d-proton takes the API
+// form, serialized.
 #define VGD_SAME_LAYOUT(ddi, api, ...)                                                                        \
     static_assert(sizeof(ddi) == sizeof(api) && offsetof(ddi, __VA_ARGS__) == offsetof(api, __VA_ARGS__),   \
                   #ddi " must match " #api)
@@ -193,34 +139,36 @@ VGD_SAME_LAYOUT(D3D12DDI_ROOT_CONSTANTS, D3D12_ROOT_CONSTANTS, Num32BitValues);
 VGD_SAME_LAYOUT(D3D12DDI_STATIC_SAMPLER, D3D12_STATIC_SAMPLER_DESC, ShaderVisibility);
 #undef VGD_SAME_LAYOUT
 
-
 SIZE_T APIENTRY calc_private_root_signature_size(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATE_ROOT_SIGNATURE_0013*)
 {
     return sizeof(RootSignatureObject);
 }
 
-HRESULT APIENTRY create_root_signature(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATE_ROOT_SIGNATURE_0013* args,
-                                       D3D12DDI_HROOTSIGNATURE h)
+HRESULT APIENTRY create_root_signature(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_ROOT_SIGNATURE_0013* args,
+                                       D3D12DDI_HROOTSIGNATURE hr_)
 {
+    auto* obj = new (hr_.pDrvPrivate) RootSignatureObject;
     HRESULT hr = E_INVALIDARG;
-    std::unique_ptr<vgd::RootSignature> rs;
-    if (args->Version == D3D12DDI_ROOT_SIGNATURE_VERSION_1_1 && args->pRootSignature_1_1)
-        hr = vgd::RootSignature::create(*reinterpret_cast<const D3D12_ROOT_SIGNATURE_DESC1*>(args->pRootSignature_1_1),
-                                        &rs);
-    auto* obj = new (h.pDrvPrivate) RootSignatureObject{std::move(rs)};
+    if (args->Version == D3D12DDI_ROOT_SIGNATURE_VERSION_1_1 && args->pRootSignature_1_1) {
+        D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc{D3D_ROOT_SIGNATURE_VERSION_1_1};
+        desc.Desc_1_1 = *reinterpret_cast<const D3D12_ROOT_SIGNATURE_DESC1*>(args->pRootSignature_1_1);
+        Com<ID3DBlob> blob;
+        hr = vgd_vkd3d_serialize_root_signature(&desc, blob.put_void());
+        if (SUCCEEDED(hr))
+            hr = Device::from(h)->d3d->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                                                           __uuidof(ID3D12RootSignature), obj->rs.put_void());
+    }
     if (FAILED(hr)) {
         VGD_WARN("CreateRootSignature version=%d failed: 0x%08lx", static_cast<int>(args->Version), hr);
         obj->~RootSignatureObject();
         return E_OUTOFMEMORY;   // creation DDIs may only report E_OUTOFMEMORY (or device removed)
     }
-    VGD_VERBOSE("CreateRootSignature: %u parameters, %u static samplers, root data %u bytes",
-                obj->rs->desc().NumParameters, obj->rs->desc().NumStaticSamplers, obj->rs->root_data_size());
     return S_OK;
 }
 
 void APIENTRY destroy_root_signature(D3D12DDI_HDEVICE, D3D12DDI_HROOTSIGNATURE h)
 {
-    static_cast<RootSignatureObject*>(h.pDrvPrivate)->~RootSignatureObject();
+    object<RootSignatureObject>(h)->~RootSignatureObject();
 }
 
 // --- Residency ---------------------------------------------------------------------------------------------
@@ -228,8 +176,6 @@ void APIENTRY destroy_root_signature(D3D12DDI_HDEVICE, D3D12DDI_HROOTSIGNATURE h
 // immediately (S_OK, no paging fence to wait on) and Evict is a no-op.
 HRESULT APIENTRY make_resident(D3D12DDI_HDEVICE, D3D12DDIARG_MAKERESIDENT_0001* args)
 {
-    VGD_VERBOSE("MakeResident: %u objects, first type %d", args->NumObjects,
-                args->NumObjects ? static_cast<int>(args->pObjects[0].Type) : -1);
     args->WaitMask = 0;
     return S_OK;
 }

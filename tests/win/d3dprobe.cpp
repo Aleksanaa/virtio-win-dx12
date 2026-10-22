@@ -226,7 +226,7 @@ out:
 }
 
 
-// An off-screen draw with exact pixels, the same scene as core/tests/triangle.cpp: a clear, a triangle from vertex
+// An off-screen draw with exact pixels: a clear, a triangle from vertex
 // ids in the top-left corner, one from a vertex buffer in the bottom-right corner (colors from root constants), a
 // rect clear in the top-right corner, then a copy to a readback buffer.
 bool triangle_test(ID3D12Device* device)
@@ -436,7 +436,7 @@ out:
 }
 
 
-// Descriptor heaps and tables, the same scene as core/tests/descriptors.cpp: a fullscreen triangle samples a 4x4
+// Descriptor heaps and tables: a fullscreen triangle samples a 4x4
 // texture (SRV made in a CPU heap and copied to the shader-visible one) through a heap sampler on the left half and a
 // static sampler on the right, and adds a table CBV, a structured buffer from the table and a root CBV.
 bool textured_test(ID3D12Device* device)
@@ -721,7 +721,7 @@ out:
 }
 
 
-// Depth/stencil and MSAA, the same scene as core/tests/depth_stencil.cpp: full and rect clears of each plane, a
+// Depth/stencil and MSAA: full and rect clears of each plane, a
 // depth-tested pass, a pass behind it, a stencil-equal pass; then a 4x MSAA draw resolved and read back.
 bool depth_test(ID3D12Device* device)
 {
@@ -974,7 +974,7 @@ out:
 }
 
 
-// Compute and UAVs on a compute queue, the same work as core/tests/compute.cpp: UAV clears of a structured buffer, a
+// Compute and UAVs on a compute queue: UAV clears of a structured buffer, a
 // typed buffer and a texture, then a dispatch writing all three through a root UAV and a descriptor table.
 bool compute_test(ID3D12Device* device)
 {
@@ -1189,7 +1189,7 @@ out:
     return ok;
 }
 
-// Queries, the same work as core/tests/queries.cpp: occlusion and binary occlusion of scissored draws passing and
+// Queries: occlusion and binary occlusion of scissored draws passing and
 // failing the depth test, an unused query, pipeline statistics of one draw, and timestamps across a CPU sleep,
 // checked against GetTimestampFrequency.
 bool queries_test(ID3D12Device* device)
@@ -1429,7 +1429,7 @@ out:
     return ok;
 }
 
-// ExecuteIndirect, the same work as core/tests/indirect.cpp: draws, indexed draws and dispatches from an argument
+// ExecuteIndirect: draws, indexed draws and dispatches from an argument
 // buffer, with and without a count buffer, counted by pipeline statistics queries and by the compute shader.
 bool indirect_test(ID3D12Device* device)
 {

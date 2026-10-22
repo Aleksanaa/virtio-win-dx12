@@ -1,23 +1,18 @@
 // SPDX-License-Identifier: MIT
-// Adapter caps (PFND3D12DDI_GETCAPS) for DDI 0092. Answers are deliberately conservative: everything we have not
-// implemented reports "not supported", and the feature level only claims what the core will really provide.
+// Adapter caps (PFND3D12DDI_GETCAPS) for DDI 0092, from what vkd3d-proton reports through CheckFeatureSupport.
+// A feature is passed on only when the DDI functions it brings are implemented; the others stay "not supported"
+// even where vkd3d-proton has them: ray tracing (state objects, acceleration structures), mesh shaders (their
+// signatures need names from the DXIL metadata, shader_container.h), sampler feedback, enhanced barriers and render
+// passes (the runtime emulates those). The feature level is capped to match.
 #include "caps.h"
 #include "log.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace vgd::umd {
 
 namespace {
-
-// FL 12_0 requires tiled resources tier 2 (a non-goal for now), so the honest level is 11_1.
-constexpr D3D12DDI_3DPIPELINELEVEL kFeatureLevel = D3D12DDI_3DPIPELINELEVEL_11_1;
-
-// Shader models dxil-spirv translates and we are ready to claim; raised as the shader path matures.
-constexpr D3D12DDI_SHADER_MODEL kShaderModels[] = {
-    D3D12DDI_SHADER_MODEL_5_1_RELEASE_0011,
-    D3D12DDI_SHADER_MODEL_6_0_RELEASE_0011,
-};
 
 template <class T>
 T* payload(const D3D12DDIARG_GETCAPS& r)
@@ -35,30 +30,75 @@ bool node_zero(const D3D12DDIARG_GETCAPS& r)
     return r.pInfo && *static_cast<const UINT*>(r.pInfo) == 0;
 }
 
+template <class T>
+T feature(ID3D12Device* d, D3D12_FEATURE f)
+{
+    T data{};
+    if (FAILED(d->CheckFeatureSupport(f, &data, sizeof(data))))
+        data = {};
+    return data;
+}
+
+// Shader models DDI 0092 can name: through 6.7.
+constexpr D3D12DDI_SHADER_MODEL kShaderModels[] = {
+    D3D12DDI_SHADER_MODEL_5_1_RELEASE_0011, D3D12DDI_SHADER_MODEL_6_0_RELEASE_0011,
+    D3D12DDI_SHADER_MODEL_6_1_RELEASE_0033, D3D12DDI_SHADER_MODEL_6_2_RELEASE_0042,
+    D3D12DDI_SHADER_MODEL_6_3_RELEASE_0054, D3D12DDI_SHADER_MODEL_6_4_RELEASE_0062,
+    D3D12DDI_SHADER_MODEL_6_5_RELEASE_0071, D3D12DDI_SHADER_MODEL_6_6_RELEASE_0082,
+    D3D12DDI_SHADER_MODEL_6_7_RELEASE_0093,
+};
+
+// How many of kShaderModels the device supports.
+UINT shader_model_count(ID3D12Device* d)
+{
+    D3D12_FEATURE_DATA_SHADER_MODEL sm{D3D_SHADER_MODEL_6_7};
+    if (FAILED(d->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))))
+        sm.HighestShaderModel = D3D_SHADER_MODEL_5_1;
+    const UINT minor = sm.HighestShaderModel >= D3D_SHADER_MODEL_6_0 ? (sm.HighestShaderModel & 0xf) : 0;
+    return sm.HighestShaderModel >= D3D_SHADER_MODEL_6_0 ? std::min<UINT>(2 + minor, ARRAYSIZE(kShaderModels)) : 1;
+}
+
+// The feature level of what we pass on (see the top of this file): at most 12_1, since 12_2 needs ray tracing,
+// mesh shaders and sampler feedback.
+D3D12DDI_3DPIPELINELEVEL feature_level(ID3D12Device* d)
+{
+    static const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
+                                               D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_2};
+    D3D12_FEATURE_DATA_FEATURE_LEVELS fl{ARRAYSIZE(levels), levels};
+    if (FAILED(d->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &fl, sizeof(fl))))
+        return D3D12DDI_3DPIPELINELEVEL_11_0;
+    switch (fl.MaxSupportedFeatureLevel) {
+    case D3D_FEATURE_LEVEL_11_1: return D3D12DDI_3DPIPELINELEVEL_11_1;
+    case D3D_FEATURE_LEVEL_12_0: return D3D12DDI_3DPIPELINELEVEL_12_0;
+    case D3D_FEATURE_LEVEL_12_1:
+    case D3D_FEATURE_LEVEL_12_2: return D3D12DDI_3DPIPELINELEVEL_12_1;
+    default: return D3D12DDI_3DPIPELINELEVEL_11_0;
+    }
+}
+
 } // namespace
 
-HRESULT get_caps(const D3D12DDIARG_GETCAPS& r)
+HRESULT get_caps(ID3D12Device* dev, const D3D12DDIARG_GETCAPS& r)
 {
     switch (r.Type) {
     case D3D12DDICAPS_TYPE_3DPIPELINESUPPORT: {
         auto* d = payload<D3D12DDI_3DPIPELINELEVEL>(r);
         if (!d) return E_INVALIDARG;
-        *d = kFeatureLevel;
+        *d = feature_level(dev);
         return S_OK;
     }
     case D3D12DDICAPS_TYPE_0081_3DPIPELINESUPPORT1: {
         // The highest level we support that does not exceed what the runtime understands.
         auto* d = payload<D3D12DDI_3DPIPELINESUPPORT1_DATA_0081>(r);
         if (!d) return E_INVALIDARG;
-        d->MaximumDriverSupportedFeatureLevel =
-            d->HighestRuntimeSupportedFeatureLevel < kFeatureLevel ? d->HighestRuntimeSupportedFeatureLevel : kFeatureLevel;
+        d->MaximumDriverSupportedFeatureLevel = std::min(d->HighestRuntimeSupportedFeatureLevel, feature_level(dev));
         return S_OK;
     }
     case D3D12DDICAPS_TYPE_0011_SHADER_MODELS: {
         // Called twice: first for the count, then with an array of that size.
         auto* d = payload<D3D12DDI_D3D12_SHADER_MODELS_DATA_0011>(r);
         if (!d || !d->pNumShaderModelsSupported) return E_INVALIDARG;
-        constexpr UINT n = ARRAYSIZE(kShaderModels);
+        const UINT n = shader_model_count(dev);
         if (d->pShaderModelsSupported) {
             if (*d->pNumShaderModelsSupported < n) return E_INVALIDARG;
             for (UINT i = 0; i < n; i++)
@@ -70,24 +110,90 @@ HRESULT get_caps(const D3D12DDIARG_GETCAPS& r)
     case D3D12DDICAPS_TYPE_D3D12_OPTIONS: {
         auto* d = payload<D3D12DDI_D3D12_OPTIONS_DATA_0089>(r);
         if (!d) return E_INVALIDARG;
+        const auto o = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS>(dev, D3D12_FEATURE_D3D12_OPTIONS);
+        const auto o2 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS2>(dev, D3D12_FEATURE_D3D12_OPTIONS2);
+        const auto o3 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS3>(dev, D3D12_FEATURE_D3D12_OPTIONS3);
+        const auto o4 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS4>(dev, D3D12_FEATURE_D3D12_OPTIONS4);
+        const auto o5 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS5>(dev, D3D12_FEATURE_D3D12_OPTIONS5);
+        const auto o6 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS6>(dev, D3D12_FEATURE_D3D12_OPTIONS6);
+        const auto o10 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS10>(dev, D3D12_FEATURE_D3D12_OPTIONS10);
         *d = {};
-        // VK_EXT_descriptor_heap gives us heap-indexed descriptors; tier 2 is the safe claim until full tier 3
-        // semantics (unbounded, partially bound tables) are tested.
-        d->ResourceBindingTier = D3D12DDI_RESOURCE_BINDING_TIER_2;
-        // Tier 2 (mixed buffers/textures in one heap) needs placed resources first.
-        d->ResourceHeapTier = D3D12DDI_RESOURCE_HEAP_TIER_1;
-        // Everything else (tiled resources, conservative raster, VRS, mesh, raytracing, render passes, enhanced
-        // barriers, ...) stays zero: not supported.
+        d->ResourceBindingTier = static_cast<D3D12DDI_RESOURCE_BINDING_TIER>(o.ResourceBindingTier);
+        d->ConservativeRasterizationTier =
+            static_cast<D3D12DDI_CONSERVATIVE_RASTERIZATION_TIER>(o.ConservativeRasterizationTier);
+        d->TiledResourcesTier = static_cast<D3D12DDI_TILED_RESOURCES_TIER>(o.TiledResourcesTier);
+        d->CrossNodeSharingTier = D3D12DDI_CROSS_NODE_SHARING_TIER_NOT_SUPPORTED;
+        d->VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation =
+            o.VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation;
+        d->OutputMergerLogicOp = o.OutputMergerLogicOp;
+        d->ResourceHeapTier = static_cast<D3D12DDI_RESOURCE_HEAP_TIER>(o.ResourceHeapTier);
+        d->DepthBoundsTestSupported = o2.DepthBoundsTestSupported;
+        d->ProgrammableSamplePositionsTier =
+            static_cast<D3D12DDI_PROGRAMMABLE_SAMPLE_POSITIONS_TIER>(o2.ProgrammableSamplePositionsTier);
+        d->CopyQueueTimestampQueriesSupported = o3.CopyQueueTimestampQueriesSupported;
+        d->WriteBufferImmediateQueueFlags = static_cast<D3D12DDI_COMMAND_QUEUE_FLAGS>(o3.WriteBufferImmediateSupportFlags);
+        d->ViewInstancingTier = static_cast<D3D12DDI_VIEW_INSTANCING_TIER>(o3.ViewInstancingTier);
+        d->BarycentricsSupported = o3.BarycentricsSupported;
+        d->ReservedBufferPlacementSupported = o4.MSAA64KBAlignedTextureSupported;
+        d->SRVOnlyTiledResourceTier3 = o5.SRVOnlyTiledResourceTier3;
+        d->VariableShadingRateTier = static_cast<D3D12DDI_VARIABLE_SHADING_RATE_TIER>(o6.VariableShadingRateTier);
+        d->PerPrimitiveShadingRateSupportedWithViewportIndexing = o6.PerPrimitiveShadingRateSupportedWithViewportIndexing;
+        d->AdditionalShadingRatesSupported = o6.AdditionalShadingRatesSupported;
+        d->ShadingRateImageTileSize = o6.ShadingRateImageTileSize;
+        d->VariableRateShadingSumCombinerSupported = o10.VariableRateShadingSumCombinerSupported;
         return S_OK;
     }
     case D3D12DDICAPS_TYPE_SHADER: {
         auto* d = payload<D3D12DDI_SHADER_CAPS_0084>(r);
         if (!d) return E_INVALIDARG;
+        const auto o = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS>(dev, D3D12_FEATURE_D3D12_OPTIONS);
+        const auto o1 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS1>(dev, D3D12_FEATURE_D3D12_OPTIONS1);
+        const auto o4 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS4>(dev, D3D12_FEATURE_D3D12_OPTIONS4);
+        const auto o9 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS9>(dev, D3D12_FEATURE_D3D12_OPTIONS9);
+        const auto o11 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS11>(dev, D3D12_FEATURE_D3D12_OPTIONS11);
         *d = {};
-        d->MinPrecision = D3D12DDI_SHADER_MIN_PRECISION_NONE;
-        d->WaveLaneCountMin = 32;   // reported only; WaveOps stays FALSE until wave intrinsics are wired
-        d->WaveLaneCountMax = 64;
-        d->TotalLaneCount = 1024;
+        d->MinPrecision = static_cast<D3D12DDI_SHADER_MIN_PRECISION>(o.MinPrecisionSupport);
+        d->DoubleOps = o.DoublePrecisionFloatShaderOps;
+        d->ShaderSpecifiedStencilRef = o.PSSpecifiedStencilRefSupported;
+        d->TypedUAVLoadAdditionalFormats = o.TypedUAVLoadAdditionalFormats;
+        d->ROVs = o.ROVsSupported;
+        d->WaveOps = o1.WaveOps;
+        d->WaveLaneCountMin = o1.WaveLaneCountMin;
+        d->WaveLaneCountMax = o1.WaveLaneCountMax;
+        d->TotalLaneCount = o1.TotalLaneCount;
+        d->Int64Ops = o1.Int64ShaderOps;
+        d->Native16BitOps = o4.Native16BitShaderOpsSupported;
+        d->AtomicInt64OnTypedResource = o9.AtomicInt64OnTypedResourceSupported;
+        d->AtomicInt64OnGroupShared = o9.AtomicInt64OnGroupSharedSupported;
+        d->AtomicInt64OnDescriptorHeapResource = o11.AtomicInt64OnDescriptorHeapResourceSupported;
+        return S_OK;
+    }
+    case D3D12DDICAPS_TYPE_OPTIONS_0090: {
+        auto* d = payload<D3D12DDI_OPTIONS_DATA_0090>(r);
+        if (!d) return E_INVALIDARG;
+        const auto o12 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS12>(dev, D3D12_FEATURE_D3D12_OPTIONS12);
+        *d = {};
+        d->RelaxedFormatCastingSupported = o12.RelaxedFormatCastingSupported;
+        return S_OK;
+    }
+    case D3D12DDICAPS_TYPE_OPTIONS_0091: {
+        auto* d = payload<D3D12DDI_OPTIONS_DATA_0091>(r);
+        if (!d) return E_INVALIDARG;
+        const auto o13 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS13>(dev, D3D12_FEATURE_D3D12_OPTIONS13);
+        *d = {};
+        d->UnrestrictedBufferTextureCopyPitchSupported = o13.UnrestrictedBufferTextureCopyPitchSupported;
+        d->UnrestrictedVertexElementAlignmentSupported = o13.UnrestrictedVertexElementAlignmentSupported;
+        d->InvertedViewportHeightFlipsYSupported = o13.InvertedViewportHeightFlipsYSupported;
+        d->InvertedViewportDepthFlipsZSupported = o13.InvertedViewportDepthFlipsZSupported;
+        return S_OK;
+    }
+    case D3D12DDICAPS_TYPE_OPTIONS_0093: {
+        auto* d = payload<D3D12DDI_OPTIONS_DATA_0093>(r);
+        if (!d) return E_INVALIDARG;
+        const auto o14 = feature<D3D12_FEATURE_DATA_D3D12_OPTIONS14>(dev, D3D12_FEATURE_D3D12_OPTIONS14);
+        *d = {};
+        d->AdvancedTextureOpsSupported = o14.AdvancedTextureOpsSupported;
+        d->WriteableMSAATexturesSupported = o14.WriteableMSAATexturesSupported;
         return S_OK;
     }
     case D3D12DDICAPS_TYPE_ARCHITECTURE_INFO: {
@@ -103,8 +209,8 @@ HRESULT get_caps(const D3D12DDIARG_GETCAPS& r)
         if (!d || !node_zero(r)) return E_INVALIDARG;
         *d = {};
         d->UMA = TRUE;
-        // Required by the runtime (CacheHeapCaps throws without it). True for us: every host-visible memory type
-        // core uses is HOST_COHERENT, so CPU and GPU see each other's writes without explicit cache maintenance.
+        // Required by the runtime (CacheHeapCaps throws without it). True for us: the host-visible memory types
+        // are HOST_COHERENT, so CPU and GPU see each other's writes without explicit cache maintenance.
         d->IOCoherent = TRUE;
         d->HeapSerializationTier = D3D12DDI_HEAP_SERIALIZATION_TIER_0041_0;
         d->ResourceSerializationTier = D3D12DDI_RESOURCE_SERIALIZATION_TIER_0041_0;
@@ -113,7 +219,9 @@ HRESULT get_caps(const D3D12DDIARG_GETCAPS& r)
     case D3D12DDICAPS_TYPE_GPUVA_CAPS: {
         auto* d = payload<D3D12DDI_GPUVA_CAPS_0004>(r);
         if (!d) return E_INVALIDARG;
-        d->MaxGPUVirtualAddressBitsPerResource = 40;
+        const auto va = feature<D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT>(
+            dev, D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT);
+        d->MaxGPUVirtualAddressBitsPerResource = va.MaxGPUVirtualAddressBitsPerResource;
         return S_OK;
     }
     case D3D12DDICAPS_TYPE_0022_TEXTURE_LAYOUT: {
@@ -174,18 +282,6 @@ HRESULT get_caps(const D3D12DDIARG_GETCAPS& r)
         d->ComputeQueuesPer3DQueue = 0;   // no scheduling groups
         return S_OK;
     }
-    case D3D12DDICAPS_TYPE_OPTIONS_0090: {
-        auto* d = payload<D3D12DDI_OPTIONS_DATA_0090>(r);
-        if (!d) return E_INVALIDARG;
-        *d = {};
-        return S_OK;
-    }
-    case D3D12DDICAPS_TYPE_OPTIONS_0091: {
-        auto* d = payload<D3D12DDI_OPTIONS_DATA_0091>(r);
-        if (!d) return E_INVALIDARG;
-        *d = {};
-        return S_OK;
-    }
     case D3D12DDICAPS_TYPE_SHADER_MODEL_6_8_OPTIONS_0110: {
         auto* d = payload<D3D12DDI_SHADER_MODEL_6_8_OPTIONS_0110>(r);
         if (!d) return E_INVALIDARG;
@@ -193,8 +289,7 @@ HRESULT get_caps(const D3D12DDIARG_GETCAPS& r)
         return S_OK;
     }
     default:
-        // Bring-up: an unknown query gets an all-zero answer ("not supported") so one run shows every query the
-        // runtime makes. Each one logged here needs a real decision.
+        // An unknown query gets an all-zero answer ("not supported"). Each one logged here needs a real decision.
         VGD_WARN("GetCaps type=%d size=%u: UNHANDLED, answered with zeros", static_cast<int>(r.Type), r.DataSize);
         if (!r.pData) return E_INVALIDARG;
         std::memset(r.pData, 0, r.DataSize);

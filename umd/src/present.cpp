@@ -5,7 +5,7 @@
 // yttrium's D3D10 UMD) opens their runtime allocation and imports its host resource into its own Venus context.
 // That resource must be a dma-buf exported from Vulkan memory, and the stock KMD creates a blob only in the context
 // of the device that first opens the allocation, here the D3D12 runtime's device, which has no Venus context. So:
-//   1. core makes the buffer a linear texture on exported memory (our ICD build exports it as an NT handle);
+//   1. the buffer is a linear texture on exported memory (shared_image.h; our ICD build exports an NT handle);
 //   2. we open that handle on a kernel device of our own, which gives an allocation handle of this process;
 //   3. the runtime allocation is created as an alias of it (viogpu::AllocationAlias, our KMD patch): it names the
 //      same host resource, which lives until both are gone.
@@ -214,14 +214,14 @@ HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const
         return E_OUTOFMEMORY;
     }
 
-    vgd::Device::ExportedTexture exported;
-    HRESULT hr = d.core->create_presentable_texture(desc, args.pCastableFormats, args.NumCastableFormats,
-                                                    &out.resource, &exported);
+    int fd = -1;
+    HRESULT hr = SharedImage::create_exported(d.engine, desc, args.pCastableFormats, args.NumCastableFormats,
+                                              &out.shared, &fd);
     if (FAILED(hr)) {
         VGD_WARN("present: presentable texture failed: 0x%08lx", hr);
         return E_OUTOFMEMORY;
     }
-    const HANDLE nt = handle_of_fd(exported.fd);
+    const HANDLE nt = handle_of_fd(fd);
     KmtDevice* kmt = kmt_device(d);
     D3DKMT_HANDLE opened_resource = 0, source = 0;
     if (kmt && nt != INVALID_HANDLE_VALUE)
@@ -231,8 +231,8 @@ HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const
     if (nt != INVALID_HANDLE_VALUE)
         CloseHandle(nt);   // the opened resource keeps the allocation
     if (FAILED(hr)) {
-        VGD_WARN("present: could not open the exported memory (fd %d, handle %p)", exported.fd, nt);
-        out.resource.reset();
+        VGD_WARN("present: could not open the exported memory (fd %d, handle %p)", fd, nt);
+        out.shared.reset();
         return E_OUTOFMEMORY;
     }
 
@@ -245,10 +245,10 @@ HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const
     o.height = desc.Height;
     o.depth = 1;
     o.array_size = 1;
-    alias.exchange.Size = exported.size;
+    alias.exchange.Size = out.shared->size();
     alias.exchange.BlobMem = viogpu::kBlobMemHost3d;
     alias.exchange.BlobFlags = viogpu::kBlobFlagShareable;
-    alias.exchange.Stride = exported.row_pitch;
+    alias.exchange.Stride = out.shared->row_pitch();
     alias.Magic = viogpu::kAllocationAliasMagic;
     alias.SourceAllocation = source;
     viogpu::ResourceExchange res_exchange{};
@@ -275,15 +275,15 @@ HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const
     kmt->close(opened_resource);
     if (FAILED(hr) || !info.hAllocation) {
         VGD_WARN("present: AllocateCb failed: 0x%08lx", hr);
-        out.resource.reset();
+        out.shared.reset();
         return E_OUTOFMEMORY;
     }
     out.allocation = info.hAllocation;
     out.rt_resource = rt_resource;
     VGD_TRACE("present: swapchain buffer allocation 0x%x (km resource 0x%x) aliases 0x%x: %llu bytes, pitch %u, "
               "virgl format %lu",
-              info.hAllocation, cb.hKMResource, source, static_cast<unsigned long long>(exported.size),
-              exported.row_pitch, format);
+              info.hAllocation, cb.hKMResource, source, static_cast<unsigned long long>(out.shared->size()),
+              out.shared->row_pitch(), format);
     return S_OK;
 }
 
@@ -304,7 +304,7 @@ void destroy_primary(Device& d, HeapObject& heap)
 // for WebGPU): the runtime has opened its allocation, whose private data is yttrium's allocation exchange. Its
 // memory is Venus memory exported as a shareable blob, under a linear image (yttrium_venus2_resource.c), so it is
 // imported like the reverse of a swapchain buffer: an NT handle of the opened resource goes to our ICD's dma-buf
-// import (icd/patches/0003, 0005), under a linear image of the same size and format (core import_texture).
+// import (icd/patches/0003, 0005), under a linear image of the same size and format (shared_image.h).
 
 namespace {
 
@@ -387,9 +387,9 @@ HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject
         return E_OUTOFMEMORY;
     }
     bool consumed = false;
-    HRESULT hr = d.core->import_texture(desc, &srgb, srgb != DXGI_FORMAT_UNKNOWN ? 1 : 0,
-                                        static_cast<int>(reinterpret_cast<intptr_t>(nt)), e.Size, &out.resource,
-                                        &consumed);
+    HRESULT hr = SharedImage::create_imported(d.engine, desc, &srgb, srgb != DXGI_FORMAT_UNKNOWN ? 1 : 0,
+                                              static_cast<int>(reinterpret_cast<intptr_t>(nt)), e.Size, &out.shared,
+                                              &consumed);
     if (!consumed)
         CloseHandle(nt);
     if (FAILED(hr)) {
@@ -397,9 +397,6 @@ HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject
                  static_cast<int>(format), hr);
         return E_OUTOFMEMORY;
     }
-    if (out.resource->size() != e.Size)
-        VGD_TRACE("OpenHeapAndResource: our linear image needs %llu bytes of the %llu shared",
-                  static_cast<unsigned long long>(out.resource->size()), static_cast<unsigned long long>(e.Size));
     return S_OK;
 }
 

@@ -5,7 +5,7 @@
 #include "log.h"
 #include "objects.h"
 #include "stubs.h"
-#include "vulkan_icd.h"
+
 
 #include <cstring>
 #include <new>
@@ -25,38 +25,6 @@ HRESULT check_table_size(D3D12DDI_TABLE_TYPE type, SIZE_T size)
     VGD_WARN("FillDDITable type=%d: size %llu, expected %llu", static_cast<int>(type),
              static_cast<unsigned long long>(size), static_cast<unsigned long long>(sizeof(Table)));
     return E_INVALIDARG;
-}
-
-HRESULT bring_up_core(Device& d)
-{
-    PFN_vkGetInstanceProcAddr gipa = load_venus_icd();
-    if (!gipa)
-        return DXGI_ERROR_UNSUPPORTED;
-    HRESULT hr = vgd::Instance::create(gipa, &d.instance);
-    if (FAILED(hr)) {
-        VGD_WARN("CreateDevice: Vulkan instance on the Venus ICD failed: 0x%08lx", hr);
-        return hr;
-    }
-    const auto& adapters = d.instance->adapters();
-    for (size_t i = 0; i < adapters.size(); i++) {
-        const auto& a = adapters[i];
-        std::string missing;
-        for (const auto& m : a.missing)
-            missing += " " + m;
-        VGD_TRACE("CreateDevice: Vulkan device %u: %s (api %u.%u.%u, %s) descriptor_heap=%d external_memory=%d "
-                  "drm_modifier=%d%s%s",
-                  static_cast<unsigned>(i), a.name.c_str(),
-                  VK_API_VERSION_MAJOR(a.api_version), VK_API_VERSION_MINOR(a.api_version),
-                  VK_API_VERSION_PATCH(a.api_version), a.driver_info.c_str(), a.descriptor_heap, a.external_memory,
-                  a.drm_format_modifier,
-                  missing.empty() ? "" : " missing:", missing.c_str());
-        if (!a.usable() || d.core)
-            continue;
-        hr = d.instance->create_device(i, &d.core);
-        if (FAILED(hr))
-            VGD_WARN("CreateDevice: vkCreateDevice on %s failed: 0x%08lx", a.name.c_str(), hr);
-    }
-    return d.core ? S_OK : DXGI_ERROR_UNSUPPORTED;
 }
 
 // --- Extended features: we offer none (no render-pass DDI, shader-cache callbacks, video, ...). -----------------
@@ -96,7 +64,7 @@ HRESULT APIENTRY set_extended_feature_callbacks(D3D12DDI_HDEVICE, D3D12DDI_TABLE
 SIZE_T device_private_size() { return sizeof(Device); }
 
 HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandListTables& tables,
-                      const viogpu::AdapterInfo& info)
+                      const viogpu::AdapterInfo& info, std::shared_ptr<Engine> engine)
 {
     if ((args.Version >> 16) != kBuildVersion) {
         VGD_WARN("CreateDevice: runtime picked build %u, we only fill tables for %u", args.Version >> 16, kBuildVersion);
@@ -108,20 +76,14 @@ HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandLi
     d->kt_callbacks = args.pKTCallbacks;
     d->um_callbacks = args.p12UMCallbacks_0062;
     d->allocation_alias = info.Flags.supports_allocation_alias;
-
-    HRESULT hr = bring_up_core(*d);
-    if (FAILED(hr)) {
-        d->~Device();
-        return hr;
-    }
-    // GetTimestampFrequency comes from the KMD, and yttrium's has no GPU clock: it reports the performance counter.
-    // Resolved timestamps are rescaled to match.
-    LARGE_INTEGER qpf;
-    QueryPerformanceFrequency(&qpf);
-    d->core->set_timestamp_frequency(static_cast<uint64_t>(qpf.QuadPart));
-    VGD_TRACE("CreateDevice: GPU timestamps at %llu Hz, reported at %lld Hz",
-              static_cast<unsigned long long>(d->core->timestamp_frequency()), static_cast<long long>(qpf.QuadPart));
-    VGD_TRACE("CreateDevice: ok on %s (flags 0x%x)", d->core->adapter().name.c_str(), static_cast<unsigned>(args.Flags));
+    d->engine = std::move(engine);
+    d->d3d = d->engine->device.get();
+    d->d3d2 = d->engine->device.as<ID3D12Device2>();
+    d->d3d4 = d->engine->device.as<ID3D12Device4>();
+    d->d3d8 = d->engine->device.as<ID3D12Device8>();
+    // GetTimestampFrequency comes from the KMD, which reports the performance counter's; resolved timestamps are
+    // the Vulkan device's ticks (not rescaled yet).
+    VGD_TRACE("CreateDevice: ok on %s (flags 0x%x)", d->engine->name.c_str(), static_cast<unsigned>(args.Flags));
     return S_OK;
 }
 
@@ -172,6 +134,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         auto& t = *static_cast<T*>(table);
         VGD_FILL_STUBS(t, "queue", VGD_SLOTS_COMMAND_QUEUE_CORE_0001);
         fill_command_queue_ddi(t);
+        fill_resource_queue_ddi(t);
         break;
     }
     case D3D12DDI_TABLE_TYPE_DXGI: {

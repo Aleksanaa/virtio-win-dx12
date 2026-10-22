@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Shaders for the descriptor tests (core/tests/descriptors.cpp, d3dprobe --textured). Rebuild with build.sh.
+// Shaders for the descriptor tests (d3dprobe --textured). Rebuild with build.sh.
 //
 // The pixel shader reads every kind of binding the root signature can give it:
 //   table 0 (CBV/SRV/UAV heap): b0 a constant buffer, t0 a texture, t1 a structured buffer

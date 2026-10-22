@@ -17,6 +17,11 @@ vgd_generate_ddi_slots(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/ddi_slots.h
     VGD_SLOTS_EXTENDED_FEATURES_0021 "${D3D12UMDDI}"            D3D12DDI_EXTENDED_FEATURES_FUNCS_0021
     VGD_SLOTS_DXGI_1_4               "${SDK_INC}/um/dxgiddi.h"  DXGI1_4_DDI_BASE_FUNCTIONS)
 
+# The one source that sees vkd3d-proton's headers (see vkd3d_bridge.c).
+add_library(vgd-vkd3d-bridge OBJECT src/vkd3d_bridge.c)
+target_link_libraries(vgd-vkd3d-bridge PRIVATE vgd-vkd3d-proton-headers)
+add_dependencies(vgd-vkd3d-bridge vkd3d-proton-build)
+
 add_library(vgd3d12 SHARED
     src/adapter.cpp
     src/caps.cpp
@@ -31,10 +36,14 @@ add_library(vgd3d12 SHARED
     src/indirect_ddi.cpp
     src/present.cpp
     src/log.cpp
-    src/vulkan_icd.cpp)
+    src/vulkan_icd.cpp
+    src/engine.cpp
+    src/shared_image.cpp
+    src/shader_container.cpp
+    $<TARGET_OBJECTS:vgd-vkd3d-bridge>)
 set_target_properties(vgd3d12 PROPERTIES PREFIX "")
 target_include_directories(vgd3d12 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_link_libraries(vgd3d12 PRIVATE vgd-core)
+target_link_libraries(vgd3d12 PRIVATE vgd-vulkan-headers vgd-directx-headers vgd-vkd3d-proton)
 target_compile_options(vgd3d12 PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
     "SHELL:-idirafter ${WDK_INC}/um" "SHELL:-idirafter ${WDK_INC}/shared"
     "SHELL:-idirafter ${SDK_INC}/shared" "SHELL:-idirafter ${SDK_INC}/um")

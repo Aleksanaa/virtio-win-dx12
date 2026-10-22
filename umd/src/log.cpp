@@ -15,8 +15,6 @@ std::mutex g_lock;
 FILE* g_file = nullptr;
 bool g_verbose = false;
 
-void sink(LogLevel level, const char* msg) { logf(level, "core: %s", msg); }
-
 // The environment variable, or else the same-named value under HKLM\SOFTWARE\vgd3d12: processes that do not
 // inherit the environment (Chromium's GPU process gets a filtered one) still read the registry. A REG_DWORD value
 // reads as its decimal digits.
@@ -50,13 +48,13 @@ void log_init()
         g_file = std::fopen(path, "a");
     char v[8];
     g_verbose = setting("VGD_VERBOSE", v, sizeof(v)) && v[0] == '1';
-    // The Venus ICD reads its debug options with GetEnvironmentVariable: give it the registry's too.
-    for (const char* name : {"VN_DEBUG", "VN_PERF", "MESA_LOG_LEVEL"}) {
+    // vkd3d-proton and the Venus ICD read their options with GetEnvironmentVariable: give them the registry's too.
+    for (const char* name : {"VKD3D_DEBUG", "VKD3D_SHADER_DEBUG", "VKD3D_LOG_FILE", "VKD3D_CONFIG", "VKD3D_FEATURE_LEVEL",
+                             "VN_DEBUG", "VN_PERF", "MESA_LOG_LEVEL"}) {
         char value[256];
         if (setting(name, value, sizeof(value)))
             SetEnvironmentVariableA(name, value);
     }
-    set_log_sink(sink);
 }
 
 bool verbose() { return g_verbose; }

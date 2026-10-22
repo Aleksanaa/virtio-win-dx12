@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Shaders for the depth/stencil and MSAA tests (core/tests/depth_stencil.cpp, d3dprobe --depth). Rebuild with
-// build.sh.
+// Shaders for the depth/stencil and MSAA tests (d3dprobe --depth). Rebuild with build.sh.
 
 cbuffer Depth : register(b0)   // root constant, vertex shader
 {

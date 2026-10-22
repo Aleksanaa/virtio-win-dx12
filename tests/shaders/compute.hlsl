@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Shaders for the compute tests (core/tests/compute.cpp, d3dprobe --compute). Rebuild with build.sh.
+// Shaders for the compute tests (d3dprobe --compute). Rebuild with build.sh.
 //
 // Root signature: b0 root constants, u0 a root UAV (structured buffer), table {u1 typed buffer, u2 texture}.
 

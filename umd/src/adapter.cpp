@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-// OpenAdapter12 and the adapter function table. Device creation is the next milestone; for now every
-// runtime query is logged so the first guest run shows exactly what the runtime asks of us.
+// OpenAdapter12 and the adapter function table. The engine (vkd3d-proton, engine.h) is brought up when the runtime
+// first needs it, for caps or a device.
 #include "wdk.h"
 #include "caps.h"
 #include "device.h"
+#include "engine.h"
 #include "log.h"
 #include "viogpu_abi.h"
 
@@ -22,6 +23,12 @@ struct Adapter {
     const D3DDDI_ADAPTERCALLBACKS* callbacks = nullptr;
     viogpu::AdapterInfo info{};
     CommandListTables command_list_tables;
+    std::shared_ptr<Engine> engine;
+
+    HRESULT bring_up()
+    {
+        return engine ? S_OK : Engine::get(&engine);
+    }
 
     static Adapter* from(D3D12DDI_HADAPTER h) { return static_cast<Adapter*>(h.pDrvPrivate); }
 };
@@ -39,7 +46,10 @@ HRESULT APIENTRY ddi_create_device(D3D12DDI_HADAPTER h, const D3D12DDIARG_CREATE
         return E_INVALIDARG;
     VGD_TRACE("CreateDevice interface=0x%x version=0x%x", args->Interface, args->Version);
     Adapter* a = Adapter::from(h);
-    return create_device(*args, a->command_list_tables, a->info);
+    HRESULT hr = a->bring_up();
+    if (FAILED(hr))
+        return hr;
+    return create_device(*args, a->command_list_tables, a->info, a->engine);
 }
 
 HRESULT APIENTRY close_adapter(D3D12DDI_HADAPTER h)
@@ -62,11 +72,14 @@ HRESULT APIENTRY get_supported_versions(D3D12DDI_HADAPTER, UINT32* entries, UINT
     return S_OK;
 }
 
-HRESULT APIENTRY ddi_get_caps(D3D12DDI_HADAPTER, const D3D12DDIARG_GETCAPS* args)
+HRESULT APIENTRY ddi_get_caps(D3D12DDI_HADAPTER h, const D3D12DDIARG_GETCAPS* args)
 {
     if (!args)
         return E_INVALIDARG;
-    HRESULT hr = get_caps(*args);
+    Adapter* a = Adapter::from(h);
+    HRESULT hr = a->bring_up();
+    if (SUCCEEDED(hr))
+        hr = get_caps(a->engine->device.get(), *args);
     VGD_TRACE("GetCaps type=%d size=%u -> 0x%08lx", static_cast<int>(args->Type), args->DataSize, hr);
     return hr;
 }

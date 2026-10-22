@@ -5,7 +5,7 @@
 #   nix shell nixpkgs#directx-shader-compiler -c tests/shaders/build.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-. ../../core/shaders/dxil_header.sh
+. ./dxil_header.sh
 
 build triangle.hlsl vs_corner:vs_6_0 vs_buffer:vs_6_0 ps_color:ps_6_0
 build textured.hlsl vs_fullscreen:vs_6_0 ps_textured:ps_6_0

@@ -7,12 +7,11 @@ namespace vgd::umd {
 
 namespace {
 
-constexpr DWORD kPollMs = 100;                       // how often blocked threads look at the stop flag
-constexpr uint64_t kPollNs = 100'000'000ull;
+constexpr DWORD kPollMs = 100;   // how often blocked threads look at the stop flag
 
 } // namespace
 
-QueueBridge::QueueBridge(Device& device, D3D12DDI_HRTCOMMANDQUEUE rt, vgd::CommandQueue& queue)
+QueueBridge::QueueBridge(Device& device, D3D12DDI_HRTCOMMANDQUEUE rt, ID3D12CommandQueue* queue)
     : device_(device), rt_(rt), queue_(queue)
 {
 }
@@ -31,19 +30,20 @@ HRESULT QueueBridge::init()
     }
     context_ = cc.hContext;
 
-    hr = device_.core->create_fence(0, &timeline_);
-    if (FAILED(hr)) {
-        VGD_WARN("CreateCommandQueue: timeline semaphore failed: 0x%08lx", hr);
-        return E_OUTOFMEMORY;
+    for (Com<ID3D12Fence>* f : {&open_, &finished_}) {
+        hr = device_.d3d->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), f->put_void());
+        if (FAILED(hr)) {
+            VGD_WARN("CreateCommandQueue: fence failed: 0x%08lx", hr);
+            return E_OUTOFMEMORY;
+        }
     }
-    if (!create_fence(&gate_) || !create_fence(&done_)) {
+    if (!create_kernel_fence(&gate_) || !create_kernel_fence(&done_)) {
         VGD_WARN("CreateCommandQueue: no kernel monitored fences; ExecuteCommandLists will wait for the GPU");
         blocking_ = true;
         return S_OK;
     }
-    submit_thread_ = std::thread([this] { submit_loop(); });
+    gate_thread_ = std::thread([this] { gate_loop(); });
     completion_thread_ = std::thread([this] { completion_loop(); });
-    VGD_TRACE("CreateCommandQueue: context %p, gate fence 0x%x, done fence 0x%x", context_, gate_, done_);
     return S_OK;
 }
 
@@ -54,12 +54,13 @@ QueueBridge::~QueueBridge()
         stop_ = true;
     }
     cv_.notify_all();
-    if (submit_thread_.joinable())
-        submit_thread_.join();
+    if (gate_thread_.joinable())
+        gate_thread_.join();
     if (completion_thread_.joinable())
         completion_thread_.join();
-    if (timeline_)
-        timeline_->wait(next_, 1'000'000'000ull);   // the runtime waits for idle first; this is a safety net
+    // Work still waiting on a gate that never opened would hold the queue forever.
+    if (open_)
+        open_->Signal(next_);
 
     const HANDLE dev = device_.rt_device.handle;
     for (D3DKMT_HANDLE f : {gate_, done_})
@@ -75,7 +76,7 @@ QueueBridge::~QueueBridge()
     }
 }
 
-bool QueueBridge::create_fence(D3DKMT_HANDLE* out)
+bool QueueBridge::create_kernel_fence(D3DKMT_HANDLE* out)
 {
     D3DDDICB_CREATESYNCHRONIZATIONOBJECT2 c{};
     c.Info.Type = D3DDDI_MONITORED_FENCE;
@@ -90,14 +91,17 @@ bool QueueBridge::create_fence(D3DKMT_HANDLE* out)
     return true;
 }
 
-HRESULT QueueBridge::execute(vgd::CommandBatch batch)
+void QueueBridge::execute(UINT count, ID3D12CommandList* const* lists)
 {
     const uint64_t value = ++next_;
     if (blocking_) {
-        HRESULT hr = queue_.submit(batch, timeline_.get(), value);
-        if (FAILED(hr))
-            return hr;
-        return timeline_->wait(value, UINT64_MAX);
+        queue_->ExecuteCommandLists(count, lists);
+        queue_->Signal(finished_.get(), value);
+        HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (SUCCEEDED(finished_->SetEventOnCompletion(value, event)))
+            WaitForSingleObject(event, INFINITE);
+        CloseHandle(event);
+        return;
     }
 
     const HANDLE dev = device_.rt_device.handle;
@@ -110,9 +114,13 @@ HRESULT QueueBridge::execute(vgd::CommandBatch batch)
     if (FAILED(hr))
         VGD_WARN("ExecuteCommandLists: gate signal %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
 
+    queue_->Wait(open_.get(), value);
+    queue_->ExecuteCommandLists(count, lists);
+    queue_->Signal(finished_.get(), value);
     {
         std::lock_guard g(lock_);
-        submits_.push_back({value, std::move(batch)});
+        gates_.push_back(value);
+        completions_.push_back(value);
     }
     cv_.notify_all();
 
@@ -124,7 +132,6 @@ HRESULT QueueBridge::execute(vgd::CommandBatch batch)
     hr = device_.kt_callbacks->pfnWaitForSynchronizationObjectFromGpuCb(dev, &w);
     if (FAILED(hr))
         VGD_WARN("ExecuteCommandLists: done wait %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
-    return S_OK;
 }
 
 bool QueueBridge::wait_from_cpu(D3DKMT_HANDLE fence, uint64_t value)
@@ -151,49 +158,42 @@ bool QueueBridge::wait_from_cpu(D3DKMT_HANDLE fence, uint64_t value)
     return ok;
 }
 
-void QueueBridge::submit_loop()
-{
-    for (;;) {
-        Job job;
-        {
-            std::unique_lock g(lock_);
-            cv_.wait(g, [this] { return stop_ || !submits_.empty(); });
-            if (submits_.empty())
-                return;
-            job = std::move(submits_.front());
-            submits_.pop_front();
-        }
-        wait_from_cpu(gate_, job.value);   // on failure, submit anyway rather than deadlock the runtime
-        HRESULT hr = queue_.submit(job.batch, timeline_.get(), job.value);
-        if (FAILED(hr)) {
-            VGD_WARN("queue: submit %llu failed: 0x%08lx", static_cast<unsigned long long>(job.value), hr);
-            timeline_->signal(job.value);   // keep later fences moving; device removal comes later
-        }
-        {
-            std::lock_guard g(lock_);
-            completions_.push_back(job.value);
-        }
-        cv_.notify_all();
-    }
-}
-
-void QueueBridge::completion_loop()
+void QueueBridge::gate_loop()
 {
     for (;;) {
         uint64_t value;
         {
             std::unique_lock g(lock_);
-            cv_.wait(g, [this] { return (stop_ && submits_.empty()) || !completions_.empty(); });
-            if (completions_.empty())
+            cv_.wait(g, [this] { return stop_ || !gates_.empty(); });
+            if (gates_.empty())
                 return;
+            value = gates_.front();
+            gates_.pop_front();
+        }
+        wait_from_cpu(gate_, value);   // on failure, open anyway rather than deadlock the runtime
+        open_->Signal(value);
+    }
+}
+
+void QueueBridge::completion_loop()
+{
+    HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    for (;;) {
+        uint64_t value;
+        {
+            std::unique_lock g(lock_);
+            cv_.wait(g, [this] { return (stop_ && gates_.empty()) || !completions_.empty(); });
+            if (completions_.empty())
+                break;
             value = completions_.front();
             completions_.pop_front();
         }
-        while (timeline_->wait(value, kPollNs) == S_FALSE) {
-            std::lock_guard g(lock_);
-            if (stop_)
-                break;
-        }
+        if (SUCCEEDED(finished_->SetEventOnCompletion(value, event)))
+            while (WaitForSingleObject(event, kPollMs) == WAIT_TIMEOUT) {
+                std::lock_guard g(lock_);
+                if (stop_)
+                    break;
+            }
         D3DDDICB_SIGNALSYNCHRONIZATIONOBJECTFROMCPU s{};
         s.ObjectCount = 1;
         s.ObjectHandleArray = &done_;
@@ -202,6 +202,7 @@ void QueueBridge::completion_loop()
         if (FAILED(hr))
             VGD_WARN("queue: done signal %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
     }
+    CloseHandle(event);
 }
 
 } // namespace vgd::umd

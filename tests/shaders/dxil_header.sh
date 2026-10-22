@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Sourced by the shader build scripts (core/shaders/build.sh, tests/shaders/build.sh). Needs dxc on PATH.
+# Sourced by tests/shaders/build.sh. Needs dxc on PATH.
 
 # build file entry:profile...: compiles each entry point of file.hlsl (signed DXIL containers) into
 # file_dxil.h, as arrays k_<entry>.

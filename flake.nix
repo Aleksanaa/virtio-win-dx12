@@ -18,8 +18,7 @@
     in {
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
-          cmake ninja pkg-config gdb
-          vulkan-loader vulkan-tools vulkan-validation-layers spirv-tools
+          cmake ninja pkg-config
           unzip osslsigncode
           # Mesa (icd/build.sh): meson and its Python code generators.
           meson bison flex
@@ -40,9 +39,6 @@
         VGD_LLD_LINK = "${pkgs.lld}/bin/lld-link";
         VGD_LLVM_RC = "${pkgs.llvmPackages.llvm}/bin/llvm-rc";
         VGD_LLVM_LIB = "${pkgs.llvmPackages.llvm}/bin/llvm-lib";
-
-        # The Vulkan loader finds llvmpipe/RADV through the system driver path.
-        LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib";
       };
     };
 }
