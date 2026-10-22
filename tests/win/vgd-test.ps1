@@ -52,6 +52,21 @@ function Find-BuildFile([string]$rel) {
     throw "Cannot find $rel next to $PSScriptRoot"
 }
 
+# Copies a DLL into System32 unless the same file is already there. A DLL some process has loaded cannot be
+# replaced: name those processes, so they can be closed (or reboot).
+function Install-File([string]$src, [string]$dst) {
+    if ((Test-Path $dst) -and (Get-FileHash $src).Hash -eq (Get-FileHash $dst).Hash) {
+        Write-Host "$dst is up to date"
+        return
+    }
+    try { Copy-Item $src $dst -Force -ErrorAction Stop }
+    catch {
+        Write-Host "$dst is in use by:" -ForegroundColor Yellow
+        & tasklist.exe /m (Split-Path $dst -Leaf)
+        throw "Close those processes (or reboot) and run Install again."
+    }
+}
+
 function Assert-Admin {
     $id = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $id.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -101,12 +116,12 @@ switch ($Action) {
         }
         $original = @(Get-Content $Saved)
 
-        Copy-Item $dll $SysDll -Force
+        Install-File $dll $SysDll
         $icd = $null
         try { $icd = Find-BuildFile 'icd\vgd_vulkan_virtio.dll' }
         catch { Write-Host "No icd\vgd_vulkan_virtio.dll: vgd3d12.dll will fall back to the registered ICD (no present)." -ForegroundColor Yellow }
         if ($icd) {
-            Copy-Item $icd $SysIcd -Force
+            Install-File $icd $SysIcd
             Write-Host "ICD: $SysIcd sha256 $((Get-FileHash $SysIcd -Algorithm SHA256).Hash.ToLower())"
         }
         Copy-Item $probe (Join-Path $Work 'd3dprobe.exe') -Force
