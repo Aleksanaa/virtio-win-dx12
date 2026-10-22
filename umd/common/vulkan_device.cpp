@@ -49,8 +49,7 @@ HRESULT VulkanDevice::init(PFN_vkGetInstanceProcAddr gipa, VkInstance inst, VkPh
     std::vector<VkExtensionProperties> exts(count);
     vk.vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, exts.data());
     external_memory = has_extension(exts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
-                      has_extension(exts, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) && vk.vkGetMemoryFdKHR &&
-                      vk.vkGetMemoryFdPropertiesKHR;
+                      has_extension(exts, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) && vk.vkGetMemoryFdKHR;
     drm_modifier = external_memory && has_extension(exts, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
     return S_OK;
 }

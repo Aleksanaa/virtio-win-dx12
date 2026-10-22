@@ -13,6 +13,23 @@ constexpr unsigned kCapsetVirgl = 1;
 constexpr unsigned kCapsetVirgl2 = 2;
 constexpr unsigned kCapsetVenus = 4;
 
+// D3DKMTEscape requests (VIOGPU_ESCAPE): type, data length, request. The KMD wants the whole union's size at least,
+// which the padding covers.
+constexpr USHORT kEscapeResourceInfo = 0x100;   // VIOGPU_RES_INFO: the host resource id an allocation names
+#pragma pack(push, 1)
+struct Escape {
+    USHORT Type;
+    USHORT DataLength;
+    union {
+        struct {
+            UINT ResHandle;   // D3DKMT_HANDLE of an allocation of the escaping device
+            ULONG Id;
+        } ResourceInfo;
+        BYTE Pad[124];
+    };
+};
+#pragma pack(pop)
+
 struct AdapterInfo {
     ULONGLONG IamVioGPU;
     struct {

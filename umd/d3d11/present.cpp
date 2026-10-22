@@ -136,6 +136,7 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     cb.hResource = rt.handle;
     cb.NumAllocations = 1;
     cb.pAllocationInfo = &info;
+    const UINT host_res = kmt->resource_id(source);   // for the log: the host names it in its errors
     hr = d.kt.pfnAllocateCb(d.rt_device.handle, &cb);
     kmt->close(opened);
     if (FAILED(hr) || !info.hAllocation) {
@@ -144,10 +145,10 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     }
     out.allocation = info.hAllocation;
     out.allocated = true;
-    VGD_TRACE("shared surface: %ux%u format %d%s, allocation 0x%x (km resource 0x%x) aliases 0x%x: %llu bytes, "
-              "pitch %u",
+    VGD_TRACE("shared surface: %ux%u format %d%s, allocation 0x%x (km resource 0x%x) aliases 0x%x (host resource "
+              "%u): %llu bytes, pitch %u",
               width, height, a.Format, a.pPrimaryDesc ? " primary" : "", info.hAllocation, cb.hKMResource, source,
-              static_cast<unsigned long long>(out.image->size()), out.image->row_pitch());
+              host_res, static_cast<unsigned long long>(out.image->size()), out.image->row_pitch());
     return S_OK;
 }
 
@@ -187,6 +188,14 @@ HRESULT open_shared_surface(Device& d, const D3D10DDIARG_OPENRESOURCE& a, Resour
     HANDLE nt = nullptr;
     if (!kmt || FAILED(kmt->share(a.hKMResource.handle, &nt)))
         return E_FAIL;
+    // For the log: the host names resources by this id in its errors (an import of one it does not know kills the
+    // Venus context).
+    D3DKMT_HANDLE opened = 0, source = 0;
+    if (SUCCEEDED(kmt->open_shared(nt, &opened, &source))) {
+        VGD_TRACE("OpenResource: km resource 0x%x is host resource %u", a.hKMResource.handle,
+                  kmt->resource_id(source));
+        kmt->close(opened);
+    }
     const int fd = fd_of_handle(nt);
     if (fd < 0) {
         CloseHandle(nt);

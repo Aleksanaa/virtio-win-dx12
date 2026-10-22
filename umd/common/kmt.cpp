@@ -27,7 +27,8 @@ std::unique_ptr<KmtDevice> KmtDevice::open()
         !get(k->destroy_device_, "D3DKMTDestroyDevice") ||
         !get(k->query_resource_info_, "D3DKMTQueryResourceInfoFromNtHandle") ||
         !get(k->open_resource_, "D3DKMTOpenResourceFromNtHandle") ||
-        !get(k->destroy_allocation_, "D3DKMTDestroyAllocation") || !get(k->share_objects_, "D3DKMTShareObjects")) {
+        !get(k->destroy_allocation_, "D3DKMTDestroyAllocation") || !get(k->share_objects_, "D3DKMTShareObjects") ||
+        !get(k->escape_, "D3DKMTEscape")) {
         VGD_WARN("kmt: gdi32 lacks the D3DKMT entry points we need");
         return nullptr;
     }
@@ -142,4 +143,23 @@ HRESULT KmtDevice::share(D3DKMT_HANDLE resource, HANDLE* nt)
     return S_OK;
 }
 
+
+UINT KmtDevice::resource_id(D3DKMT_HANDLE allocation)
+{
+    viogpu::Escape e{};
+    e.Type = viogpu::kEscapeResourceInfo;
+    e.DataLength = sizeof(e.ResourceInfo);
+    e.ResourceInfo.ResHandle = allocation;
+    D3DKMT_ESCAPE args{};
+    args.hAdapter = adapter_;
+    args.hDevice = device_;
+    args.pPrivateDriverData = &e;
+    args.PrivateDriverDataSize = sizeof(e);
+    const NTSTATUS s = escape_(&args);
+    if (s < 0) {
+        VGD_WARN("kmt: resource info of allocation 0x%x failed: 0x%08lx", allocation, s);
+        return 0;
+    }
+    return e.ResourceInfo.Id;
+}
 } // namespace vgd::umd

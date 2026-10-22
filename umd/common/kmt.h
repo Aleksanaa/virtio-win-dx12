@@ -23,6 +23,8 @@ public:
     void close(D3DKMT_HANDLE resource);
     // An NT handle of the runtime resource `resource` (a kernel resource handle of this process); the caller owns it.
     HRESULT share(D3DKMT_HANDLE resource, HANDLE* nt);
+    // The host (virtio-gpu) resource id that `allocation`, an allocation of this device, names; 0 if the KMD says none.
+    UINT resource_id(D3DKMT_HANDLE allocation);
 
 private:
     KmtDevice() = default;
@@ -36,6 +38,7 @@ private:
     PFND3DKMT_OPENRESOURCEFROMNTHANDLE open_resource_ = nullptr;
     PFND3DKMT_DESTROYALLOCATION destroy_allocation_ = nullptr;
     PFND3DKMT_SHAREOBJECTS share_objects_ = nullptr;
+    PFND3DKMT_ESCAPE escape_ = nullptr;
     D3DKMT_HANDLE adapter_ = 0;
     D3DKMT_HANDLE device_ = 0;
 };

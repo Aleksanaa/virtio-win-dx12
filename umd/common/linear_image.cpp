@@ -239,13 +239,6 @@ HRESULT LinearImage::create_imported(const VulkanDevice& d, const LinearImageDes
                  static_cast<unsigned long long>(p.linear_pitch));
         return E_INVALIDARG;
     }
-    VkMemoryFdPropertiesKHR fd_props{VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
-    VkResult r = d.vk.vkGetMemoryFdPropertiesKHR(d.device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd,
-                                                 &fd_props);
-    if (r != VK_SUCCESS) {
-        VGD_WARN("imported image: vkGetMemoryFdPropertiesKHR failed: %d", r);
-        return E_INVALIDARG;
-    }
     VkMemoryDedicatedAllocateInfo dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
     dedicated.image = s->image_;
     VkImportMemoryFdInfoKHR import_info{VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
@@ -255,13 +248,15 @@ HRESULT LinearImage::create_imported(const VulkanDevice& d, const LinearImageDes
     import_info.fd = fd;
     VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &import_info};
     mai.allocationSize = size;
-    mai.memoryTypeIndex = memory_type(d, req.memoryRequirements.memoryTypeBits & fd_props.memoryTypeBits);
+    // The image's types, not vkGetMemoryFdPropertiesKHR's: Venus answers that by importing the handle for a moment,
+    // and closing that import detaches the resource from this context (yttrium's KMD does not count attaches), which
+    // can land after the import below has attached it: the host then fails the import and kills the context.
+    mai.memoryTypeIndex = memory_type(d, req.memoryRequirements.memoryTypeBits);
     if (mai.memoryTypeIndex == UINT32_MAX) {
-        VGD_WARN("imported image: no memory type in image bits 0x%x and fd bits 0x%x",
-                 req.memoryRequirements.memoryTypeBits, fd_props.memoryTypeBits);
+        VGD_WARN("imported image: no memory type in image bits 0x%x", req.memoryRequirements.memoryTypeBits);
         return E_INVALIDARG;
     }
-    r = d.vk.vkAllocateMemory(d.device, &mai, nullptr, &s->memory_);
+    VkResult r = d.vk.vkAllocateMemory(d.device, &mai, nullptr, &s->memory_);
     if (r != VK_SUCCESS) {
         VGD_WARN("imported image: vkAllocateMemory (import of %llu bytes) failed: %d",
                  static_cast<unsigned long long>(size), r);
