@@ -20,7 +20,8 @@ endif()
 if(DEFINED ENV{VGD_MINGW_MCFG_LIB})
   set(VKD3D_LINK_ARGS "'-L$ENV{VGD_MINGW_MCFG_LIB}'")
 endif()
-file(WRITE "${VKD3D_BUILD}/cross.ini" "\
+# Written only when it changes: meson rebuilds everything when its cross file is touched.
+file(CONFIGURE OUTPUT "${VKD3D_BUILD}/cross.ini" @ONLY CONTENT "\
 [binaries]
 c = '${CMAKE_C_COMPILER}'
 cpp = '${CMAKE_CXX_COMPILER}'
@@ -81,7 +82,7 @@ add_dependencies(vgd-vkd3d-proton vkd3d-proton-build)
 # The archives reference each other (dxil-spirv's C API and dxbc-spirv), so the group resolves them in any order.
 target_link_libraries(vgd-vkd3d-proton INTERFACE
     -Wl,--start-group ${VKD3D_LIBS} -Wl,--end-group
-    version pathcch psapi ntdll dxgi)
+    version pathcch psapi ntdll gdi32)
 
 add_library(vgd-vkd3d-proton-headers INTERFACE)
 add_dependencies(vgd-vkd3d-proton-headers vkd3d-proton-build)
