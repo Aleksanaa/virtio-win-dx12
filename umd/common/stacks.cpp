@@ -115,11 +115,24 @@ LONG CALLBACK log_exception(EXCEPTION_POINTERS* e)
 
 } // namespace
 
+namespace {
+std::atomic<void*> g_handler{nullptr};
+} // namespace
+
 void log_exceptions()
 {
-    static std::atomic<bool> installed{false};
-    if (!installed.exchange(true))
-        AddVectoredExceptionHandler(0, log_exception);
+    void* expected = nullptr;
+    if (g_handler.load())
+        return;
+    void* h = AddVectoredExceptionHandler(0, log_exception);
+    if (!g_handler.compare_exchange_strong(expected, h))
+        RemoveVectoredExceptionHandler(h);
+}
+
+void log_exceptions_off()
+{
+    if (void* h = g_handler.exchange(nullptr))
+        RemoveVectoredExceptionHandler(h);
 }
 
 void log_thread_stacks(const char* why)

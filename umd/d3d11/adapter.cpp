@@ -223,4 +223,10 @@ extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter10_2(D3D10DDIARG_OP
     return S_OK;
 }
 
-BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }
+BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
+{
+    // Unloaded by FreeLibrary (reserved is null); at process exit nothing runs after us.
+    if (reason == DLL_PROCESS_DETACH && !reserved)
+        vgd::umd::log_shutdown();
+    return TRUE;
+}

@@ -24,6 +24,9 @@ void log_thread_stacks(const char* why);
 // Logs first-chance C++ throws and access violations with the raising thread's stack (stacks.cpp); log_init
 // installs it when a log file is configured.
 void log_exceptions();
+// For DllMain when the DLL is unloaded (not at process exit): removes the exception logger, which would otherwise
+// stay registered pointing into unmapped code, and closes the log file.
+void log_shutdown();
 void logf(LogLevel level, const char* fmt, ...)
 #if defined(__GNUC__)
     __attribute__((format(printf, 2, 3)))
