@@ -32,17 +32,20 @@ struct Device {
     bool allocation_alias = false;
     std::unique_ptr<KmtDevice> kmt;                   // created on first use (kmt.h)
     HANDLE present_context = nullptr;                 // a kernel context of the runtime's, for presents
-    Com<ID3D11Fence> fence;                           // for waiting on the GPU before a present
-    UINT64 fence_value = 0;
-    HANDLE fence_event = nullptr;
+    HANDLE idle_event = nullptr;                      // set by DXVK when a flush completes (wait_idle)
     // Output-merger bindings, rebound when RotateResourceIdentities swaps what they view.
     std::vector<ID3D11RenderTargetView*> om_rtvs;
     ID3D11DepthStencilView* om_dsv = nullptr;
 
     static Device* from(D3D10DDI_HDEVICE h) { return static_cast<Device*>(h.pDrvPrivate); }
     static Device* from(DXGI_DDI_HDEVICE h) { return reinterpret_cast<Device*>(h); }
-    // Void DDIs report failure through the runtime's error callback.
-    void set_error(HRESULT hr) const { um.pfnSetErrorCb(rt_core_layer, hr); }
+    // Void DDIs report failure through the runtime's error callback (which may remove the device: logged).
+    void set_error(HRESULT hr) const
+    {
+        if (hr != DXGI_DDI_ERR_WASSTILLDRAWING)
+            VGD_WARN("SetErrorCb(0x%08lx)", hr);
+        um.pfnSetErrorCb(rt_core_layer, hr);
+    }
     KmtDevice* kernel()
     {
         if (!kmt)

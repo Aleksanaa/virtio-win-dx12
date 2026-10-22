@@ -21,8 +21,8 @@ void APIENTRY destroy_device(D3D10DDI_HDEVICE h)
         if (FAILED(d->kt.pfnDestroyContextCb(d->rt_device.handle, &dc)))
             VGD_WARN("DestroyDevice: DestroyContextCb failed");
     }
-    if (d->fence_event)
-        CloseHandle(d->fence_event);
+    if (d->idle_event)
+        CloseHandle(d->idle_event);
     d->~Device();
 }
 
@@ -60,20 +60,23 @@ void APIENTRY check_deferred_context_handle_sizes(D3D10DDI_HDEVICE, UINT* count,
 
 HRESULT Device::wait_idle()
 {
-    if (!fence) {
-        HRESULT hr = d3d->CreateFence(0, D3D11_FENCE_FLAG_NONE, __uuidof(ID3D11Fence), fence.put_void());
-        if (FAILED(hr))
-            return hr;
-        fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    // DXVK sets the event when the flushed submission completes, by its own submission tracking. Not an ID3D11Fence:
+    // DXVK's ID3D11Fence signals never completed here (their timeline semaphores stayed at 0 on the host;
+    // d3d11probe's fence test reproduces it).
+    if (!idle_event)
+        idle_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!idle_event)
+        return E_OUTOFMEMORY;
+    ctx->Flush1(D3D11_CONTEXT_TYPE_ALL, idle_event);
+    // In slices, so a GPU that never finishes shows in the log rather than as a silent hang. At 6 s, once per
+    // process, also where every thread is: DXVK's CS and submission threads show what holds the work back.
+    static std::atomic<bool> stacks_logged{false};
+    for (unsigned waited = 2; WaitForSingleObject(idle_event, 2000) == WAIT_TIMEOUT; waited += 2) {
+        VGD_WARN("wait_idle: rendering not finished after %us", waited);
+        if (waited == 6 && !stacks_logged.exchange(true))
+            log_thread_stacks("wait_idle stalled");
     }
-    const UINT64 value = ++fence_value;
-    HRESULT hr = ctx->Signal(fence.get(), value);
-    ctx->Flush();
-    if (SUCCEEDED(hr))
-        hr = fence->SetEventOnCompletion(value, fence_event);
-    if (SUCCEEDED(hr))
-        WaitForSingleObject(fence_event, INFINITE);
-    return hr;
+    return S_OK;
 }
 
 HRESULT create_device(D3D10DDIARG_CREATEDEVICE& args, const viogpu::AdapterInfo& info, PFN_vkGetInstanceProcAddr gipa,

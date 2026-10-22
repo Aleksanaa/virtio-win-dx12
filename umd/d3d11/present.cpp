@@ -266,6 +266,9 @@ HRESULT APIENTRY present(DXGI_DDI_ARG_PRESENT* a)
         VGD_WARN("Present: surface %p has no allocation", reinterpret_cast<void*>(a->hSurfaceToPresent));
         return E_INVALIDARG;
     }
+    // Also before: a present that blocks (on our rendering or in the KMD) never reaches the line below.
+    if (n < 8 || verbose())
+        VGD_TRACE("Present #%u: src 0x%x, dst 0x%x: begin", n, src, dst);
     HRESULT hr = present_allocations(d, src, dst, a->pDXGIContext);
     if (n < 8 || FAILED(hr) || verbose())
         VGD_TRACE("Present #%u: src 0x%x (sub %u), dst 0x%x (sub %u), flags 0x%x, interval %d -> 0x%08lx", n, src,
