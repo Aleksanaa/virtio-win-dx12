@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
-# The user-mode drivers: vgd3d12.dll (D3D12, on vkd3d-proton), and what UMDs share (common/). WDK headers are
-# searched after MinGW's own (-idirafter), so MinGW's windows.h wins and only the DDI headers MinGW lacks come from
-# the WDK.
+# The user-mode drivers: vgd3d12.dll (D3D12, on vkd3d-proton) and vgd3d11.dll (D3D10/11, on DXVK), and what they
+# share (common/). WDK headers are searched after MinGW's own (-idirafter), so MinGW's windows.h wins and only the
+# DDI headers MinGW lacks come from the WDK.
 set(WDK_INC "${VGD_WINKITS_DIR}/wdk/c/Include/10.0.26100.0")
 set(SDK_INC "${VGD_WINKITS_DIR}/sdk/c/Include/10.0.26100.0")
 if(NOT EXISTS "${WDK_INC}/um/d3d12umddi.h")
@@ -31,3 +31,4 @@ target_link_libraries(vgd-umd-common PUBLIC vgd-vulkan-headers)
 target_compile_options(vgd-umd-common PRIVATE ${VGD_UMD_WARNINGS} ${VGD_UMD_WDK_INCLUDES})
 
 add_subdirectory(d3d12)
+add_subdirectory(d3d11)
