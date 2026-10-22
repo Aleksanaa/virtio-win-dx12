@@ -37,11 +37,14 @@ function Resolve-ImagePath([string]$p) {
 }
 
 function Find-New {
-    foreach ($base in @($PSScriptRoot, (Join-Path $PSScriptRoot '..\..'))) {
-        $p = Join-Path $base 'kmd\viogpu3d.sys'
-        if (Test-Path $p) { return (Resolve-Path $p).Path }
+    foreach ($base in @($PSScriptRoot, (Join-Path $PSScriptRoot '..\..'), (Join-Path $PSScriptRoot '..\..\..'))) {
+        # The test-signed build (build\kmd\signed), or a signed copy put in kmd\ directly.
+        foreach ($rel in @('kmd\signed\viogpu3d.sys', 'kmd\viogpu3d.sys')) {
+            $p = Join-Path $base $rel
+            if (Test-Path $p) { return (Resolve-Path $p).Path }
+        }
     }
-    throw "Cannot find kmd\viogpu3d.sys next to $PSScriptRoot"
+    throw "Cannot find kmd\signed\viogpu3d.sys or kmd\viogpu3d.sys next to $PSScriptRoot"
 }
 
 function Hash([string]$p) { if (Test-Path $p) { (Get-FileHash $p -Algorithm SHA256).Hash.ToLower() } else { '(none)' } }

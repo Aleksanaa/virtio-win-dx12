@@ -3,7 +3,7 @@
 // whether it meets vkd3d-proton's hard device requirements and what D3D12 features beyond them would need
 // (tiled resources, feature levels 12_0-12_2), then the same for DXVK by the profiles in its
 // VP_DXVK_requirements.json (D3D11 levels 10_1-12_1, D3D9). Plain-text output.
-//   vkprobe [path\to\icd.dll]   default: ..\..\icd\vgd_vulkan_virtio.dll next to this exe (the share layout)
+//   vkprobe [path\to\icd.dll]   default: icd\vgd_vulkan_virtio.dll in build\win or build (see default_icd)
 //   --extensions                also list every device extension
 #include <windows.h>
 
@@ -47,12 +47,17 @@ template <typename T> void chain(VkPhysicalDeviceProperties2& p2, T& s)
     p2.pNext = &s;
 }
 
+// icd\vgd_vulkan_virtio.dll in build\win or build, as vgd-test.ps1 finds it (the exe is build\win\tests\win\).
 std::wstring default_icd()
 {
     wchar_t buf[MAX_PATH * 2];
     const DWORD n = GetModuleFileNameW(nullptr, buf, ARRAYSIZE(buf));
-    std::wstring path(buf, n);
-    return path.substr(0, path.find_last_of(L"\\/") + 1) + L"..\\..\\icd\\vgd_vulkan_virtio.dll";
+    const std::wstring path(buf, n);
+    const std::wstring dir = path.substr(0, path.find_last_of(L"\\/") + 1);
+    const std::wstring win = dir + L"..\\..\\icd\\vgd_vulkan_virtio.dll";
+    if (GetFileAttributesW(win.c_str()) != INVALID_FILE_ATTRIBUTES)
+        return win;
+    return dir + L"..\\..\\..\\icd\\vgd_vulkan_virtio.dll";
 }
 
 } // namespace

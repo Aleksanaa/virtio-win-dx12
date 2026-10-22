@@ -19,7 +19,8 @@ param(
     # Probe only: enable the D3D12 debug layer (needs Graphics Tools:
     #   Add-WindowsCapability -Online -Name Tools.Graphics.DirectX~~~~0.0.1.0)
     [switch]$DebugLayer,
-    # Probe only: VGD_VERBOSE=1, logging every format-support and MSAA answer
+    # Probe: VGD_VERBOSE=1, logging every format-support and MSAA answer. Install: the same, and DXVK_LOG_LEVEL=debug,
+    # for every process (DWM included) through the registry; Install without it turns that off again.
     [switch]$Trace,
     # Probe only: also run the buffer copy test (upload -> default -> readback, fence) on each device
     [switch]$Copy,
@@ -145,12 +146,21 @@ switch ($Action) {
         Copy-Item $probe (Join-Path $Work 'd3dprobe.exe') -Force
 
         # Processes that do not inherit the environment log too, DWM included: the UMDs read these from the registry,
-        # and C:\vgd must be writable by DWM's account. DXVK writes <exe>_vgd3d11.log there.
+        # and C:\vgd must be writable by DWM's account. DXVK writes <exe>_vgd3d11.log there. Local, not on the share:
+        # DWM starts before the share is mounted and cannot create files on it.
         & icacls.exe $Work /grant '*S-1-1-0:(OI)(CI)M' | Out-Null
         $settings = 'HKLM:\SOFTWARE\vgd3d12'
         if (-not (Test-Path $settings)) { New-Item -Path $settings | Out-Null }
         Set-ItemProperty -Path $settings -Name VGD_LOG -Value (Join-Path $Work 'vgd.log')
         Set-ItemProperty -Path $settings -Name DXVK_LOG_PATH -Value $Work
+        Set-ItemProperty -Path $settings -Name VGD_VERBOSE -Value $(if ($Trace) { '1' } else { '0' })
+        Set-ItemProperty -Path $settings -Name DXVK_LOG_LEVEL -Value $(if ($Trace) { 'debug' } else { 'info' })
+        # With -Trace, every shader container the UMDs build, for offline compiles with dxbc-spirv's tools.
+        $dump = Join-Path $Work 'shaders'
+        if ($Trace) {
+            if (-not (Test-Path $dump)) { New-Item -ItemType Directory -Path $dump | Out-Null }
+            Set-ItemProperty -Path $settings -Name VGD_SHADER_DUMP -Value $dump
+        } else { Remove-ItemProperty -Path $settings -Name VGD_SHADER_DUMP -ErrorAction SilentlyContinue }
 
         # Slots: D3D9 stays yttrium's; D3D10 and D3D11 are vgd3d11, D3D12 is vgd3d12.
         $slots = @($original[0], $SysDll11, $SysDll11, $SysDll)
