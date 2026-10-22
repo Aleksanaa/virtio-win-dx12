@@ -72,11 +72,6 @@ void init_settings()
                       "VN_DEBUG", "VN_PERF", "MESA_LOG_LEVEL"});
     if (GetEnvironmentVariableA("DXVK_LOG_PATH", nullptr, 0) == 0)
         SetEnvironmentVariableA("DXVK_LOG_PATH", "none");
-    // Graphics pipeline libraries crashed the host: RADV's spirv_to_nir rejected DXVK's first vertex shader library
-    // and RADV dereferenced the null result. Likely the void-typed signatures fixed in shader_container.cpp; off until
-    // a run with them on confirms. A DXVK_CONFIG of the user's own replaces this.
-    if (GetEnvironmentVariableA("DXVK_CONFIG", nullptr, 0) == 0)
-        SetEnvironmentVariableA("DXVK_CONFIG", "dxvk.enableGraphicsPipelineLibrary = False");
 }
 
 HRESULT create_device(PFN_vkGetInstanceProcAddr gipa, D3D_FEATURE_LEVEL level, const char* const* extensions,
