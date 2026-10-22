@@ -1,59 +1,13 @@
 # SPDX-License-Identifier: MIT
 # vkd3d-proton (third_party/vkd3d-proton, vendored) built with its own meson build for the MinGW target, as static
-# libraries the UMD links in (targets at the end).
-#
-# meson and ninja come from the dev shell, as do widl (IDL headers) and glslang (its internal shaders). The meson
-# build is configured once in the build tree; every build runs its ninja, which does nothing when nothing changed.
+# libraries the D3D12 UMD links in (targets at the end). widl (IDL headers) and glslang (its internal shaders) come
+# from the dev shell.
 
 set(VKD3D_SRC "${CMAKE_SOURCE_DIR}/third_party/vkd3d-proton")
 set(VKD3D_BUILD "${CMAKE_BINARY_DIR}/vkd3d-proton")
 
-find_program(VGD_MESON meson REQUIRED)
-find_program(VGD_NINJA ninja REQUIRED)
-
-# GCC from nixpkgs uses the mcfgthread model, whose headers and library live outside the wrapper's paths.
-set(VKD3D_C_ARGS "")
-set(VKD3D_LINK_ARGS "")
-if(DEFINED ENV{VGD_MINGW_MCFG_INCLUDE})
-  set(VKD3D_C_ARGS "'-isystem', '$ENV{VGD_MINGW_MCFG_INCLUDE}'")
-endif()
-if(DEFINED ENV{VGD_MINGW_MCFG_LIB})
-  set(VKD3D_LINK_ARGS "'-L$ENV{VGD_MINGW_MCFG_LIB}'")
-endif()
-# Written only when it changes: meson rebuilds everything when its cross file is touched.
-file(CONFIGURE OUTPUT "${VKD3D_BUILD}/cross.ini" @ONLY CONTENT "\
-[binaries]
-c = '${CMAKE_C_COMPILER}'
-cpp = '${CMAKE_CXX_COMPILER}'
-ar = 'x86_64-w64-mingw32-ar'
-strip = 'x86_64-w64-mingw32-strip'
-windres = 'x86_64-w64-mingw32-windres'
-
-[built-in options]
-c_args = [${VKD3D_C_ARGS}]
-cpp_args = [${VKD3D_C_ARGS}]
-c_link_args = [${VKD3D_LINK_ARGS}]
-cpp_link_args = [${VKD3D_LINK_ARGS}]
-
-[properties]
-needs_exe_wrapper = true
-
-[host_machine]
-system = 'windows'
-cpu_family = 'x86_64'
-cpu = 'x86_64'
-endian = 'little'
-")
-
-if(NOT EXISTS "${VKD3D_BUILD}/meson/build.ninja")
-  execute_process(
-    COMMAND "${VGD_MESON}" setup "${VKD3D_BUILD}/meson" "${VKD3D_SRC}" --cross-file "${VKD3D_BUILD}/cross.ini"
-            --buildtype=release -Db_ndebug=true
-    RESULT_VARIABLE vkd3d_setup)
-  if(NOT vkd3d_setup EQUAL 0)
-    message(FATAL_ERROR "meson setup of vkd3d-proton failed")
-  endif()
-endif()
+vgd_meson_cross_file("${VKD3D_BUILD}/cross.ini")
+vgd_meson_setup(vkd3d-proton "${VKD3D_SRC}" "${VKD3D_BUILD}/meson" "${VKD3D_BUILD}/cross.ini")
 
 # Link order: users before what they use.
 set(VKD3D_LIBS

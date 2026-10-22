@@ -8,3 +8,4 @@
 [submodule "third_party/dxvk"]
 	path = third_party/dxvk
 	url = https://github.com/doitsujin/dxvk.git
+	ignore = untracked

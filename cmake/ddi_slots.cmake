@@ -32,6 +32,8 @@ function(vgd_generate_ddi_slots)
     if(NOT body)
       message(FATAL_ERROR "ddi_slots: end of ${struct} not found in ${header}")
     endif()
+    # Members only rasterization-only (D3D10PSGP) builds of the header have.
+    string(REGEX REPLACE "#ifdef D3D10PSGP[^#]*#endif" "" body "${body}")
     # Drop comments, then take every pfn member name: "PFN_X pfnName;" and "(__stdcall * pfnName )(...)".
     string(REGEX REPLACE "//[^\n]*" "" body "${body}")
     # ";" separates CMake list items, so it is replaced before matching.
