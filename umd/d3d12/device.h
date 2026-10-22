@@ -2,6 +2,7 @@
 #pragma once
 
 #include "engine.h"
+#include "kmt.h"
 #include "viogpu_abi.h"
 #include "wdk.h"
 
@@ -15,11 +16,6 @@ struct CommandListTables {
     static constexpr UINT kMax = 4;
     D3D12DDI_HRTTABLE rt[kMax]{};
     UINT count = 0;
-};
-
-struct KmtDevice;
-struct KmtDeviceDeleter {
-    void operator()(KmtDevice* k) const;   // present.cpp
 };
 
 // Lives in the runtime-allocated storage behind D3D12DDI_HDEVICE (sized by CalcPrivateDeviceSize).
@@ -37,7 +33,7 @@ struct Device {
     // The KMD understands viogpu::AllocationAlias (our patch): swapchain buffers can be presented.
     bool allocation_alias = false;
     // Our own kernel device, for opening shared handles (present.cpp); created on first use.
-    std::unique_ptr<KmtDevice, KmtDeviceDeleter> kmt;
+    std::unique_ptr<KmtDevice> kmt;
 
     static Device* from(D3D12DDI_HDEVICE h) { return static_cast<Device*>(h.pDrvPrivate); }
     // Void DDIs report failure through the runtime's error callback.

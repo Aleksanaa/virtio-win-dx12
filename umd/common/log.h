@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <initializer_list>
+
 namespace vgd::umd {
 
 enum class LogLevel { error, warn, info, debug };
 
 // Lines go to OutputDebugString, and also to the file named by VGD_LOG, from the environment or else from
-// HKLM\SOFTWARE\vgd3d12 (for processes that do not inherit the environment, such as browsers' GPU processes).
-// vkd3d-proton's and the Venus ICD's own options (VKD3D_*, VN_*) are forwarded the same way.
-void log_init();
+// HKLM\SOFTWARE\vgd3d12 (for processes that do not inherit the environment, such as DWM and browsers' GPU
+// processes). Each line names `component`, the UMD writing it.
+void log_init(const char* component);
+// Copies each named setting from HKLM\SOFTWARE\vgd3d12 into the process environment unless the environment has it:
+// the engines (vkd3d-proton, DXVK) and the Venus ICD read their options with GetEnvironmentVariable.
+void forward_settings(std::initializer_list<const char*> names);
+// The setting `name` from the environment or else the registry (as above); false if neither has it. A REG_DWORD
+// value reads as its decimal digits.
+bool setting(const char* name, char* out, unsigned long size);
 // VGD_VERBOSE=1 (likewise): also log every answer of high-volume queries (format support, MSAA levels).
 bool verbose();
 void logf(LogLevel level, const char* fmt, ...)

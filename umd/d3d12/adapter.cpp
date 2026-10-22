@@ -112,7 +112,9 @@ void APIENTRY ddi_destroy_device(D3D12DDI_HDEVICE device)
 extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter12(D3D12DDIARG_OPENADAPTER* args)
 {
     using namespace vgd::umd;
-    log_init();
+    log_init("vgd3d12");
+    forward_settings({"VKD3D_DEBUG", "VKD3D_SHADER_DEBUG", "VKD3D_LOG_FILE", "VKD3D_CONFIG", "VKD3D_FEATURE_LEVEL",
+                      "VN_DEBUG", "VN_PERF", "MESA_LOG_LEVEL"});
     if (!args || !args->pAdapterCallbacks || !args->pAdapterFuncs)
         return E_INVALIDARG;
 

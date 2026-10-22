@@ -4,7 +4,6 @@
 #include "vkd3d_bridge.h"
 #include "vulkan_icd.h"
 
-#include <cstring>
 
 namespace vgd::umd {
 
@@ -12,21 +11,6 @@ namespace {
 
 std::mutex g_lock;
 std::weak_ptr<Engine> g_engine;
-
-// Device extensions vkd3d-proton has no use for, enabled for images shared with other processes when available.
-constexpr const char* kSharingExtensions[] = {
-    VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-    VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
-    VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
-};
-
-bool has_extension(const std::vector<VkExtensionProperties>& exts, const char* name)
-{
-    for (const auto& e : exts)
-        if (!std::strcmp(e.extensionName, name))
-            return true;
-    return false;
-}
 
 HRESULT create(std::shared_ptr<Engine>* out)
 {
@@ -42,33 +26,16 @@ HRESULT create(std::shared_ptr<Engine>* out)
         return hr;
     }
     e->name = name;
-    hr = vgd_vkd3d_vulkan_handles(e->device.get(), &e->instance, &e->physical, &e->vk_device);
+    VkInstance instance;
+    VkPhysicalDevice physical;
+    VkDevice device;
+    hr = vgd_vkd3d_vulkan_handles(e->device.get(), &instance, &physical, &device);
+    if (SUCCEEDED(hr))
+        hr = e->vulkan.init(gipa, instance, physical, device);
     if (FAILED(hr))
         return hr;
-
-#define VGD_VK_FN(fn) e->vk.fn = reinterpret_cast<PFN_##fn>(gipa(e->instance, #fn));
-#include "engine_vk.inc"
-#undef VGD_VK_FN
-    // Device-level functions straight from the device, skipping the instance's trampolines.
-#define VGD_VK_FN(fn)                                                                                       \
-    if (auto p = e->vk.vkGetDeviceProcAddr(e->vk_device, #fn))                                              \
-        e->vk.fn = reinterpret_cast<PFN_##fn>(p);
-#include "engine_vk.inc"
-#undef VGD_VK_FN
-
-    uint32_t count = 0;
-    e->vk.vkGetPhysicalDeviceQueueFamilyProperties(e->physical, &count, nullptr);
-    for (uint32_t i = 0; i < count; i++)
-        e->families.push_back(i);
-    e->vk.vkEnumerateDeviceExtensionProperties(e->physical, nullptr, &count, nullptr);
-    std::vector<VkExtensionProperties> exts(count);
-    e->vk.vkEnumerateDeviceExtensionProperties(e->physical, nullptr, &count, exts.data());
-    e->external_memory = has_extension(exts, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
-                         has_extension(exts, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME) &&
-                         e->vk.vkGetMemoryFdKHR && e->vk.vkGetMemoryFdPropertiesKHR;
-    e->drm_modifier = e->external_memory && has_extension(exts, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
-    VGD_TRACE("engine: vkd3d-proton on %s (external memory %d, drm modifiers %d)", name, e->external_memory,
-              e->drm_modifier);
+    VGD_TRACE("engine: vkd3d-proton on %s (external memory %d, drm modifiers %d)", name, e->vulkan.external_memory,
+              e->vulkan.drm_modifier);
     *out = std::move(e);
     return S_OK;
 }
@@ -89,13 +56,15 @@ HRESULT Engine::get(std::shared_ptr<Engine>* out)
 Engine::~Engine()
 {
     if (fence_)
-        vk.vkDestroyFence(vk_device, fence_, nullptr);
+        vulkan.vk.vkDestroyFence(vulkan.device, fence_, nullptr);
     if (pool_)
-        vk.vkDestroyCommandPool(vk_device, pool_, nullptr);
+        vulkan.vk.vkDestroyCommandPool(vulkan.device, pool_, nullptr);
 }
 
 HRESULT Engine::run(const std::function<void(VkCommandBuffer)>& record)
 {
+    const auto& vk = vulkan.vk;
+    const VkDevice vk_device = vulkan.device;
     std::lock_guard g(lock_);
     if (!queue_) {
         D3D12_COMMAND_QUEUE_DESC desc{};

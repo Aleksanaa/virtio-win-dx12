@@ -14,9 +14,9 @@
 #include "device.h"
 #include "log.h"
 #include "objects.h"
+#include "kmt.h"
+#include "surface_format.h"
 #include "viogpu_abi.h"
-
-#include <winternl.h>   // OBJECT_ATTRIBUTES, for D3DKMTShareObjects
 
 #include <atomic>
 #include <memory>
@@ -25,173 +25,15 @@
 
 namespace vgd::umd {
 
-// --- Our kernel device ---------------------------------------------------------------------------------------
-
-struct KmtDevice {
-    PFND3DKMT_ENUMADAPTERS2 enum_adapters = nullptr;
-    PFND3DKMT_QUERYADAPTERINFO query_adapter_info = nullptr;
-    PFND3DKMT_CLOSEADAPTER close_adapter = nullptr;
-    PFND3DKMT_CREATEDEVICE create_device = nullptr;
-    PFND3DKMT_DESTROYDEVICE destroy_device = nullptr;
-    PFND3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query_resource_info = nullptr;
-    PFND3DKMT_OPENRESOURCEFROMNTHANDLE open_resource = nullptr;
-    PFND3DKMT_DESTROYALLOCATION destroy_allocation = nullptr;
-    PFND3DKMT_SHAREOBJECTS share_objects = nullptr;
-    D3DKMT_HANDLE adapter = 0;
-    D3DKMT_HANDLE device = 0;
-
-    ~KmtDevice()
-    {
-        if (device) {
-            D3DKMT_DESTROYDEVICE dd{device};
-            if (destroy_device(&dd) < 0)
-                VGD_WARN("present: D3DKMTDestroyDevice(0x%x) failed", device);
-        }
-        if (adapter) {
-            D3DKMT_CLOSEADAPTER ca{adapter};
-            if (close_adapter(&ca) < 0)
-                VGD_WARN("present: D3DKMTCloseAdapter(0x%x) failed", adapter);
-        }
-    }
-
-    // Opens a shared NT handle: one allocation, which `resource` holds open until close().
-    HRESULT open(HANDLE nt, D3DKMT_HANDLE* resource, D3DKMT_HANDLE* allocation)
-    {
-        D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE q{};
-        q.hDevice = device;
-        q.hNtHandle = nt;
-        NTSTATUS s = query_resource_info(&q);
-        if (s < 0 || q.NumAllocations != 1) {
-            VGD_WARN("present: QueryResourceInfoFromNtHandle failed: 0x%08lx, %u allocations", s, q.NumAllocations);
-            return E_FAIL;
-        }
-        std::vector<char> runtime(q.PrivateRuntimeDataSize), total(q.TotalPrivateDriverDataSize),
-            res_private(q.ResourcePrivateDriverDataSize);
-        D3DDDI_OPENALLOCATIONINFO2 info{};
-        D3DKMT_OPENRESOURCEFROMNTHANDLE o{};
-        o.hDevice = device;
-        o.hNtHandle = nt;
-        o.NumAllocations = 1;
-        o.pOpenAllocationInfo2 = &info;
-        o.PrivateRuntimeDataSize = q.PrivateRuntimeDataSize;
-        o.pPrivateRuntimeData = runtime.data();
-        o.ResourcePrivateDriverDataSize = q.ResourcePrivateDriverDataSize;
-        o.pResourcePrivateDriverData = res_private.data();
-        o.TotalPrivateDriverDataBufferSize = q.TotalPrivateDriverDataSize;
-        o.pTotalPrivateDriverDataBuffer = total.data();
-        s = open_resource(&o);
-        if (s < 0 || !info.hAllocation) {
-            VGD_WARN("present: OpenResourceFromNtHandle failed: 0x%08lx", s);
-            return E_FAIL;
-        }
-        *resource = o.hResource;
-        *allocation = info.hAllocation;
-        return S_OK;
-    }
-
-    void close(D3DKMT_HANDLE resource)
-    {
-        D3DKMT_DESTROYALLOCATION d{};
-        d.hDevice = device;
-        d.hResource = resource;
-        NTSTATUS s = destroy_allocation(&d);
-        if (s < 0)
-            VGD_WARN("present: closing opened resource 0x%x failed: 0x%08lx", resource, s);
-    }
-};
-
-void KmtDeviceDeleter::operator()(KmtDevice* k) const { delete k; }
-
 namespace {
 
-// A kernel device of our own on the viogpu adapter (the runtime does not give us its own device's handle).
+// Our kernel device (kmt.h), created on first use.
 KmtDevice* kmt_device(Device& d)
 {
-    if (d.kmt)
-        return d.kmt.get();
-    HMODULE gdi = LoadLibraryW(L"gdi32.dll");
-    if (!gdi)
-        return nullptr;
-    std::unique_ptr<KmtDevice, KmtDeviceDeleter> k(new (std::nothrow) KmtDevice);
-    if (!k)
-        return nullptr;
-    auto get = [&](auto& fn, const char* name) {
-        fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(reinterpret_cast<void*>(GetProcAddress(gdi, name)));
-        return fn != nullptr;
-    };
-    if (!get(k->enum_adapters, "D3DKMTEnumAdapters2") || !get(k->query_adapter_info, "D3DKMTQueryAdapterInfo") ||
-        !get(k->close_adapter, "D3DKMTCloseAdapter") || !get(k->create_device, "D3DKMTCreateDevice") ||
-        !get(k->destroy_device, "D3DKMTDestroyDevice") ||
-        !get(k->query_resource_info, "D3DKMTQueryResourceInfoFromNtHandle") ||
-        !get(k->open_resource, "D3DKMTOpenResourceFromNtHandle") ||
-        !get(k->destroy_allocation, "D3DKMTDestroyAllocation") ||
-        !get(k->share_objects, "D3DKMTShareObjects")) {
-        VGD_WARN("present: gdi32 lacks the D3DKMT entry points we need");
-        return nullptr;
-    }
-
-    D3DKMT_ENUMADAPTERS2 e{};
-    if (k->enum_adapters(&e) < 0 || !e.NumAdapters)
-        return nullptr;
-    std::vector<D3DKMT_ADAPTERINFO> adapters(e.NumAdapters);
-    e.pAdapters = adapters.data();
-    if (k->enum_adapters(&e) < 0)
-        return nullptr;
-    for (ULONG i = 0; i < e.NumAdapters; i++) {
-        viogpu::AdapterInfo info{};
-        D3DKMT_QUERYADAPTERINFO q{};
-        q.hAdapter = adapters[i].hAdapter;
-        q.Type = KMTQAITYPE_UMDRIVERPRIVATE;
-        q.pPrivateDriverData = &info;
-        q.PrivateDriverDataSize = sizeof(info);
-        const bool ours = !k->adapter && k->query_adapter_info(&q) >= 0 && info.IamVioGPU == viogpu::kIam;
-        if (ours) {
-            k->adapter = adapters[i].hAdapter;
-        } else {
-            D3DKMT_CLOSEADAPTER ca{adapters[i].hAdapter};
-            if (k->close_adapter(&ca) < 0)
-                VGD_WARN("present: D3DKMTCloseAdapter(0x%x) failed", adapters[i].hAdapter);
-        }
-    }
-    if (!k->adapter) {
-        VGD_WARN("present: no viogpu adapter among %lu", e.NumAdapters);
-        return nullptr;
-    }
-    D3DKMT_CREATEDEVICE cd{};
-    cd.hAdapter = k->adapter;
-    NTSTATUS s = k->create_device(&cd);
-    if (s < 0) {
-        VGD_WARN("present: D3DKMTCreateDevice failed: 0x%08lx", s);
-        return nullptr;
-    }
-    k->device = cd.hDevice;
-    VGD_TRACE("present: kernel device 0x%x on adapter 0x%x", k->device, k->adapter);
-    d.kmt = std::move(k);
+    if (!d.kmt)
+        d.kmt = KmtDevice::open();
     return d.kmt.get();
 }
-
-// The format yttrium's D3D10 UMD knows the buffer by (virgl, or pipe where it has no virgl translation); 0 if none.
-ULONG virgl_format(DXGI_FORMAT f)
-{
-    switch (f) {
-    case DXGI_FORMAT_B8G8R8A8_UNORM:
-    case DXGI_FORMAT_B8G8R8A8_TYPELESS: return viogpu::kVirglFormatB8G8R8A8Unorm;
-    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return viogpu::kVirglFormatB8G8R8A8Srgb;
-    case DXGI_FORMAT_B8G8R8X8_UNORM: return viogpu::kVirglFormatB8G8R8X8Unorm;
-    case DXGI_FORMAT_R8G8B8A8_UNORM:
-    case DXGI_FORMAT_R8G8B8A8_TYPELESS: return viogpu::kVirglFormatR8G8B8A8Unorm;
-    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return viogpu::kVirglFormatR8G8B8A8Srgb;
-    case DXGI_FORMAT_R10G10B10A2_UNORM:
-    case DXGI_FORMAT_R10G10B10A2_TYPELESS: return viogpu::kVirglFormatR10G10B10A2Unorm;
-    case DXGI_FORMAT_R16G16B16A16_FLOAT:
-    case DXGI_FORMAT_R16G16B16A16_TYPELESS: return viogpu::kPipeFormatR16G16B16A16Float;
-    default: return 0;
-    }
-}
-
-// Our ICD build exports memory as the NT handle value in place of an fd (icd/patches/0003): the CRT cannot wrap
-// a shared graphics resource handle in a descriptor.
-HANDLE handle_of_fd(int fd) { return fd < 0 ? INVALID_HANDLE_VALUE : reinterpret_cast<HANDLE>(static_cast<intptr_t>(fd)); }
 
 } // namespace
 
@@ -225,7 +67,7 @@ HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const
     KmtDevice* kmt = kmt_device(d);
     D3DKMT_HANDLE opened_resource = 0, source = 0;
     if (kmt && nt != INVALID_HANDLE_VALUE)
-        hr = kmt->open(nt, &opened_resource, &source);
+        hr = kmt->open_shared(nt, &opened_resource, &source);
     else
         hr = E_FAIL;
     if (nt != INVALID_HANDLE_VALUE)
@@ -251,15 +93,19 @@ HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const
     alias.exchange.Stride = out.shared->row_pitch();
     alias.Magic = viogpu::kAllocationAliasMagic;
     alias.SourceAllocation = source;
-    viogpu::ResourceExchange res_exchange{};
+    SharedSurfaceInfo surface;   // what the surface is, for our D3D11 UMD opening it (in DWM)
+    surface.format = desc.Format;
+    surface.width = static_cast<UINT>(desc.Width);
+    surface.height = desc.Height;
+    surface.bind = SharedSurfaceInfo::kBindShaderResource | SharedSurfaceInfo::kBindRenderTarget;
 
     D3D12DDI_ALLOCATION_INFO_0022 info{};
     info.pPrivateDriverData = &alias;
     info.PrivateDriverDataSize = sizeof(alias);
     info.Flags = D3D12DDI_ALLOCATION_INFO_FLAGS_0022_PRIMARY;
     D3D12DDICB_ALLOCATE_0022 cb{};
-    cb.pPrivateDriverData = &res_exchange;
-    cb.PrivateDriverDataSize = sizeof(res_exchange);
+    cb.pPrivateDriverData = &surface;
+    cb.PrivateDriverDataSize = sizeof(surface);
     cb.hResource = rt_resource.handle;
     cb.NumAllocations = 1;
     cb.pAllocationInfo = &info;
@@ -306,31 +152,6 @@ void destroy_primary(Device& d, HeapObject& heap)
 // imported like the reverse of a swapchain buffer: an NT handle of the opened resource goes to our ICD's dma-buf
 // import (icd/patches/0003, 0005), under a linear image of the same size and format (shared_image.h).
 
-namespace {
-
-// The DXGI format of a format yttrium's D3D10 UMD knows a buffer by (virgl_format's inverse), with its sRGB
-// sibling for views (UNKNOWN if none); UNKNOWN if none.
-DXGI_FORMAT dxgi_format(ULONG format, DXGI_FORMAT* srgb)
-{
-    *srgb = DXGI_FORMAT_UNKNOWN;
-    switch (format) {
-    case viogpu::kVirglFormatB8G8R8A8Unorm:
-    case viogpu::kVirglFormatB8G8R8A8Srgb:
-        *srgb = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-        return DXGI_FORMAT_B8G8R8A8_UNORM;
-    case viogpu::kVirglFormatB8G8R8X8Unorm: return DXGI_FORMAT_B8G8R8X8_UNORM;
-    case viogpu::kVirglFormatR8G8B8A8Unorm:
-    case viogpu::kVirglFormatR8G8B8A8Srgb:
-        *srgb = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-        return DXGI_FORMAT_R8G8B8A8_UNORM;
-    case viogpu::kVirglFormatR10G10B10A2Unorm: return DXGI_FORMAT_R10G10B10A2_UNORM;
-    case viogpu::kPipeFormatR16G16B16A16Float: return DXGI_FORMAT_R16G16B16A16_FLOAT;
-    default: return DXGI_FORMAT_UNKNOWN;
-    }
-}
-
-} // namespace
-
 HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject& out)
 {
     if (args.NumAllocations != 1 || !args.pOpenAllocationInfo ||
@@ -373,23 +194,17 @@ HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject
     KmtDevice* kmt = kmt_device(d);
     if (!kmt)
         return E_OUTOFMEMORY;
-    D3DKMT_HANDLE resource = args.hKMResource.handle;
-    OBJECT_ATTRIBUTES attrs{};
-    attrs.Length = sizeof(attrs);
     HANDLE nt = nullptr;
-    NTSTATUS s = kmt->share_objects(1, &resource, &attrs, SHARED_ALLOCATION_ALL_ACCESS, &nt);
-    if (s < 0 || !nt) {
-        VGD_WARN("OpenHeapAndResource: D3DKMTShareObjects(0x%x) failed: 0x%08lx", resource, s);
+    if (FAILED(kmt->share(args.hKMResource.handle, &nt)))
         return E_OUTOFMEMORY;
-    }
-    if (reinterpret_cast<uintptr_t>(nt) > INT_MAX) {
+    const int fd = fd_of_handle(nt);
+    if (fd < 0) {
         CloseHandle(nt);
         return E_OUTOFMEMORY;
     }
     bool consumed = false;
-    HRESULT hr = SharedImage::create_imported(d.engine, desc, &srgb, srgb != DXGI_FORMAT_UNKNOWN ? 1 : 0,
-                                              static_cast<int>(reinterpret_cast<intptr_t>(nt)), e.Size, &out.shared,
-                                              &consumed);
+    HRESULT hr = SharedImage::create_imported(d.engine, desc, &srgb, srgb != DXGI_FORMAT_UNKNOWN ? 1 : 0, fd, e.Size,
+                                              &out.shared, &consumed);
     if (!consumed)
         CloseHandle(nt);
     if (FAILED(hr)) {

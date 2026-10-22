@@ -2,12 +2,10 @@
 #include "shader_container.h"
 #include "log.h"
 
+#include <d3d12TokenizedProgramFormat.hpp>
+
 #include <cstring>
 #include <string>
-
-// vkd3d-shader's container checksum (libs/vkd3d-shader/checksum.c), the MD5 variant fxc writes. vkd3d-proton does
-// not check it; it is filled in so the container is a well-formed one.
-extern "C" void vkd3d_compute_dxbc_checksum(const void* dxbc, size_t size, uint32_t checksum[4]);
 
 namespace vgd::umd {
 
@@ -78,26 +76,27 @@ struct Named {
 };
 
 // The semantic of entries[i] (see shader_container.h).
-Named semantic_of(const D3D12DDIARG_SIGNATURE_ENTRY_0012* entries, UINT i, bool pixel_output)
+Named semantic_of(const std::vector<SignatureEntry>& entries, UINT i, bool pixel_output)
 {
     const auto& e = entries[i];
     UINT nth = 0;
     for (UINT j = 0; j < i; j++)
-        nth += entries[j].SystemValue == e.SystemValue;
-    Named n{nullptr, 0, uint32_t(e.SystemValue)};
-    if ((n.name = system_value_name(e.SystemValue, nth, &n.index)))
+        nth += entries[j].system_value == e.system_value;
+    Named n{nullptr, 0, uint32_t(e.system_value)};
+    if ((n.name = system_value_name(e.system_value, nth, &n.index)))
         return n;
-    if (pixel_output && e.Register != ~0u)
-        return {"SV_Target", e.Register, kNameTarget};
+    if (pixel_output && e.reg != ~0u)
+        return {"SV_Target", e.reg, kNameTarget};
     if (pixel_output)
         return {"SV_Depth", 0, kNameDepth};   // oDepth and friends are declared by register type; the name is unread
-    return {generic_semantic(e.Stream), generic_semantic_index(e.Register, first_component(e.Mask)), 0};
+    return {generic_semantic(e.stream), generic_semantic_index(e.reg, first_component(e.mask)), 0};
 }
 
 // One ISG1/OSG1/PSG1 part: count, 8, then per entry {stream, name offset, semantic index, system value, component
 // type, register, mask | used mask << 8, min precision}, then the names; offsets count from the part's data.
-std::vector<uint8_t> signature_part(const D3D12DDIARG_SIGNATURE_ENTRY_0012* entries, UINT count, bool pixel_output)
+std::vector<uint8_t> signature_part(const std::vector<SignatureEntry>& entries, bool pixel_output)
 {
+    const UINT count = static_cast<UINT>(entries.size());
     std::vector<uint32_t> words{count, 8};
     std::string names;
     std::vector<size_t> name_at(count);
@@ -107,8 +106,8 @@ std::vector<uint8_t> signature_part(const D3D12DDIARG_SIGNATURE_ENTRY_0012* entr
         name_at[i] = names.size();
         names += n.name;
         names += '\0';
-        words.insert(words.end(), {e.Stream, 0, n.index, n.sysval, uint32_t(e.RegisterComponentType), e.Register,
-                                   uint32_t(e.Mask) | uint32_t(e.Mask) << 8, uint32_t(e.MinPrecision)});
+        words.insert(words.end(), {e.stream, 0, n.index, n.sysval, e.component_type, e.reg,
+                                   uint32_t(e.mask) | uint32_t(e.mask) << 8, e.min_precision});
     }
     const size_t names_offset = words.size() * 4;
     for (UINT i = 0; i < count; i++)
@@ -120,64 +119,14 @@ std::vector<uint8_t> signature_part(const D3D12DDIARG_SIGNATURE_ENTRY_0012* entr
     return part;
 }
 
-} // namespace
+struct Part {
+    uint32_t tag;
+    std::vector<uint8_t> data;
+};
 
-const char* generic_semantic(UINT stream)
+// Header: "DXBC", checksum, version 1, total size, part count, part offsets; each part: tag, size, data.
+void assemble(const std::vector<Part>& parts, DxbcChecksum checksum, std::vector<uint8_t>* out)
 {
-    // Stream-output entries are matched by name alone, so geometry shader streams 1 to 3 keep names of their own.
-    static const char* const names[] = {"VGD_R", "VGD_S1R", "VGD_S2R", "VGD_S3R"};
-    return names[stream < 4 ? stream : 0];
-}
-
-bool output_semantic(const D3D12DDIARG_SIGNATURE_ENTRY_0012* output, UINT count, UINT stream, UINT reg, BYTE mask,
-                     const char** name, UINT* index, UINT* first)
-{
-    for (UINT i = 0; i < count; i++) {
-        const auto& e = output[i];
-        if (e.Stream != stream || e.Register != reg || !(e.Mask & mask))
-            continue;
-        const Named n = semantic_of(output, i, false);
-        *name = n.name;
-        *index = n.index;
-        *first = first_component(e.Mask);
-        return true;
-    }
-    return false;
-}
-
-HRESULT build_shader_container(const UINT* code, const ShaderSignatures& s, std::vector<uint8_t>* out)
-{
-    // Both program forms keep their size in 32-bit words in the second word:
-    //   DXBC: {version token, length in words, tokens...}
-    //   DXIL: {ProgramVersion, size in words, "DXIL", DXIL version, bitcode offset, bitcode size, bitcode}
-    if (!code || code[1] < 2 || code[1] > (16u << 20))
-        return E_INVALIDARG;
-    const size_t program_size = size_t(code[1]) * 4;
-    const bool dxil = program_size >= 24 && code[2] == tag("DXIL");
-    const uint32_t type = code[0] >> 16;
-    const uint32_t major = dxil ? 6 : (code[0] >> 4) & 0xf;
-    if (type > kCompute) {
-        VGD_WARN("shader: program type %u not supported (version 0x%08x)", type, code[0]);
-        return E_INVALIDARG;
-    }
-
-    struct Part {
-        uint32_t tag;
-        std::vector<uint8_t> data;
-    };
-    std::vector<Part> parts;
-    if (type != kCompute) {
-        parts.push_back({tag("ISG1"), signature_part(s.input, s.input_count, false)});
-        parts.push_back({tag("OSG1"), signature_part(s.output, s.output_count, type == kPixel)});
-        if (type == kHull || type == kDomain)
-            parts.push_back({tag("PSG1"), signature_part(s.patch_constant, s.patch_constant_count, false)});
-    }
-    Part program{dxil ? tag("DXIL") : major >= 5 ? tag("SHEX") : tag("SHDR"), {}};
-    program.data.resize(program_size);
-    std::memcpy(program.data.data(), code, program_size);
-    parts.push_back(std::move(program));
-
-    // Header: "DXBC", checksum, version 1, total size, part count, part offsets; each part: tag, size, data.
     size_t size = 32 + 4 * parts.size();
     for (const auto& p : parts)
         size += 8 + p.data.size();
@@ -196,9 +145,71 @@ HRESULT build_shader_container(const UINT* code, const ShaderSignatures& s, std:
         std::memcpy(c.data() + at + 8, parts[i].data.data(), parts[i].data.size());
         at += 8 + parts[i].data.size();
     }
-    uint32_t checksum[4];
-    vkd3d_compute_dxbc_checksum(c.data(), c.size(), checksum);
-    std::memcpy(c.data() + 4, checksum, sizeof(checksum));
+    uint32_t sum[4];
+    checksum(c.data(), c.size(), sum);
+    std::memcpy(c.data() + 4, sum, sizeof(sum));
+}
+
+} // namespace
+
+const char* generic_semantic(UINT stream)
+{
+    // Stream-output entries are matched by name alone, so geometry shader streams 1 to 3 keep names of their own.
+    static const char* const names[] = {"VGD_R", "VGD_S1R", "VGD_S2R", "VGD_S3R"};
+    return names[stream < 4 ? stream : 0];
+}
+
+bool output_semantic(const std::vector<SignatureEntry>& output, UINT stream, UINT reg, BYTE mask, const char** name,
+                     UINT* index, UINT* first)
+{
+    for (UINT i = 0; i < output.size(); i++) {
+        const auto& e = output[i];
+        if (e.stream != stream || e.reg != reg || !(e.mask & mask))
+            continue;
+        const Named n = semantic_of(output, i, false);
+        *name = n.name;
+        *index = n.index;
+        *first = first_component(e.mask);
+        return true;
+    }
+    return false;
+}
+
+void build_input_signature_container(const std::vector<SignatureEntry>& input, DxbcChecksum checksum,
+                                     std::vector<uint8_t>* out)
+{
+    assemble({{tag("ISG1"), signature_part(input, false)}}, checksum, out);
+}
+
+HRESULT build_shader_container(const UINT* code, const ShaderSignatures& s, DxbcChecksum checksum,
+                               std::vector<uint8_t>* out)
+{
+    // Both program forms keep their size in 32-bit words in the second word:
+    //   DXBC: {version token, length in words, tokens...}
+    //   DXIL: {ProgramVersion, size in words, "DXIL", DXIL version, bitcode offset, bitcode size, bitcode}
+    if (!code || code[1] < 2 || code[1] > (16u << 20))
+        return E_INVALIDARG;
+    const size_t program_size = size_t(code[1]) * 4;
+    const bool dxil = program_size >= 24 && code[2] == tag("DXIL");
+    const uint32_t type = code[0] >> 16;
+    const uint32_t major = dxil ? 6 : (code[0] >> 4) & 0xf;
+    if (type > kCompute) {
+        VGD_WARN("shader: program type %u not supported (version 0x%08x)", type, code[0]);
+        return E_INVALIDARG;
+    }
+
+    std::vector<Part> parts;
+    if (type != kCompute) {
+        parts.push_back({tag("ISG1"), signature_part(s.input, false)});
+        parts.push_back({tag("OSG1"), signature_part(s.output, type == kPixel)});
+        if (type == kHull || type == kDomain)
+            parts.push_back({tag("PSG1"), signature_part(s.patch_constant, false)});
+    }
+    Part program{dxil ? tag("DXIL") : major >= 5 ? tag("SHEX") : tag("SHDR"), {}};
+    program.data.resize(program_size);
+    std::memcpy(program.data.data(), code, program_size);
+    parts.push_back(std::move(program));
+    assemble(parts, checksum, out);
     return S_OK;
 }
 

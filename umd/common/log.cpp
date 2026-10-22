@@ -14,33 +14,41 @@ namespace {
 std::mutex g_lock;
 FILE* g_file = nullptr;
 bool g_verbose = false;
+const char* g_component = "vgd";
 
-// The environment variable, or else the same-named value under HKLM\SOFTWARE\vgd3d12: processes that do not
-// inherit the environment (Chromium's GPU process gets a filtered one) still read the registry. A REG_DWORD value
-// reads as its decimal digits.
-bool setting(const char* name, char* out, DWORD size)
+constexpr const char* kKey = "SOFTWARE\\vgd3d12";
+
+} // namespace
+
+bool setting(const char* name, char* out, unsigned long size)
 {
     const DWORD len = GetEnvironmentVariableA(name, out, size);
     if (len > 0 && len < size)
         return true;
     DWORD bytes = size;
-    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\vgd3d12", name, RRF_RT_REG_SZ, nullptr, out, &bytes) ==
-        ERROR_SUCCESS)
+    if (RegGetValueA(HKEY_LOCAL_MACHINE, kKey, name, RRF_RT_REG_SZ, nullptr, out, &bytes) == ERROR_SUCCESS)
         return out[0] != 0;
     DWORD value = 0;
     bytes = sizeof(value);
-    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\vgd3d12", name, RRF_RT_REG_DWORD, nullptr, &value, &bytes) !=
-        ERROR_SUCCESS)
+    if (RegGetValueA(HKEY_LOCAL_MACHINE, kKey, name, RRF_RT_REG_DWORD, nullptr, &value, &bytes) != ERROR_SUCCESS)
         return false;
     std::snprintf(out, size, "%lu", value);
     return true;
 }
 
-} // namespace
+void forward_settings(std::initializer_list<const char*> names)
+{
+    for (const char* name : names) {
+        char value[256];
+        if (GetEnvironmentVariableA(name, nullptr, 0) == 0 && setting(name, value, sizeof(value)))
+            SetEnvironmentVariableA(name, value);
+    }
+}
 
-void log_init()
+void log_init(const char* component)
 {
     std::lock_guard lock(g_lock);
+    g_component = component;
     if (g_file)
         return;
     char path[MAX_PATH];
@@ -48,13 +56,6 @@ void log_init()
         g_file = std::fopen(path, "a");
     char v[8];
     g_verbose = setting("VGD_VERBOSE", v, sizeof(v)) && v[0] == '1';
-    // vkd3d-proton and the Venus ICD read their options with GetEnvironmentVariable: give them the registry's too.
-    for (const char* name : {"VKD3D_DEBUG", "VKD3D_SHADER_DEBUG", "VKD3D_LOG_FILE", "VKD3D_CONFIG", "VKD3D_FEATURE_LEVEL",
-                             "VN_DEBUG", "VN_PERF", "MESA_LOG_LEVEL"}) {
-        char value[256];
-        if (setting(name, value, sizeof(value)))
-            SetEnvironmentVariableA(name, value);
-    }
 }
 
 bool verbose() { return g_verbose; }
@@ -72,8 +73,9 @@ void logf(LogLevel level, const char* fmt, ...)
     SYSTEMTIME t;
     GetLocalTime(&t);
     char line[1120];
-    std::snprintf(line, sizeof(line), "%02u:%02u:%02u.%03u vgd3d12[%lu:%lu] %s %s\n", t.wHour, t.wMinute, t.wSecond,
-                  t.wMilliseconds, GetCurrentProcessId(), GetCurrentThreadId(), names[static_cast<int>(level)], body);
+    std::snprintf(line, sizeof(line), "%02u:%02u:%02u.%03u %s[%lu:%lu] %s %s\n", t.wHour, t.wMinute, t.wSecond,
+                  t.wMilliseconds, g_component, GetCurrentProcessId(), GetCurrentThreadId(),
+                  names[static_cast<int>(level)], body);
     OutputDebugStringA(line);
     std::lock_guard lock(g_lock);
     if (g_file) {

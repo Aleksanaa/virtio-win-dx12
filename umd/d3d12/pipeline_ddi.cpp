@@ -10,6 +10,9 @@
 #include <cstring>
 #include <new>
 
+// vkd3d-shader's container checksum (libs/vkd3d-shader/checksum.c), the MD5 variant fxc writes.
+extern "C" void vkd3d_compute_dxbc_checksum(const void* dxbc, size_t size, uint32_t checksum[4]);
+
 namespace vgd::umd {
 
 namespace {
@@ -21,14 +24,21 @@ SIZE_T APIENTRY calc_private_shader_size(D3D12DDI_HDEVICE, const D3D12DDIARG_CRE
     return sizeof(ShaderObject);
 }
 
+std::vector<SignatureEntry> entries(const D3D12DDIARG_SIGNATURE_ENTRY_0012* e, UINT count)
+{
+    std::vector<SignatureEntry> out;
+    for (UINT i = 0; i < count; i++)
+        out.push_back({static_cast<UINT>(e[i].SystemValue), e[i].Register, e[i].Mask, e[i].Stream,
+                       static_cast<UINT>(e[i].RegisterComponentType), static_cast<UINT>(e[i].MinPrecision)});
+    return out;
+}
+
 ShaderSignatures standard_signatures(const D3D12DDIARG_STAGE_IO_SIGNATURES* s)
 {
     ShaderSignatures out;
     if (s) {
-        out.input = s->pInputSignature;
-        out.input_count = s->NumInputSignatureEntries;
-        out.output = s->pOutputSignature;
-        out.output_count = s->NumOutputSignatureEntries;
+        out.input = entries(s->pInputSignature, s->NumInputSignatureEntries);
+        out.output = entries(s->pOutputSignature, s->NumOutputSignatureEntries);
     }
     return out;
 }
@@ -37,7 +47,7 @@ void create(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_SHADER_0026& args, cons
             D3D12DDI_HSHADER hs)
 {
     auto* obj = new (hs.pDrvPrivate) ShaderObject;
-    if (FAILED(build_shader_container(args.pShaderCode, signatures, &obj->container))) {
+    if (FAILED(build_shader_container(args.pShaderCode, signatures, vkd3d_compute_dxbc_checksum, &obj->container))) {
         const UINT* c = args.pShaderCode;
         VGD_WARN("CreateShader: unrecognized code, first words %08x %08x %08x %08x", c[0], c[1], c[2], c[3]);
         Device::from(h)->set_error(E_OUTOFMEMORY);
@@ -60,12 +70,9 @@ void APIENTRY create_tessellation_shader(D3D12DDI_HDEVICE h, const D3D12DDIARG_C
 {
     ShaderSignatures s;
     if (const auto* t = args->IOSignatures.Tessellation) {
-        s.input = t->pInputSignature;
-        s.input_count = t->NumInputSignatureEntries;
-        s.output = t->pOutputSignature;
-        s.output_count = t->NumOutputSignatureEntries;
-        s.patch_constant = t->pPatchConstantSignature;
-        s.patch_constant_count = t->NumPatchConstantSignatureEntries;
+        s.input = entries(t->pInputSignature, t->NumInputSignatureEntries);
+        s.output = entries(t->pOutputSignature, t->NumOutputSignatureEntries);
+        s.patch_constant = entries(t->pPatchConstantSignature, t->NumPatchConstantSignatureEntries);
     }
     create(h, *args, s, hs);
 }
@@ -101,8 +108,8 @@ void APIENTRY create_geometry_shader_with_stream_output(
             }
         e.ComponentCount = static_cast<BYTE>(count);
         UINT first = 0;
-        if (d.RegisterIndex == ~0u || !output_semantic(s.output, s.output_count, d.Stream, d.RegisterIndex,
-                                                         d.RegisterMask, &e.SemanticName, &e.SemanticIndex, &first)) {
+        if (d.RegisterIndex == ~0u || !output_semantic(s.output, d.Stream, d.RegisterIndex, d.RegisterMask,
+                                                         &e.SemanticName, &e.SemanticIndex, &first)) {
             e.SemanticName = nullptr;   // a gap in the buffer
             e.SemanticIndex = 0;
         } else {

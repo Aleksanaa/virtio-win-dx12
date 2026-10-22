@@ -49,11 +49,6 @@ struct AllocationExchange {
     ULONG ScanoutOffset;
 };
 
-// viogpum.h VIOGPU_CREATE_RESOURCE_EXCHANGE: resource private data.
-struct ResourceExchange {
-    ULONG magic;
-};
-
 // viogpum.h VIOGPU_CREATE_ALLOCATION_ALIAS (our KMD patch): an allocation sharing the host resource of
 // SourceAllocation, an allocation handle of this process.
 constexpr ULONG kAllocationAliasMagic = 0x53414756;   // "VGAS"
@@ -77,7 +72,8 @@ constexpr ULONG kPipeTexture2d = 2;
 constexpr ULONG kBindRenderTarget = 1u << 1, kBindSamplerView = 1u << 3, kBindDisplayTarget = 1u << 7,
                 kBindShaderImage = 1u << 15, kBindShared = 1u << 20;
 constexpr ULONG kVirglFormatB8G8R8A8Unorm = 1, kVirglFormatB8G8R8X8Unorm = 2, kVirglFormatR10G10B10A2Unorm = 8,
-                kVirglFormatR8G8B8A8Unorm = 67, kVirglFormatB8G8R8A8Srgb = 100, kVirglFormatR8G8B8A8Srgb = 104;
+                kVirglFormatA8Unorm = 10, kVirglFormatR8Unorm = 64, kVirglFormatR8G8B8A8Unorm = 67,
+                kVirglFormatB8G8R8A8Srgb = 100, kVirglFormatR8G8B8A8Srgb = 104;
 // The importer (yttrium_resource_to_pipe_format) translates only the virgl formats above and takes any other value
 // as a Mesa pipe_format, whose numbering is Mesa's own: this is PIPE_FORMAT_R16G16B16A16_FLOAT in the Mesa of
 // third_party/virtio-win-mesa (its generated u_format_gen.h), the one yttrium's D3D10 UMD is built from.

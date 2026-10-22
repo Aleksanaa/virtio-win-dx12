@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Vulkan functions the UMD calls on the engine's device (engine.h). Instance-level first.
+// Vulkan functions the UMDs call on their engine's device (vulkan_device.h). Instance-level first.
 VGD_VK_FN(vkGetDeviceProcAddr)
 VGD_VK_FN(vkGetPhysicalDeviceQueueFamilyProperties)
 VGD_VK_FN(vkEnumerateDeviceExtensionProperties)
