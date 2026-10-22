@@ -95,6 +95,26 @@ Named semantic_of(const std::vector<SignatureEntry>& entries, UINT i, bool pixel
     return {generic_semantic(e.stream), generic_semantic_index(e.reg, first_component(e.mask)), 0};
 }
 
+// The entry's component type. The D3D11 runtime passes 0 (unknown) for every entry; a container must not, or
+// dxbc-spirv types the I/O void and builds broken programs (DXVK's CS thread threw at DWM's first draw, RADV
+// failed in spirv_to_nir). Integer system values are uint as fxc declares them, everything else float.
+// TODO: pixel shader outputs to integer render targets would need uint/sint, which the bytecode does not state.
+uint32_t component_type_of(const SignatureEntry& e)
+{
+    if (e.component_type != D3D10_SB_REGISTER_COMPONENT_UNKNOWN)
+        return e.component_type;
+    switch (e.system_value) {
+    case D3D10_SB_NAME_VERTEX_ID:
+    case D3D10_SB_NAME_PRIMITIVE_ID:
+    case D3D10_SB_NAME_INSTANCE_ID:
+    case D3D10_SB_NAME_IS_FRONT_FACE:
+    case D3D10_SB_NAME_SAMPLE_INDEX:
+    case D3D10_SB_NAME_RENDER_TARGET_ARRAY_INDEX:
+    case D3D10_SB_NAME_VIEWPORT_ARRAY_INDEX: return D3D10_SB_REGISTER_COMPONENT_UINT32;
+    default: return D3D10_SB_REGISTER_COMPONENT_FLOAT32;
+    }
+}
+
 // One ISG1/OSG1/PSG1 part: count, 8, then per entry {stream, name offset, semantic index, system value, component
 // type, register, mask | used mask << 8, min precision}, then the names; offsets count from the part's data.
 std::vector<uint8_t> signature_part(const std::vector<SignatureEntry>& entries, bool pixel_output)
@@ -109,7 +129,7 @@ std::vector<uint8_t> signature_part(const std::vector<SignatureEntry>& entries, 
         name_at[i] = names.size();
         names += n.name;
         names += '\0';
-        words.insert(words.end(), {e.stream, 0, n.index, n.sysval, e.component_type, e.reg,
+        words.insert(words.end(), {e.stream, 0, n.index, n.sysval, component_type_of(e), e.reg,
                                    uint32_t(e.mask) | uint32_t(e.mask) << 8, e.min_precision});
     }
     const size_t names_offset = words.size() * 4;

@@ -26,7 +26,7 @@ struct SignatureEntry {
     UINT reg;
     BYTE mask;
     BYTE stream;
-    UINT component_type;
+    UINT component_type;   // D3D10_SB_REGISTER_COMPONENT_*; 0 (unknown) gets one by system value (component_type_of)
     UINT min_precision;
 };
 
