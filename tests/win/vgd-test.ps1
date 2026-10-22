@@ -6,8 +6,8 @@
 #   Uninstall : restore the saved UserModeDriverName value and remove the DLLs (reboot after)
 #   Status    : show the current value
 # Run from an elevated PowerShell:  powershell -ExecutionPolicy Bypass -File .\vgd-test.ps1 Install
-# Expects the build tree layout next to it: umd\vgd3d12.dll, umd\vgd3d11.dll, icd\vgd_vulkan_virtio.dll,
-# tests\win\d3dprobe.exe, tests\win\d3d11probe.exe.
+# Run it from the build tree (build\win\tests\win): it finds umd\vgd3d12.dll, umd\vgd3d11.dll, tests\win\d3dprobe.exe and
+# tests\win\d3d11probe.exe in build\win, and icd\vgd_vulkan_virtio.dll in build\win or build (where icd\build.sh puts it).
 #
 # DWM loads vgd3d11.dll after the reboot. If the desktop does not come back: Safe Mode (which does not load it), then
 # Uninstall; or roll the VM back to a snapshot taken before Install.
@@ -53,7 +53,7 @@ $Saved = Join-Path $Work 'original-UserModeDriverName.txt'
 $DisplayClass = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
 
 function Find-BuildFile([string]$rel) {
-    foreach ($base in @($PSScriptRoot, (Join-Path $PSScriptRoot '..\..'))) {
+    foreach ($base in @($PSScriptRoot, (Join-Path $PSScriptRoot '..\..'), (Join-Path $PSScriptRoot '..\..\..'))) {
         $p = Join-Path $base $rel
         if (Test-Path $p) { return (Resolve-Path $p).Path }
     }
