@@ -95,10 +95,245 @@ Named semantic_of(const std::vector<SignatureEntry>& entries, UINT i, bool pixel
     return {generic_semantic(e.stream), generic_semantic_index(e.reg, first_component(e.mask)), 0};
 }
 
+// --- Component types from the program's own instructions --------------------------------------------------------
+// fxc types each signature entry by its HLSL declaration; the runtime does not pass that on. Where it matters to
+// Vulkan, the type must match what the register is bound to: vertex shader inputs match their vertex attribute
+// formats and pixel shader outputs their render targets. Values between stages are only passed along, and float
+// on both sides carries any bits (integer ones are flat). So the types of those two are read off how the program
+// uses each component: a vertex input it adds as an integer is an integer, as fxc declared it.
+
+// How an instruction treats one operand: float, signed, unsigned, or an integer either way.
+enum Use : uint8_t { kNoUse, kFloat, kSigned, kUnsigned, kInteger };
+
+struct Uses {
+    // Per register: the components used each way.
+    uint8_t mask[32][5];
+
+    void add(UINT reg, uint8_t components, Use u)
+    {
+        if (reg < 32 && u != kNoUse)
+            mask[reg][u] |= components;
+    }
+};
+
+// The use operand `i` of `op` gets (destinations first). Instructions not listed type nothing: moves and selects
+// pass values on untyped, declarations and flow control are not uses.
+Use operand_use(UINT op, UINT i)
+{
+    switch (op) {
+    case D3D10_SB_OPCODE_ADD:
+    case D3D10_SB_OPCODE_DIV:
+    case D3D10_SB_OPCODE_DP2:
+    case D3D10_SB_OPCODE_DP3:
+    case D3D10_SB_OPCODE_DP4:
+    case D3D10_SB_OPCODE_EXP:
+    case D3D10_SB_OPCODE_FRC:
+    case D3D10_SB_OPCODE_LOG:
+    case D3D10_SB_OPCODE_MAD:
+    case D3D10_SB_OPCODE_MIN:
+    case D3D10_SB_OPCODE_MAX:
+    case D3D10_SB_OPCODE_MUL:
+    case D3D10_SB_OPCODE_ROUND_NE:
+    case D3D10_SB_OPCODE_ROUND_NI:
+    case D3D10_SB_OPCODE_ROUND_PI:
+    case D3D10_SB_OPCODE_ROUND_Z:
+    case D3D10_SB_OPCODE_RSQ:
+    case D3D10_SB_OPCODE_SQRT:
+    case D3D10_SB_OPCODE_SINCOS:
+    case D3D11_SB_OPCODE_RCP:
+    case D3D10_SB_OPCODE_DERIV_RTX:
+    case D3D10_SB_OPCODE_DERIV_RTY:
+    case D3D11_SB_OPCODE_DERIV_RTX_COARSE:
+    case D3D11_SB_OPCODE_DERIV_RTX_FINE:
+    case D3D11_SB_OPCODE_DERIV_RTY_COARSE:
+    case D3D11_SB_OPCODE_DERIV_RTY_FINE: return kFloat;
+    // Comparisons write masks, not values of the compared type.
+    case D3D10_SB_OPCODE_EQ:
+    case D3D10_SB_OPCODE_GE:
+    case D3D10_SB_OPCODE_LT:
+    case D3D10_SB_OPCODE_NE: return i ? kFloat : kNoUse;
+    case D3D10_SB_OPCODE_IGE:
+    case D3D10_SB_OPCODE_ILT: return i ? kSigned : kNoUse;
+    case D3D10_SB_OPCODE_UGE:
+    case D3D10_SB_OPCODE_ULT: return i ? kUnsigned : kNoUse;
+    case D3D10_SB_OPCODE_IEQ:
+    case D3D10_SB_OPCODE_INE: return i ? kInteger : kNoUse;
+    case D3D10_SB_OPCODE_FTOI: return i ? kFloat : kSigned;
+    case D3D10_SB_OPCODE_FTOU: return i ? kFloat : kUnsigned;
+    case D3D10_SB_OPCODE_ITOF: return i ? kSigned : kFloat;
+    case D3D10_SB_OPCODE_UTOF: return i ? kUnsigned : kFloat;
+    case D3D11_SB_OPCODE_F32TOF16: return i ? kFloat : kUnsigned;
+    case D3D11_SB_OPCODE_F16TOF32: return i ? kUnsigned : kFloat;
+    case D3D10_SB_OPCODE_IMAD:
+    case D3D10_SB_OPCODE_IMAX:
+    case D3D10_SB_OPCODE_IMIN:
+    case D3D10_SB_OPCODE_INEG:
+    case D3D10_SB_OPCODE_ISHR:
+    case D3D11_SB_OPCODE_IBFE: return kSigned;
+    case D3D10_SB_OPCODE_IMUL: return kSigned;   // two destinations, both signed
+    case D3D10_SB_OPCODE_UMAD:
+    case D3D10_SB_OPCODE_UMAX:
+    case D3D10_SB_OPCODE_UMIN:
+    case D3D10_SB_OPCODE_USHR:
+    case D3D10_SB_OPCODE_UDIV:
+    case D3D10_SB_OPCODE_UMUL:
+    case D3D11_SB_OPCODE_UADDC:
+    case D3D11_SB_OPCODE_USUBB:
+    case D3D11_SB_OPCODE_UBFE:
+    case D3D11_SB_OPCODE_BFI:
+    case D3D11_SB_OPCODE_BFREV:
+    case D3D11_SB_OPCODE_COUNTBITS:
+    case D3D11_SB_OPCODE_FIRSTBIT_HI:
+    case D3D11_SB_OPCODE_FIRSTBIT_LO:
+    case D3D11_SB_OPCODE_FIRSTBIT_SHI: return kUnsigned;
+    case D3D10_SB_OPCODE_IADD:
+    case D3D10_SB_OPCODE_ISHL:
+    case D3D10_SB_OPCODE_AND:
+    case D3D10_SB_OPCODE_OR:
+    case D3D10_SB_OPCODE_XOR:
+    case D3D10_SB_OPCODE_NOT:
+    case D3D10_SB_OPCODE_SWITCH: return kInteger;
+    // Addresses: the operand after the destination.
+    case D3D10_SB_OPCODE_LD:
+    case D3D10_SB_OPCODE_LD_MS:
+    case D3D11_SB_OPCODE_LD_UAV_TYPED:
+    case D3D11_SB_OPCODE_LD_RAW:
+    case D3D11_SB_OPCODE_LD_STRUCTURED: return i == 1 ? kInteger : kNoUse;
+    case D3D10_SB_OPCODE_SAMPLE:
+    case D3D10_SB_OPCODE_SAMPLE_C:
+    case D3D10_SB_OPCODE_SAMPLE_C_LZ:
+    case D3D10_SB_OPCODE_SAMPLE_L:
+    case D3D10_SB_OPCODE_SAMPLE_D:
+    case D3D10_SB_OPCODE_SAMPLE_B:
+    case D3D10_1_SB_OPCODE_GATHER4:
+    case D3D11_SB_OPCODE_GATHER4_C:
+    case D3D10_1_SB_OPCODE_LOD: return i == 1 ? kFloat : kNoUse;
+    default: return kNoUse;
+    }
+}
+
+UINT destination_count(UINT op)
+{
+    switch (op) {
+    case D3D10_SB_OPCODE_IMUL:
+    case D3D10_SB_OPCODE_UMUL:
+    case D3D10_SB_OPCODE_UDIV:
+    case D3D11_SB_OPCODE_UADDC:
+    case D3D11_SB_OPCODE_USUBB: return 2;
+    default: return 1;
+    }
+}
+
+// The components an operand token reads (swizzles, selects) or writes (masks).
+uint8_t operand_components(UINT token)
+{
+    if (DECODE_D3D10_SB_OPERAND_NUM_COMPONENTS(token) != D3D10_SB_OPERAND_4_COMPONENT)
+        return 1;
+    switch (DECODE_D3D10_SB_OPERAND_4_COMPONENT_SELECTION_MODE(token)) {
+    case D3D10_SB_OPERAND_4_COMPONENT_MASK_MODE: return uint8_t(DECODE_D3D10_SB_OPERAND_4_COMPONENT_MASK(token) >> 4);
+    case D3D10_SB_OPERAND_4_COMPONENT_SWIZZLE_MODE: {
+        uint8_t m = 0;
+        for (UINT c = 0; c < 4; c++)
+            m |= uint8_t(1u << DECODE_D3D10_SB_OPERAND_4_COMPONENT_SWIZZLE_SOURCE(token, c));
+        return m;
+    }
+    default: return uint8_t(1u << DECODE_D3D10_SB_OPERAND_4_COMPONENT_SELECT_1(token));
+    }
+}
+
+// Parses the operand at code[p] (ending before `end`), recording a use of `file` registers; returns the word
+// after it, or `end` if it runs past. Relative indices are operands of their own, used as integers.
+UINT scan_operand(const UINT* code, UINT p, UINT end, UINT file, Use use, Uses& uses)
+{
+    if (p >= end)
+        return end;
+    const UINT token = code[p++];
+    for (UINT ext = token; DECODE_IS_D3D10_SB_OPERAND_EXTENDED(ext) && p < end;)
+        ext = code[p++];
+    const UINT type = DECODE_D3D10_SB_OPERAND_TYPE(token);
+    const UINT dims = DECODE_D3D10_SB_OPERAND_INDEX_DIMENSION(token);
+    UINT first_index = ~0u;
+    for (UINT d = 0; d < dims && p < end; d++) {
+        const UINT rep = DECODE_D3D10_SB_OPERAND_INDEX_REPRESENTATION(d, token);
+        if (rep == D3D10_SB_OPERAND_INDEX_IMMEDIATE32 || rep == D3D10_SB_OPERAND_INDEX_IMMEDIATE32_PLUS_RELATIVE) {
+            if (d == 0)
+                first_index = code[p];
+            p++;
+        } else if (rep == D3D10_SB_OPERAND_INDEX_IMMEDIATE64 || rep == D3D10_SB_OPERAND_INDEX_IMMEDIATE64_PLUS_RELATIVE) {
+            p += 2;
+        }
+        if (rep == D3D10_SB_OPERAND_INDEX_RELATIVE || rep == D3D10_SB_OPERAND_INDEX_IMMEDIATE32_PLUS_RELATIVE ||
+            rep == D3D10_SB_OPERAND_INDEX_IMMEDIATE64_PLUS_RELATIVE)
+            p = scan_operand(code, p, end, file, kInteger, uses);
+    }
+    if (type == D3D10_SB_OPERAND_TYPE_IMMEDIATE32 || type == D3D10_SB_OPERAND_TYPE_IMMEDIATE64) {
+        const UINT n = DECODE_D3D10_SB_OPERAND_NUM_COMPONENTS(token) == D3D10_SB_OPERAND_4_COMPONENT ? 4 : 1;
+        p += n * (type == D3D10_SB_OPERAND_TYPE_IMMEDIATE64 ? 2 : 1);
+    }
+    // Only one-dimensional files: vertex inputs and pixel outputs (indexed ones are not typed by use).
+    if (type == file && dims == 1 && first_index != ~0u)
+        uses.add(first_index, operand_components(token), use);
+    return p < end ? p : end;
+}
+
+// How the program uses the registers of `file` (D3D10_SB_OPERAND_TYPE_INPUT or _OUTPUT), as sources or as
+// destinations.
+Uses scan_uses(const UINT* code, UINT file, bool destinations)
+{
+    Uses uses{};
+    const UINT length = code[1];
+    for (UINT pos = 2; pos < length;) {
+        const UINT token = code[pos];
+        const UINT op = DECODE_D3D10_SB_OPCODE_TYPE(token);
+        const UINT len = op == D3D10_SB_OPCODE_CUSTOMDATA ? (pos + 1 < length ? code[pos + 1] : 0)
+                                                           : DECODE_D3D10_SB_TOKENIZED_INSTRUCTION_LENGTH(token);
+        if (len == 0 || pos + len > length)
+            break;
+        if (op != D3D10_SB_OPCODE_CUSTOMDATA && operand_use(op, 0) + operand_use(op, 1) + operand_use(op, 2) != 0) {
+            const UINT end = pos + len;
+            UINT p = pos + 1;
+            for (UINT ext = token; DECODE_IS_D3D10_SB_OPCODE_EXTENDED(ext) && p < end;)
+                ext = code[p++];
+            const UINT dsts = destination_count(op);
+            for (UINT i = 0; p < end; i++) {
+                const bool dst = i < dsts;
+                p = scan_operand(code, p, end, file, dst == destinations ? operand_use(op, i) : kNoUse, uses);
+            }
+        }
+        pos += len;
+    }
+    return uses;
+}
+
+// The type of the entry's components by `uses`; 0 (unknown) if nothing types them. A component used as float
+// anywhere stays float (an integer reinterpreted, asfloat()); signed wins over unsigned only when nothing reads it
+// unsigned.
+uint32_t type_by_use(const Uses& uses, const SignatureEntry& e)
+{
+    if (e.reg >= 32)
+        return D3D10_SB_REGISTER_COMPONENT_UNKNOWN;
+    const uint8_t* m = uses.mask[e.reg];
+    if (m[kFloat] & e.mask)
+        return D3D10_SB_REGISTER_COMPONENT_FLOAT32;
+    if ((m[kSigned] & e.mask) && !(m[kUnsigned] & e.mask))
+        return D3D10_SB_REGISTER_COMPONENT_SINT32;
+    if ((m[kUnsigned] | m[kInteger]) & e.mask)
+        return D3D10_SB_REGISTER_COMPONENT_UINT32;
+    return D3D10_SB_REGISTER_COMPONENT_UNKNOWN;
+}
+
+// Types the generic entries of `entries` by `uses` where the runtime left them unknown.
+void type_by_use(std::vector<SignatureEntry>& entries, const Uses& uses)
+{
+    for (auto& e : entries)
+        if (e.component_type == D3D10_SB_REGISTER_COMPONENT_UNKNOWN && e.system_value == D3D10_SB_NAME_UNDEFINED)
+            e.component_type = type_by_use(uses, e);
+}
+
 // The entry's component type. The D3D11 runtime passes 0 (unknown) for every entry; a container must not, or
 // dxbc-spirv types the I/O void and builds broken programs (DXVK's CS thread threw at DWM's first draw, RADV
-// failed in spirv_to_nir). Integer system values are uint as fxc declares them, everything else float.
-// TODO: pixel shader outputs to integer render targets would need uint/sint, which the bytecode does not state.
+// failed in spirv_to_nir). Entries typed by use above keep theirs; integer system values are uint as fxc declares
+// them, everything else float.
 uint32_t component_type_of(const SignatureEntry& e)
 {
     if (e.component_type != D3D10_SB_REGISTER_COMPONENT_UNKNOWN)
@@ -242,10 +477,16 @@ HRESULT build_shader_container(const UINT* code, const ShaderSignatures& s, Dxbc
         return E_INVALIDARG;
     }
 
+    std::vector<SignatureEntry> input = s.input, output = s.output;
+    if (!dxil && type == kVertex)
+        type_by_use(input, scan_uses(code, D3D10_SB_OPERAND_TYPE_INPUT, false));
+    if (!dxil && type == kPixel)
+        type_by_use(output, scan_uses(code, D3D10_SB_OPERAND_TYPE_OUTPUT, true));
+
     std::vector<Part> parts;
     if (type != kCompute) {
-        parts.push_back({tag("ISG1"), signature_part(s.input, false)});
-        parts.push_back({tag("OSG1"), signature_part(s.output, type == kPixel)});
+        parts.push_back({tag("ISG1"), signature_part(input, false)});
+        parts.push_back({tag("OSG1"), signature_part(output, type == kPixel)});
         if (type == kHull || type == kDomain)
             parts.push_back({tag("PSG1"), signature_part(s.patch_constant, false)});
     }
