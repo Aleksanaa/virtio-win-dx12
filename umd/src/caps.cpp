@@ -58,6 +58,20 @@ UINT shader_model_count(ID3D12Device* d)
     return sm.HighestShaderModel >= D3D_SHADER_MODEL_6_0 ? std::min<UINT>(2 + minor, ARRAYSIZE(kShaderModels)) : 1;
 }
 
+// The DDI's queue flags of the API's command list types (D3D12_COMMAND_LIST_SUPPORT_FLAGS): different bits. Bundles
+// run on the queue of the list that executes them, so they add nothing.
+D3D12DDI_COMMAND_QUEUE_FLAGS queue_flags(D3D12_COMMAND_LIST_SUPPORT_FLAGS f)
+{
+    UINT q = D3D12DDI_COMMAND_QUEUE_FLAG_NONE;
+    if (f & D3D12_COMMAND_LIST_SUPPORT_FLAG_DIRECT)
+        q |= D3D12DDI_COMMAND_QUEUE_FLAG_3D;
+    if (f & D3D12_COMMAND_LIST_SUPPORT_FLAG_COMPUTE)
+        q |= D3D12DDI_COMMAND_QUEUE_FLAG_COMPUTE;
+    if (f & D3D12_COMMAND_LIST_SUPPORT_FLAG_COPY)
+        q |= D3D12DDI_COMMAND_QUEUE_FLAG_COPY;
+    return static_cast<D3D12DDI_COMMAND_QUEUE_FLAGS>(q);
+}
+
 // The feature level of what we pass on (see the top of this file): at most 12_1, since 12_2 needs ray tracing,
 // mesh shaders and sampler feedback.
 D3D12DDI_3DPIPELINELEVEL feature_level(ID3D12Device* d)
@@ -121,7 +135,9 @@ HRESULT get_caps(ID3D12Device* dev, const D3D12DDIARG_GETCAPS& r)
         d->ResourceBindingTier = static_cast<D3D12DDI_RESOURCE_BINDING_TIER>(o.ResourceBindingTier);
         d->ConservativeRasterizationTier =
             static_cast<D3D12DDI_CONSERVATIVE_RASTERIZATION_TIER>(o.ConservativeRasterizationTier);
-        d->TiledResourcesTier = static_cast<D3D12DDI_TILED_RESOURCES_TIER>(o.TiledResourcesTier);
+        // The DDI names tiers up to 3; tier 4 (64KB-aligned 3D tiles) is the API's alone.
+        d->TiledResourcesTier = static_cast<D3D12DDI_TILED_RESOURCES_TIER>(
+            std::min<int>(o.TiledResourcesTier, D3D12DDI_TILED_RESOURCES_TIER_3));
         d->CrossNodeSharingTier = D3D12DDI_CROSS_NODE_SHARING_TIER_NOT_SUPPORTED;
         d->VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation =
             o.VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation;
@@ -131,7 +147,7 @@ HRESULT get_caps(ID3D12Device* dev, const D3D12DDIARG_GETCAPS& r)
         d->ProgrammableSamplePositionsTier =
             static_cast<D3D12DDI_PROGRAMMABLE_SAMPLE_POSITIONS_TIER>(o2.ProgrammableSamplePositionsTier);
         d->CopyQueueTimestampQueriesSupported = o3.CopyQueueTimestampQueriesSupported;
-        d->WriteBufferImmediateQueueFlags = static_cast<D3D12DDI_COMMAND_QUEUE_FLAGS>(o3.WriteBufferImmediateSupportFlags);
+        d->WriteBufferImmediateQueueFlags = queue_flags(o3.WriteBufferImmediateSupportFlags);
         d->ViewInstancingTier = static_cast<D3D12DDI_VIEW_INSTANCING_TIER>(o3.ViewInstancingTier);
         d->BarycentricsSupported = o3.BarycentricsSupported;
         d->ReservedBufferPlacementSupported = o4.MSAA64KBAlignedTextureSupported;

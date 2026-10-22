@@ -279,7 +279,9 @@ void APIENTRY resource_barrier(D3D12DDI_HCOMMANDLIST hl, UINT count, const D3D12
     std::vector<D3D12_RESOURCE_BARRIER> barriers(count);
     for (UINT i = 0; i < count; i++) {
         D3D12_RESOURCE_BARRIER& o = barriers[i];
-        o.Flags = static_cast<D3D12_RESOURCE_BARRIER_FLAGS>(b[i].Flags);
+        // Begin-only and end-only are the API's; the DDI's atomic-copy and aliasing flags are not.
+        o.Flags = static_cast<D3D12_RESOURCE_BARRIER_FLAGS>(
+            b[i].Flags & (D3D12DDI_RESOURCE_BARRIER_FLAG_BEGIN_ONLY | D3D12DDI_RESOURCE_BARRIER_FLAG_END_ONLY));
         switch (b[i].Type) {
         case D3D12DDI_RESOURCE_BARRIER_TYPE_TRANSITION:
             o.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

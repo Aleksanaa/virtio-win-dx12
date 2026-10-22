@@ -74,12 +74,50 @@ void APIENTRY check_format_support(D3D12DDI_HDEVICE h, DXGI_FORMAT format, UINT*
     VGD_VERBOSE("CheckFormatSupport format=%d -> 0x%x", static_cast<int>(format), *support);
 }
 
+// The plane views of depth/stencil formats: sampled, never attachments.
+bool depth_stencil_view(DXGI_FORMAT f)
+{
+    switch (f) {
+    case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+    case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
+    case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+    case DXGI_FORMAT_X24_TYPELESS_G8_UINT: return true;
+    default: return false;
+    }
+}
+
+// Whether vkd3d-proton has a format: its colour table (vkd3d_get_vk_format), or its depth/stencil table, which only
+// a device's lookup sees. The runtime asks about every DXGI format, and vkd3d-proton logs a FIXME for each it lacks.
+bool known_format(DXGI_FORMAT f)
+{
+    switch (f) {
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+    case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+    case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+    case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
+    case DXGI_FORMAT_R16_TYPELESS:
+    case DXGI_FORMAT_D16_UNORM: return true;
+    default: return vgd_vkd3d_vk_format(f) != VK_FORMAT_UNDEFINED;
+    }
+}
+
+// The depth/stencil plane views report MULTISAMPLE_LOAD but must answer 0 levels above one sample, which the runtime
+// checks at device creation (the API's CheckFeatureSupport, which vkd3d-proton answers, allows them). Every other
+// format keeps the API's answer: the runtime also checks that a typeless format agrees with its typed members.
 void APIENTRY check_multisample_quality_levels(D3D12DDI_HDEVICE h, DXGI_FORMAT format, UINT samples,
                                                D3D12DDI_MULTISAMPLE_QUALITY_LEVEL_FLAGS flags, UINT* levels)
 {
     D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS q{format, samples,
                                                     static_cast<D3D12_MULTISAMPLE_QUALITY_LEVEL_FLAGS>(flags), 0};
-    if (FAILED(Device::from(h)->d3d->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &q, sizeof(q))))
+    if ((format != DXGI_FORMAT_UNKNOWN && !known_format(format)) ||
+        FAILED(Device::from(h)->d3d->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &q, sizeof(q))) ||
+        (samples > 1 && depth_stencil_view(format)))
         q.NumQualityLevels = 0;
     *levels = q.NumQualityLevels;
     VGD_VERBOSE("CheckMultisampleQualityLevels format=%d samples=%u flags=%d -> %u", static_cast<int>(format), samples,

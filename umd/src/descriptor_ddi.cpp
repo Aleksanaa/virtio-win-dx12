@@ -27,8 +27,12 @@ HRESULT APIENTRY create_descriptor_heap(D3D12DDI_HDEVICE h, const D3D12DDIARG_CR
                                         D3D12DDI_HDESCRIPTORHEAP hh)
 {
     auto* obj = new (hh.pDrvPrivate) DescriptorHeapObject;
+    // The DDI's flags differ from the API's: CPU_VISIBLE is 1, SHADER_VISIBLE 2.
     const D3D12_DESCRIPTOR_HEAP_DESC desc{static_cast<D3D12_DESCRIPTOR_HEAP_TYPE>(args->Type), args->NumDescriptors,
-                                          static_cast<D3D12_DESCRIPTOR_HEAP_FLAGS>(args->Flags), args->NodeMask};
+                                          (args->Flags & D3D12DDI_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
+                                              ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
+                                              : D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+                                          args->NodeMask};
     HRESULT hr = Device::from(h)->d3d->CreateDescriptorHeap(&desc, __uuidof(ID3D12DescriptorHeap), obj->heap.put_void());
     if (FAILED(hr)) {
         VGD_WARN("CreateDescriptorHeap: type %d, %u descriptors, flags 0x%x failed: 0x%08lx",

@@ -43,14 +43,20 @@ D3D12_RESOURCE_DESC1 resource_desc(const D3D12DDIARG_CREATERESOURCE_0088& r)
 namespace {
 
 // The runtime has already turned the API heap type into a memory pool and CPU page property for our caps (UMA, not
-// cache coherent): DEFAULT has no CPU access, UPLOAD is write-combined and READBACK is write-back.
+// cache coherent), and it lets every buffer be an unordered access view, which the API's UPLOAD and READBACK heaps
+// refuse. So CPU-visible heaps are the API's custom heaps of that page property, in system memory (L0).
 D3D12_HEAP_PROPERTIES heap_properties(const D3D12DDIARG_CREATEHEAP_0001& h)
 {
     D3D12_HEAP_PROPERTIES p{};
-    switch (h.CPUPageProperty) {
-    case D3D12DDI_CPU_PAGE_PROPERTY_WRITE_COMBINE: p.Type = D3D12_HEAP_TYPE_UPLOAD; break;
-    case D3D12DDI_CPU_PAGE_PROPERTY_WRITE_BACK: p.Type = D3D12_HEAP_TYPE_READBACK; break;
-    default: p.Type = D3D12_HEAP_TYPE_DEFAULT; break;
+    if (h.CPUPageProperty == D3D12DDI_CPU_PAGE_PROPERTY_WRITE_COMBINE ||
+        h.CPUPageProperty == D3D12DDI_CPU_PAGE_PROPERTY_WRITE_BACK) {
+        p.Type = D3D12_HEAP_TYPE_CUSTOM;
+        p.CPUPageProperty = h.CPUPageProperty == D3D12DDI_CPU_PAGE_PROPERTY_WRITE_BACK
+                                ? D3D12_CPU_PAGE_PROPERTY_WRITE_BACK
+                                : D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE;
+        p.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+    } else {
+        p.Type = D3D12_HEAP_TYPE_DEFAULT;
     }
     return p;
 }
@@ -72,13 +78,8 @@ D3D12_HEAP_FLAGS heap_flags(const D3D12DDIARG_CREATEHEAP_0001& h)
     return f;
 }
 
-// The DDI tracks no legacy initial state: the states the API requires of resources on each heap type.
-D3D12_RESOURCE_STATES initial_state(D3D12_HEAP_TYPE type)
-{
-    return type == D3D12_HEAP_TYPE_UPLOAD ? D3D12_RESOURCE_STATE_GENERIC_READ
-           : type == D3D12_HEAP_TYPE_READBACK ? D3D12_RESOURCE_STATE_COPY_DEST
-                                              : D3D12_RESOURCE_STATE_COMMON;
-}
+// The DDI tracks no legacy initial state, and COMMON is valid on every heap we create (default and custom ones).
+constexpr D3D12_RESOURCE_STATES kInitialState = D3D12_RESOURCE_STATE_COMMON;
 
 void log_failure(const char* what, const D3D12_RESOURCE_DESC1& desc, HRESULT hr)
 {
@@ -115,16 +116,14 @@ HRESULT create_heap(Device& d, const D3D12DDIARG_CREATEHEAP_0001& h, uint64_t mi
 HRESULT create_placed(Device& d, ID3D12Heap* heap, uint64_t offset, const D3D12DDIARG_CREATERESOURCE_0088& r,
                       const D3D12_RESOURCE_DESC1& desc, Com<ID3D12Resource>* out)
 {
-    const D3D12_HEAP_DESC hd = desc_of(heap);
-    const D3D12_RESOURCE_STATES state = initial_state(hd.Properties.Type);
     if (r.NumCastableFormats) {
         if (auto d10 = d.engine->device.as<ID3D12Device10>())
             return d10->CreatePlacedResource2(heap, offset, &desc, D3D12_BARRIER_LAYOUT_UNDEFINED, nullptr,
                                               r.NumCastableFormats, r.pCastableFormats, __uuidof(ID3D12Resource),
                                               out->put_void());
     }
-    return d.d3d8->CreatePlacedResource1(heap, offset, &desc, state, nullptr, __uuidof(ID3D12Resource),
-                                         out->put_void());
+    return d.d3d8->CreatePlacedResource1(heap, offset, &desc, kInitialState, nullptr,
+                                         __uuidof(ID3D12Resource), out->put_void());
 }
 
 // A placed resource (CreatePlacedResource) or, naming no heap, a reserved (tiled) one.
@@ -137,7 +136,7 @@ HRESULT create_unowned(Device& d, const D3D12DDIARG_CREATERESOURCE_0088& r, D3D1
     if (!p.hResource.pDrvPrivate) {
         D3D12_RESOURCE_DESC d0{desc.Dimension, desc.Alignment, desc.Width, desc.Height, desc.DepthOrArraySize,
                                desc.MipLevels, desc.Format, desc.SampleDesc, desc.Layout, desc.Flags};
-        hr = d.d3d->CreateReservedResource(&d0, D3D12_RESOURCE_STATE_COMMON, nullptr, __uuidof(ID3D12Resource),
+        hr = d.d3d->CreateReservedResource(&d0, kInitialState, nullptr, __uuidof(ID3D12Resource),
                                            ro->placed.put_void());
         if (FAILED(hr))
             log_failure("reserved", desc, hr);
@@ -214,7 +213,7 @@ HRESULT APIENTRY create_heap_and_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_
                                                resource->pCastableFormats, __uuidof(ID3D12Resource),
                                                ho->resource.put_void());
         else
-            hr = d.d3d8->CreateCommittedResource2(&props, heap_flags(*heap), &desc, initial_state(props.Type), nullptr,
+            hr = d.d3d8->CreateCommittedResource2(&props, heap_flags(*heap), &desc, kInitialState, nullptr,
                                                   nullptr, __uuidof(ID3D12Resource), ho->resource.put_void());
     }
     if (FAILED(hr)) {
@@ -247,7 +246,7 @@ HRESULT APIENTRY map_heap(D3D12DDI_HDEVICE h, D3D12DDI_HHEAP hh, void** data)
             const D3D12_RESOURCE_DESC1 buffer{D3D12_RESOURCE_DIMENSION_BUFFER, 0, hd.SizeInBytes, 1, 1, 1,
                                               DXGI_FORMAT_UNKNOWN, {1, 0}, D3D12_TEXTURE_LAYOUT_ROW_MAJOR};
             Device& d = *Device::from(h);
-            if (SUCCEEDED(d.d3d8->CreatePlacedResource1(ho->heap.get(), 0, &buffer, initial_state(hd.Properties.Type),
+            if (SUCCEEDED(d.d3d8->CreatePlacedResource1(ho->heap.get(), 0, &buffer, kInitialState,
                                                         nullptr, __uuidof(ID3D12Resource),
                                                         ho->map_buffer.put_void())))
                 r = ho->map_buffer.get();
