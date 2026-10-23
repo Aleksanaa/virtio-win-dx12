@@ -1,7 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
-# Builds yttrium's Venus Vulkan driver (libvulkan_virtio.dll) for the guest from the pinned Mesa fork
-# (third_party/virtio-win-mesa) with icd/patches/*.patch applied, cross-compiled with the dev shell's MinGW GCC.
+# Builds yttrium's Mesa drivers for the guest from the pinned Mesa fork (third_party/virtio-win-mesa) with
+# icd/patches/*.patch applied, cross-compiled with the dev shell's MinGW GCC: the Venus Vulkan driver
+# (vgd_vulkan_virtio.dll) and the OpenGL driver (viogpu_wgl.dll: WGL on zink, so OpenGL runs on Venus too).
 #
 #   icd/build.sh [build-dir]      (default build/icd; run inside nix develop)
 #
@@ -13,8 +14,18 @@ out=${1:-$root/build/icd}
 mesa=$root/third_party/virtio-win-mesa
 src=$out/src
 
+# The meson options; changing them rebuilds from scratch. SPIRV-Tools only prints SPIR-V for debugging, and the
+# dev shell's is a Linux library.
+options="--buildtype=release -Db_ndebug=true -Dc_std=c11 \
+    -Dplatforms=windows -Dvulkan-drivers=virtio -Dgallium-drivers=zink -Dgallium-yttrium=true \
+    -Dopengl=true -Dgallium-wgl-dll-name=viogpu_wgl \
+    -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dglx=disabled -Dgbm=disabled \
+    -Dllvm=disabled -Dzlib=disabled -Dzstd=disabled -Dexpat=disabled -Dvalgrind=disabled \
+    -Dlibunwind=disabled -Dbuild-tests=false -Dvideo-codecs= -Dmicrosoft-clc=disabled \
+    -Dspirv-tools=disabled"
+
 mkdir -p "$out"
-stamp=$(git -C "$mesa" rev-parse HEAD)
+stamp="$(git -C "$mesa" rev-parse HEAD) $options"
 for p in "$root"/icd/patches/*.patch; do
     stamp="$stamp $(sha256sum "$p" | cut -d' ' -f1)"
 done
@@ -54,14 +65,11 @@ endian = 'little'
 EOF
 
 if [ ! -f "$out/meson/build.ninja" ]; then
-    meson setup "$out/meson" "$src" --cross-file "$out/cross.ini" \
-        --buildtype=release -Db_ndebug=true -Dc_std=c11 \
-        -Dplatforms=windows -Dvulkan-drivers=virtio -Dgallium-drivers= -Dgallium-yttrium=true \
-        -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dglx=disabled -Dgbm=disabled \
-        -Dllvm=disabled -Dzlib=disabled -Dzstd=disabled -Dexpat=disabled -Dvalgrind=disabled \
-        -Dlibunwind=disabled -Dbuild-tests=false -Dvideo-codecs= -Dmicrosoft-clc=disabled
+    # shellcheck disable=SC2086 # word splitting intended: the options list
+    meson setup "$out/meson" "$src" --cross-file "$out/cross.ini" $options
 fi
-ninja -C "$out/meson" src/virtio/vulkan/libvulkan_virtio.dll
+ninja -C "$out/meson" src/virtio/vulkan/libvulkan_virtio.dll src/gallium/targets/wgl/viogpu_wgl.dll
 # Installed next to vgd3d12.dll under the name the UMD looks for.
 cp "$out/meson/src/virtio/vulkan/libvulkan_virtio.dll" "$out/vgd_vulkan_virtio.dll"
-echo "icd: $out/vgd_vulkan_virtio.dll"
+cp "$out/meson/src/gallium/targets/wgl/viogpu_wgl.dll" "$out/viogpu_wgl.dll"
+echo "icd: $out/vgd_vulkan_virtio.dll $out/viogpu_wgl.dll"
