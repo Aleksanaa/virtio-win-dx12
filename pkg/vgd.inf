@@ -1,8 +1,8 @@
 ; SPDX-License-Identifier: BSD-3-Clause
 ; Driver package for the VirtIO GPU (Venus): yttrium's viogpu3d.sys as we build it (kmd/), our D3D10/11 and D3D12
-; UMDs, and yttrium's Venus Vulkan and OpenGL (WGL on zink) drivers as we build them (icd/), all in the DriverStore.
-; It replaces yttrium's package; none of yttrium's own binaries are installed (its D3D10 and D3D12 UMDs, EGL/GLES,
-; lavapipe, the resolution service).
+; UMDs, yttrium's Venus Vulkan and OpenGL (WGL on zink) drivers as we build them (icd/), and its resolution service
+; with the helper that applies the host's resolution in each session (svc/), all in the DriverStore. It replaces
+; yttrium's package; none of yttrium's own binaries are installed (its D3D10 and D3D12 UMDs, EGL/GLES, lavapipe).
 ; Based on yttrium's viogpu3d_x64.inx (Copyright 2019-2022 Red Hat, Inc., kmd/yttrium/viogpu/LICENSE).
 ;
 ; vgd-test.ps1 Install stages it with the build outputs, stamps DriverVer, catalogs and test-signs it.
@@ -27,6 +27,8 @@ vgd3d12.dll            = 1
 vgd_vulkan_virtio.dll  = 1
 vgd_vulkan_virtio.json = 1
 viogpu_wgl.dll         = 1
+vgpusrv.exe            = 1
+viogpuap.exe           = 1
 
 [DestinationDirs]
 DefaultDestDir = 13   ; DriverStore
@@ -50,10 +52,15 @@ vgd3d12.dll
 vgd_vulkan_virtio.dll
 vgd_vulkan_virtio.json
 viogpu_wgl.dll
+vgpusrv.exe
+viogpuap.exe
 
 [VGD_Inst.NT.Services]
 ; The service keeps yttrium's name, so installing over its package moves the device to our driver.
 AddService = VioGpu3D, 0x00000002, VGD_Service, VGD_EventLog   ; SPSVCINST_ASSOCSERVICE
+; The guest follows the viewer window: vgpusrv starts viogpuap (next to it) in each session, which waits for the
+; KMD's resolution event and applies the size the host asks for. yttrium's name, so it replaces yttrium's service.
+AddService = vgpusrv,  0x00000800, VGD_Resolution_Service              ; SPSVCINST_STARTSERVICE
 
 [VGD_Inst.NT.HW]
 AddReg = VGD_PCI_MSIX
@@ -63,6 +70,13 @@ ServiceType   = 1   ; SERVICE_KERNEL_DRIVER
 StartType     = 3   ; SERVICE_DEMAND_START
 ErrorControl  = 0   ; SERVICE_ERROR_IGNORE
 ServiceBinary = %13%\viogpu3d.sys
+
+[VGD_Resolution_Service]
+DisplayName   = %Resolution.Desc%
+ServiceType   = 0x10   ; SERVICE_WIN32_OWN_PROCESS
+StartType     = 2      ; SERVICE_AUTO_START
+ErrorControl  = 1      ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\vgpusrv.exe
 
 [VGD_EventLog]
 AddReg = VGD_EventLog.AddReg
@@ -105,6 +119,7 @@ HKR, "Interrupt Management\MessageSignaledInterruptProperties", MessageNumberLim
 Provider      = "vgd project"
 DiskName      = "vgd install disk"
 Device.Desc   = "VirtIO GPU (Venus) with vgd D3D10/11/12"
+Resolution.Desc = "VirtIO GPU resolution service"
 REG_MULTI_SZ  = 0x00010000
 REG_EXPAND_SZ = 0x00020000
 REG_DWORD     = 0x00010001

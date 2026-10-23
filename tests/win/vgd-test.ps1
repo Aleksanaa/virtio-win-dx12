@@ -10,8 +10,8 @@
 #               writes the build installed, uibench's report and the trace (etl and csv) to -Out, which
 #               tests/perf/summarize.py reads
 # Run from an elevated PowerShell:  powershell -ExecutionPolicy Bypass -File .\vgd-test.ps1 Install
-# Run it from the build tree (build\win\tests\win): it finds umd\vgd3d1{1,2}.dll, pkg\ and tests\win\*.exe in build\win,
-# and kmd\signed\viogpu3d.sys and icd\{vgd_vulkan_virtio,viogpu_wgl}.dll in build. Needs test signing on
+# Run it from the build tree (build\win\tests\win): it finds umd\vgd3d1{1,2}.dll, svc\*.exe, pkg\ and tests\win\*.exe
+# in build\win, and kmd\signed\viogpu3d.sys and icd\{vgd_vulkan_virtio,viogpu_wgl}.dll in build. Needs test signing on
 # (bcdedit /set testsigning on): Install signs the package with a test certificate of its own, which it creates once
 # and trusts (viogpu3d.sys keeps its own signature, from yttrium's test certificate).
 #
@@ -117,12 +117,6 @@ function Remove-Leftover([string]$path) {
 
 # What yttrium's package and our earlier test installs leave behind once their packages are gone.
 function Remove-YttriumLeftovers {
-    # yttrium's resolution service, whose binary went with its package.
-    if (Get-Service vgpusrv -ErrorAction SilentlyContinue) {
-        Stop-Service vgpusrv -Force -ErrorAction SilentlyContinue
-        & sc.exe delete vgpusrv | Out-Null
-        Write-Host 'Removed the vgpusrv service'
-    }
     # yttrium's user-mode files, which its INF copied to System32 and SysWOW64 (our package has its own build of
     # viogpu_wgl.dll in the DriverStore). Its opengl32.dll is left alone: that name is Windows' own.
     $names = @('viogpu_d3d10.dll', 'yttrium12.dll', 'viogpu_wgl.dll', 'libEGL.dll', 'libGLESv1_CM.dll',
@@ -172,6 +166,8 @@ switch ($Action) {
             'vgd_vulkan_virtio.dll'  = 'icd\vgd_vulkan_virtio.dll'
             'vgd_vulkan_virtio.json' = 'pkg\vgd_vulkan_virtio.json'
             'viogpu_wgl.dll'         = 'icd\viogpu_wgl.dll'
+            'vgpusrv.exe'            = 'svc\vgpusrv.exe'
+            'viogpuap.exe'           = 'svc\viogpuap.exe'
         }
         foreach ($name in $files.Keys) {
             $src = Find-BuildFile $files[$name]
