@@ -2,8 +2,9 @@
 // Shows which driver D3D9 runs on and whether it renders: the adapter identifier and caps, the graphics modules the
 // process loaded (a D3D9 UMD, or d3d9on12.dll on the D3D12 UMD), then a clear and a fixed-function triangle on a
 // HAL device, read back and checked.
-//   d3d9probe [--9on12] [output file]
+//   d3d9probe [--9on12] [--present] [output file]
 // --9on12 opts in to D3D9On12 through Direct3DCreate9On12Ex, as an app can, whatever the adapter's D3D9 UMD is.
+// --present shows the window and presents the frame for a second (60 presents), which must all succeed.
 #include <windows.h>
 #include <d3d9.h>
 #include <psapi.h>
@@ -90,15 +91,19 @@ bool pixel(IDirect3DDevice9Ex* dev, UINT x, UINT y, D3DCOLOR* value)
 
 int main(int argc, char** argv)
 {
-    bool on12 = false;
+    bool on12 = false, show = false;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--9on12")) {
             on12 = true;
+        } else if (!std::strcmp(argv[i], "--present")) {
+            show = true;
         } else if (!(out = std::fopen(argv[i], "w"))) {
             std::fprintf(stderr, "cannot write %s\n", argv[i]);
             return 1;
         }
     }
+    // Unbuffered, so a crash keeps everything written up to it.
+    std::setvbuf(out, nullptr, _IONBF, 0);
     modules("at start");
 
     IDirect3D9Ex* d3d = nullptr;
@@ -128,7 +133,11 @@ int main(int argc, char** argv)
     modules("after the caps query");
 
     const UINT size = 64;
-    HWND wnd = CreateWindowExA(0, "STATIC", "d3d9probe", WS_POPUP, 0, 0, size, size, nullptr, nullptr, nullptr, nullptr);
+    const int left = 200, top = 200;
+    HWND wnd = CreateWindowExA(WS_EX_TOPMOST, "STATIC", "d3d9probe", WS_POPUP, left, top, size, size, nullptr, nullptr,
+                               nullptr, nullptr);
+    if (show)
+        ShowWindow(wnd, SW_SHOWNOACTIVATE);
     D3DPRESENT_PARAMETERS pp{};
     pp.BackBufferWidth = size;
     pp.BackBufferHeight = size;
@@ -177,7 +186,25 @@ int main(int argc, char** argv)
                  middle, red & 0xffffff);
     hr = dev->PresentEx(nullptr, nullptr, nullptr, nullptr, 0);
     std::fprintf(out, "PresentEx: 0x%08lx\n", hr);
-    const bool pass = read && corner == (clear & 0xffffff) && middle == (red & 0xffffff);
+    bool pass = read && corner == (clear & 0xffffff) && middle == (red & 0xffffff);
+    if (show) {
+        HRESULT last = S_OK;
+        for (int frame = 0; frame < 60 && SUCCEEDED(last); frame++) {
+            dev->Clear(0, nullptr, D3DCLEAR_TARGET, clear, 1.0f, 0);
+            dev->BeginScene();
+            dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, tri, sizeof(Vertex));
+            dev->EndScene();
+            last = dev->PresentEx(nullptr, nullptr, nullptr, nullptr, 0);
+            MSG msg;
+            while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE))
+                DispatchMessageA(&msg);
+            Sleep(16);
+        }
+        // Device state after the presents: a failed kernel present removes the device.
+        const HRESULT state = dev->CheckDeviceState(wnd);
+        std::fprintf(out, "60 presents: last 0x%08lx, device state 0x%08lx\n", last, state);
+        pass = pass && SUCCEEDED(last) && SUCCEEDED(state);
+    }
     std::fprintf(out, "result: %s\n", pass ? "PASS" : "FAIL");
     dev->Release();
     d3d->Release();
