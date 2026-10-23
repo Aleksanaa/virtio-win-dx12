@@ -1,0 +1,327 @@
+From: vgd3d12
+Subject: venus: signal D3DKMT fences in order with a queue
+
+A D3D driver over Venus presents allocations whose rendering is on a host queue that Windows' scheduler
+cannot see, so it had to wait on the CPU for the GPU before every present. Give it a monitored fence
+the GPU signals instead, through private entry points of vkGetDeviceProcAddr:
+
+  vkOpenFenceVGD(device, nt_handle, &fence)   opens a shared monitored fence on our device
+  vkCloseFenceVGD(device, fence)
+  vkQueueSignalFenceVGD(queue, fence, value)  signals it once the queue's work so far completes
+
+The signal is a timeline packet (VIOGPU_CMD_SUBMIT_TIMELINE, yttrium's kernel driver) on the queue's
+ring_idx, whose host fence retires after the queue's earlier work, carrying a vkWaitRingSeqnoMESA for
+the queue's last ring submission so the host has executed it first; the GPU signal is queued behind
+the packet on our context. The kernel driver retires DMA buffers in order, so later packets on the
+context cannot overtake it.
+
+--- a/src/virtio/vulkan/vn_device.c
++++ b/src/virtio/vulkan/vn_device.c
+@@ -677,6 +677,14 @@
+ vn_GetDeviceProcAddr(VkDevice device, const char *pName)
+ {
+    struct vn_device *dev = vn_device_from_handle(device);
++#ifdef VK_USE_PLATFORM_WIN32_KHR
++   if (!strcmp(pName, "vkOpenFenceVGD"))
++      return (PFN_vkVoidFunction)vn_OpenFenceVGD;
++   if (!strcmp(pName, "vkCloseFenceVGD"))
++      return (PFN_vkVoidFunction)vn_CloseFenceVGD;
++   if (!strcmp(pName, "vkQueueSignalFenceVGD"))
++      return (PFN_vkVoidFunction)vn_QueueSignalFenceVGD;
++#endif
+    return vk_device_get_proc_addr(&dev->base.vk, pName);
+ }
+ 
+--- a/src/virtio/vulkan/vn_queue.c
++++ b/src/virtio/vulkan/vn_queue.c
+@@ -23,6 +23,9 @@
+ #include "vn_physical_device.h"
+ #include "vn_query_pool.h"
+ #include "vn_renderer.h"
++#ifdef VK_USE_PLATFORM_WIN32_KHR
++#include "vn_renderer_d3dkmt.h"
++#endif
+ #include "vn_wsi.h"
+ 
+ /* queue commands */
+@@ -1054,6 +1057,8 @@
+       }
+       submit->external_payload.ring_seqno_valid = true;
+       submit->external_payload.ring_seqno = ring_submit.ring_seqno;
++      queue->last_ring_seqno_valid = true;
++      queue->last_ring_seqno = ring_submit.ring_seqno;
+    }
+ 
+    /* If external fence, track the submission's ring_idx to facilitate
+@@ -2710,3 +2715,50 @@
+ 
+    return VK_SUCCESS;
+ }
++
++#ifdef VK_USE_PLATFORM_WIN32_KHR
++/* Private entry points (vkGetDeviceProcAddr) for a D3D driver over this one:
++ * a D3DKMT monitored fence that the GPU signals once the work submitted to a
++ * queue so far completes. Windows' scheduler can hold a present behind it,
++ * which the host queue's completion is otherwise invisible to.
++ */
++VKAPI_ATTR VkResult VKAPI_CALL
++vn_OpenFenceVGD(VkDevice device, HANDLE nt_handle, uint32_t *pFence)
++{
++   struct vn_device *dev = vn_device_from_handle(device);
++   return vn_renderer_d3dkmt_open_fence(dev->renderer, nt_handle, pFence);
++}
++
++VKAPI_ATTR void VKAPI_CALL
++vn_CloseFenceVGD(VkDevice device, uint32_t fence)
++{
++   struct vn_device *dev = vn_device_from_handle(device);
++   vn_renderer_d3dkmt_close_fence(dev->renderer, fence);
++}
++
++/* VK_NOT_READY if nothing was submitted to the queue yet. */
++VKAPI_ATTR VkResult VKAPI_CALL
++vn_QueueSignalFenceVGD(VkQueue _queue, uint32_t fence, uint64_t value)
++{
++   struct vn_queue *queue = vn_queue_from_handle(_queue);
++   struct vn_device *dev = vn_device_from_vk(queue->base.vk.base.device);
++
++   simple_mtx_lock(&queue->submission_mutex);
++   VkResult result = VK_NOT_READY;
++   if (queue->last_ring_seqno_valid) {
++      /* The host executes the submissions from the ring; the packet must
++       * reach the queue after them.
++       */
++      uint32_t local_data[8];
++      struct vn_cs_encoder enc =
++         VN_CS_ENCODER_INITIALIZER_LOCAL(local_data, sizeof(local_data));
++      vn_encode_vkWaitRingSeqnoMESA(&enc, 0, vn_ring_get_id(dev->primary_ring),
++                                    queue->last_ring_seqno);
++      result = vn_renderer_d3dkmt_signal_fence(
++         dev->renderer, queue->ring_idx, local_data,
++         vn_cs_encoder_get_len(&enc), fence, value);
++   }
++   simple_mtx_unlock(&queue->submission_mutex);
++   return result;
++}
++#endif
+--- a/src/virtio/vulkan/vn_queue.h
++++ b/src/virtio/vulkan/vn_queue.h
+@@ -25,6 +25,10 @@
+    /* only used if renderer supports multiple timelines */
+    uint32_t ring_idx;
+ 
++   /* the ring seqno of the last submission, for vkQueueSignalFenceVGD */
++   bool last_ring_seqno_valid;
++   uint32_t last_ring_seqno;
++
+    /* wait fence used for vn_QueueWaitIdle */
+    VkFence wait_fence;
+ 
+@@ -213,4 +217,13 @@
+                                VkEvent,
+                                VK_OBJECT_TYPE_EVENT)
+ 
++#ifdef VK_USE_PLATFORM_WIN32_KHR
++VKAPI_ATTR VkResult VKAPI_CALL
++vn_OpenFenceVGD(VkDevice device, HANDLE nt_handle, uint32_t *pFence);
++VKAPI_ATTR void VKAPI_CALL
++vn_CloseFenceVGD(VkDevice device, uint32_t fence);
++VKAPI_ATTR VkResult VKAPI_CALL
++vn_QueueSignalFenceVGD(VkQueue queue, uint32_t fence, uint64_t value);
++#endif
++
+ #endif /* VN_QUEUE_H */
+--- a/src/virtio/vulkan/vn_renderer_d3dkmt.c
++++ b/src/virtio/vulkan/vn_renderer_d3dkmt.c
+@@ -134,6 +134,8 @@
+    struct util_sparse_array bo_array;
+ 
+    mtx_t import_mutex;
++   /* the submit context's command buffer, for vn_renderer_d3dkmt_signal_fence */
++   mtx_t render_mutex;
+ 
+    struct vn_renderer_shmem_cache shmem_cache;
+ 
+@@ -154,6 +156,8 @@
+    PFND3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMCPU pfnSignalSynchronizationObjectFromCpu;
+    PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECT2 pfnWaitForSynchronizationObject2;
+    PFND3DKMT_SIGNALSYNCHRONIZATIONOBJECT2 pfnSignalSynchronizationObject2;
++   PFND3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU pfnSignalSynchronizationObjectFromGpu;
++   PFND3DKMT_OPENSYNCOBJECTFROMNTHANDLE2 pfnOpenSyncObjectFromNtHandle2;
+    PFND3DKMT_LOCK pfnLock;
+    PFND3DKMT_UNLOCK pfnUnlock;
+    PFND3DKMT_DESTROYALLOCATION pfnDestroyAllocation;
+@@ -1031,6 +1035,12 @@
+    gpu->pfnSignalSynchronizationObject2 =
+       (PFND3DKMT_SIGNALSYNCHRONIZATIONOBJECT2)GetProcAddress(
+          gpu->gdi32, "D3DKMTSignalSynchronizationObject2");
++   gpu->pfnSignalSynchronizationObjectFromGpu =
++      (PFND3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU)GetProcAddress(
++         gpu->gdi32, "D3DKMTSignalSynchronizationObjectFromGpu");
++   gpu->pfnOpenSyncObjectFromNtHandle2 =
++      (PFND3DKMT_OPENSYNCOBJECTFROMNTHANDLE2)GetProcAddress(
++         gpu->gdi32, "D3DKMTOpenSyncObjectFromNtHandle2");
+    gpu->pfnLock = (PFND3DKMT_LOCK)GetProcAddress(gpu->gdi32, "D3DKMTLock");
+    gpu->pfnUnlock =
+       (PFND3DKMT_UNLOCK)GetProcAddress(gpu->gdi32, "D3DKMTUnlock");
+@@ -1097,6 +1107,8 @@
+    gpu->pfnSignalSynchronizationObjectFromCpu = NULL;
+    gpu->pfnWaitForSynchronizationObject2 = NULL;
+    gpu->pfnSignalSynchronizationObject2 = NULL;
++   gpu->pfnSignalSynchronizationObjectFromGpu = NULL;
++   gpu->pfnOpenSyncObjectFromNtHandle2 = NULL;
+    gpu->pfnLock = NULL;
+    gpu->pfnUnlock = NULL;
+    gpu->pfnDestroyAllocation = NULL;
+@@ -2041,6 +2053,7 @@
+    virtgpu_unload_d3dkmt(gpu);
+ 
+    mtx_destroy(&gpu->import_mutex);
++   mtx_destroy(&gpu->render_mutex);
+ 
+    util_sparse_array_finish(&gpu->shmem_array);
+    util_sparse_array_finish(&gpu->bo_array);
+@@ -2258,6 +2271,7 @@
+    util_sparse_array_init(&gpu->bo_array, sizeof(struct virtgpu_bo), 1024);
+ 
+    mtx_init(&gpu->import_mutex, mtx_plain);
++   mtx_init(&gpu->render_mutex, mtx_plain);
+ 
+    VkResult result = virtgpu_open(gpu);
+    if (result == VK_SUCCESS)
+@@ -2341,3 +2355,103 @@
+ 
+    return VK_SUCCESS;
+ }
++
++/* GPU-ordered signals of D3DKMT monitored fences (vn_queue.c's
++ * vkQueueSignalFenceVGD).
++ *
++ * A timeline packet on ring_idx completes when the work submitted to the host
++ * queue bound to it before the packet does; the Windows scheduler signals the
++ * fence once the packet completes, as it is queued behind it on our context.
++ */
++VkResult
++vn_renderer_d3dkmt_open_fence(struct vn_renderer *renderer, HANDLE nt_handle,
++                              uint32_t *out_fence)
++{
++   struct virtgpu *gpu = (struct virtgpu *)renderer;
++   if (!gpu->pfnOpenSyncObjectFromNtHandle2 ||
++       !gpu->pfnSignalSynchronizationObjectFromGpu)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2 open = {0};
++   open.hNtHandle = nt_handle;
++   open.hDevice = gpu->hDevice;
++   NTSTATUS status = gpu->pfnOpenSyncObjectFromNtHandle2(&open);
++   if (!NT_SUCCESS(status)) {
++      mesa_logw("venus: D3DKMTOpenSyncObjectFromNtHandle2(%p) failed "
++                "status=0x%lx", nt_handle, (unsigned long)status);
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   }
++   *out_fence = (uint32_t)open.hSyncObject;
++   return VK_SUCCESS;
++}
++
++void
++vn_renderer_d3dkmt_close_fence(struct vn_renderer *renderer, uint32_t fence)
++{
++   virtgpu_syncobj_destroy((struct virtgpu *)renderer, fence);
++}
++
++VkResult
++vn_renderer_d3dkmt_signal_fence(struct vn_renderer *renderer,
++                                uint32_t ring_idx, const void *cs_data,
++                                size_t cs_size, uint32_t fence,
++                                uint64_t value)
++{
++   struct virtgpu *gpu = (struct virtgpu *)renderer;
++   /* The kernel driver takes timeline packets with protocol bytes only. */
++   if (!ring_idx || !cs_size)
++      return VK_ERROR_FEATURE_NOT_PRESENT;
++
++   mtx_lock(&gpu->render_mutex);
++   VkResult result = VK_ERROR_DEVICE_LOST;
++   const size_t cmd_size = sizeof(VIOGPU_COMMAND_HDR) +
++                           sizeof(VIOGPU_TIMELINE_SUBMIT) + cs_size;
++   if (!virtgpu_submit_ctx_init(gpu) || d3dkmt_submit_resize(gpu, cmd_size, 0))
++      goto out;
++
++   VIOGPU_COMMAND_HDR *hdr = (VIOGPU_COMMAND_HDR *)gpu->command_buffer;
++   hdr->type = VIOGPU_CMD_SUBMIT_TIMELINE;
++   hdr->size = (UINT)(sizeof(VIOGPU_TIMELINE_SUBMIT) + cs_size);
++   VIOGPU_TIMELINE_SUBMIT *timeline = (VIOGPU_TIMELINE_SUBMIT *)(hdr + 1);
++   timeline->RingIndex = ring_idx;
++   timeline->Reserved = 0;
++   memcpy(timeline + 1, cs_data, cs_size);
++
++   D3DKMT_RENDER render = {0};
++   render.hContext = gpu->hContext;
++   render.CommandLength = (UINT)cmd_size;
++   NTSTATUS status = gpu->pfnRender(&render);
++   if (!NT_SUCCESS(status)) {
++      vn_log(gpu->instance, "failed to submit timeline packet: %lx", status);
++      goto out;
++   }
++   if (render.pNewCommandBuffer)
++      gpu->command_buffer = render.pNewCommandBuffer;
++   if (render.NewCommandBufferSize)
++      gpu->command_buffer_size = render.NewCommandBufferSize;
++   if (render.pNewAllocationList)
++      gpu->allocation_list = render.pNewAllocationList;
++   if (render.NewAllocationListSize)
++      gpu->allocation_list_size = render.NewAllocationListSize;
++   if (render.pNewPatchLocationList)
++      gpu->patch_location_list = render.pNewPatchLocationList;
++   if (render.NewPatchLocationListSize)
++      gpu->patch_location_list_size = render.NewPatchLocationListSize;
++
++   const D3DKMT_HANDLE handle = (D3DKMT_HANDLE)fence;
++   D3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU signal = {0};
++   signal.hContext = gpu->hContext;
++   signal.ObjectCount = 1;
++   signal.ObjectHandleArray = &handle;
++   signal.MonitoredFenceValueArray = &value;
++   status = gpu->pfnSignalSynchronizationObjectFromGpu(&signal);
++   if (!NT_SUCCESS(status)) {
++      vn_log(gpu->instance, "failed to signal fence %u from GPU: %lx", fence,
++             status);
++      goto out;
++   }
++   result = VK_SUCCESS;
++out:
++   mtx_unlock(&gpu->render_mutex);
++   return result;
++}
+--- a/src/virtio/vulkan/vn_renderer_d3dkmt.h
++++ b/src/virtio/vulkan/vn_renderer_d3dkmt.h
+@@ -39,6 +39,29 @@
+ #define VIRTGPU_BLOB_FLAG_USE_SHAREABLE    0x0002
+ #define VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE 0x0004
+ 
++#include <stddef.h>
++#include <stdint.h>
++#include <windows.h>
++#include <vulkan/vulkan_core.h>
++
++struct vn_renderer;
++
++/* D3DKMT monitored fences that the GPU signals in order with a host queue:
++ * opened from an NT handle on our device, and signalled to `value` once the
++ * work on the queue of ring_idx completes, after the host has executed
++ * cs_data (protocol bytes: a vkWaitRingSeqnoMESA ordering it after the ring).
++ */
++VkResult
++vn_renderer_d3dkmt_open_fence(struct vn_renderer *renderer, HANDLE nt_handle,
++                              uint32_t *out_fence);
++void
++vn_renderer_d3dkmt_close_fence(struct vn_renderer *renderer, uint32_t fence);
++VkResult
++vn_renderer_d3dkmt_signal_fence(struct vn_renderer *renderer,
++                                uint32_t ring_idx, const void *cs_data,
++                                size_t cs_size, uint32_t fence,
++                                uint64_t value);
++
+ #if defined(__cplusplus)
+ }
+ #endif

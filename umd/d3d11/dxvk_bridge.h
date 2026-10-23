@@ -36,6 +36,10 @@ HRESULT texture_from_image(ID3D11Device5* device, const D3D11_TEXTURE2D_DESC1& d
 HRESULT image_info(ID3D11Device5* device, const D3D11_TEXTURE2D_DESC1& desc, VkFormat* format,
                    std::vector<VkFormat>* view_formats, VkImageUsageFlags* usage);
 
+// Flushes `device`'s immediate context and waits until DXVK has handed all its work to Vulkan (not for the GPU), then
+// calls `f` with DXVK's graphics queue, to which DXVK submits nothing else meanwhile.
+HRESULT with_submitted_queue(ID3D11Device5* device, HRESULT (*f)(VkQueue queue, void* data), void* data);
+
 // The DXBC checksum of a container (dxbc-spirv's): DXVK keys its shaders on it.
 void dxbc_checksum(const void* dxbc, size_t size, uint32_t checksum[4]);
 

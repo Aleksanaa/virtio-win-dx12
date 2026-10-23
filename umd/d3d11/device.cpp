@@ -16,6 +16,7 @@ void APIENTRY destroy_device(D3D10DDI_HDEVICE h)
         d->ctx->ClearState();
         d->wait_idle();
     }
+    destroy_render_fence(*d);
     if (d->present_context) {
         D3DDDICB_DESTROYCONTEXT dc{d->present_context};
         if (FAILED(d->kt.pfnDestroyContextCb(d->rt_device.handle, &dc)))

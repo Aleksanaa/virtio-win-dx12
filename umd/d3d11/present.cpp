@@ -9,7 +9,8 @@
 //   3. the runtime allocation is created as an alias of it (viogpu::AllocationAlias, our KMD patch), naming the
 //      same host resource.
 // Opening one is the reverse: an NT handle of the opened resource goes to our ICD's dma-buf import, under a linear
-// image of the same size and format. Present hands the allocations to the runtime once the GPU is done with them.
+// image of the same size and format. Present hands the allocations to the runtime with the present context waiting
+// for our rendering on them: a fence the GPU signals through our ICD (icd/patches/0006), else a wait here.
 #include "device.h"
 #include "surface_format.h"
 
@@ -231,6 +232,124 @@ void destroy_shared_surface(Device& d, ResourceObject& r)
 
 namespace {
 
+// Our ICD's entry points (icd/patches/0006), through vkGetDeviceProcAddr.
+using PFN_vkOpenFenceVGD = VkResult(VKAPI_PTR*)(VkDevice device, HANDLE nt_handle, uint32_t* fence);
+using PFN_vkCloseFenceVGD = void(VKAPI_PTR*)(VkDevice device, uint32_t fence);
+using PFN_vkQueueSignalFenceVGD = VkResult(VKAPI_PTR*)(VkQueue queue, uint32_t fence, uint64_t value);
+
+// Device::render_fence, on the first present: a shared monitored fence of the runtime's, which our ICD opens on its
+// own kernel device from an NT handle. Not set up (logged) if the ICD or the KMD cannot.
+void init_render_fence(Device& d)
+{
+    auto& f = d.render_fence;
+    f.tried = true;
+    char off[4] = {};
+    if (setting("VGD_PRESENT_GPU_WAIT", off, sizeof(off)) && off[0] == '0') {
+        VGD_TRACE("Present: VGD_PRESENT_GPU_WAIT=0: presents wait for the GPU here");
+        return;
+    }
+    const auto& vk = d.vulkan.vk;
+    auto open = reinterpret_cast<PFN_vkOpenFenceVGD>(vk.vkGetDeviceProcAddr(d.vulkan.device, "vkOpenFenceVGD"));
+    f.close = vk.vkGetDeviceProcAddr(d.vulkan.device, "vkCloseFenceVGD");
+    f.signal = vk.vkGetDeviceProcAddr(d.vulkan.device, "vkQueueSignalFenceVGD");
+    KmtDevice* kmt = d.kernel();
+    if (!open || !f.close || !f.signal || !kmt || !d.kt.pfnCreateSynchronizationObject2Cb ||
+        !d.kt.pfnWaitForSynchronizationObjectFromGpuCb) {
+        VGD_WARN("Present: no GPU fence (ICD entry points %d, kernel device %d): presents wait for the GPU here",
+                 open && f.close && f.signal, kmt != nullptr);
+        return;
+    }
+    D3DDDICB_CREATESYNCHRONIZATIONOBJECT2 c{};
+    c.Info.Type = D3DDDI_MONITORED_FENCE;
+    c.Info.Flags.Shared = 1;
+    c.Info.Flags.NtSecuritySharing = 1;
+    HRESULT hr = d.kt.pfnCreateSynchronizationObject2Cb(d.rt_device.handle, &c);
+    if (FAILED(hr)) {
+        VGD_WARN("Present: CreateSynchronizationObject2Cb (shared monitored fence) failed: 0x%08lx", hr);
+        return;
+    }
+    HANDLE nt = nullptr;
+    uint32_t icd = 0;
+    hr = kmt->share(c.hSyncObject, D3DDDI_SYNC_OBJECT_ALL_ACCESS, &nt);
+    if (SUCCEEDED(hr)) {
+        const VkResult r = open(d.vulkan.device, nt, &icd);
+        CloseHandle(nt);
+        if (r != VK_SUCCESS) {
+            VGD_WARN("Present: vkOpenFenceVGD failed: %d", r);
+            hr = E_FAIL;
+        }
+    }
+    if (FAILED(hr)) {
+        D3DDDICB_DESTROYSYNCHRONIZATIONOBJECT dc{c.hSyncObject};
+        if (FAILED(d.kt.pfnDestroySynchronizationObjectCb(d.rt_device.handle, &dc)))
+            VGD_WARN("Present: DestroySynchronizationObjectCb failed");
+        return;
+    }
+    f.sync = c.hSyncObject;
+    f.icd = icd;
+    VGD_TRACE("Present: GPU fence 0x%x (ICD 0x%x): presents wait for our rendering on the GPU", f.sync, f.icd);
+}
+
+struct SignalArgs {
+    PFN_vkQueueSignalFenceVGD signal;
+    uint32_t fence;
+    uint64_t value;
+};
+
+HRESULT signal_on_queue(VkQueue queue, void* data)
+{
+    const auto* a = static_cast<const SignalArgs*>(data);
+    const VkResult r = a->signal(queue, a->fence, a->value);
+    if (r == VK_NOT_READY)
+        return S_FALSE;   // nothing submitted yet
+    return r == VK_SUCCESS ? S_OK : E_FAIL;
+}
+
+// Queues a wait on the present context for all our rendering so far; S_FALSE if there is nothing to wait for, a
+// failure if the fence cannot be used (then the caller waits for the GPU itself).
+HRESULT wait_for_rendering_on_gpu(Device& d)
+{
+    auto& f = d.render_fence;
+    if (!f.tried)
+        init_render_fence(d);
+    if (!f.sync)
+        return E_NOTIMPL;
+    SignalArgs a{reinterpret_cast<PFN_vkQueueSignalFenceVGD>(f.signal), f.icd, f.value + 1};
+    HRESULT hr = dxvk::with_submitted_queue(d.d3d.get(), signal_on_queue, &a);
+    if (hr != S_OK) {
+        if (FAILED(hr))
+            VGD_WARN("Present: vkQueueSignalFenceVGD failed: 0x%08lx", hr);
+        return hr;
+    }
+    f.value = a.value;
+    D3DDDICB_WAITFORSYNCHRONIZATIONOBJECTFROMGPU w{};
+    w.hContext = d.present_context;
+    w.ObjectCount = 1;
+    w.ObjectHandleArray = &f.sync;
+    w.MonitoredFenceValueArray = &f.value;
+    hr = d.kt.pfnWaitForSynchronizationObjectFromGpuCb(d.rt_device.handle, &w);
+    if (FAILED(hr))
+        VGD_WARN("Present: WaitForSynchronizationObjectFromGpuCb(%llu) failed: 0x%08lx",
+                 static_cast<unsigned long long>(f.value), hr);
+    return hr;
+}
+
+} // namespace
+
+void destroy_render_fence(Device& d)
+{
+    auto& f = d.render_fence;
+    if (!f.sync)
+        return;
+    reinterpret_cast<PFN_vkCloseFenceVGD>(f.close)(d.vulkan.device, f.icd);
+    D3DDDICB_DESTROYSYNCHRONIZATIONOBJECT dc{f.sync};
+    if (FAILED(d.kt.pfnDestroySynchronizationObjectCb(d.rt_device.handle, &dc)))
+        VGD_WARN("DestroyDevice: DestroySynchronizationObjectCb failed");
+    f = {};
+}
+
+namespace {
+
 // --- Present -------------------------------------------------------------------------------------------------
 
 HRESULT present_allocations(Device& d, D3DKMT_HANDLE src, D3DKMT_HANDLE dst, void* dxgi_context)
@@ -248,8 +367,11 @@ HRESULT present_allocations(Device& d, D3DKMT_HANDLE src, D3DKMT_HANDLE dst, voi
         }
         d.present_context = cc.hContext;
     }
-    // The runtime presents the allocations as they are: our rendering on them must be complete.
-    HRESULT hr = d.wait_idle();
+    // The runtime presents the allocations as they are: our rendering on them must be complete. The present
+    // context waits for it on the GPU where it can, else we wait here.
+    HRESULT hr = wait_for_rendering_on_gpu(d);
+    if (FAILED(hr))
+        hr = d.wait_idle();
     if (FAILED(hr))
         return hr;
     DXGIDDICB_PRESENT p{};

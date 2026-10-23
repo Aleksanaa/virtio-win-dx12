@@ -22,7 +22,9 @@ public:
     HRESULT open_shared(HANDLE nt, D3DKMT_HANDLE* resource, D3DKMT_HANDLE* allocation);
     void close(D3DKMT_HANDLE resource);
     // An NT handle of the runtime resource `resource` (a kernel resource handle of this process); the caller owns it.
-    HRESULT share(D3DKMT_HANDLE resource, HANDLE* nt);
+    HRESULT share(D3DKMT_HANDLE resource, HANDLE* nt) { return share(resource, SHARED_ALLOCATION_ALL_ACCESS, nt); }
+    // Of any shareable kernel object of this process (resources, sync objects), with `access`.
+    HRESULT share(D3DKMT_HANDLE object, DWORD access, HANDLE* nt);
     // The host (virtio-gpu) resource id that `allocation`, an allocation of this device, names; 0 if the KMD says none.
     UINT resource_id(D3DKMT_HANDLE allocation);
 

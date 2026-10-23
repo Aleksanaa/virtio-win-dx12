@@ -130,14 +130,14 @@ void KmtDevice::close(D3DKMT_HANDLE resource)
         VGD_WARN("kmt: closing opened resource 0x%x failed: 0x%08lx", resource, s);
 }
 
-HRESULT KmtDevice::share(D3DKMT_HANDLE resource, HANDLE* nt)
+HRESULT KmtDevice::share(D3DKMT_HANDLE object, DWORD access, HANDLE* nt)
 {
     OBJECT_ATTRIBUTES attrs{};
     attrs.Length = sizeof(attrs);
     *nt = nullptr;
-    NTSTATUS s = share_objects_(1, &resource, &attrs, SHARED_ALLOCATION_ALL_ACCESS, nt);
+    NTSTATUS s = share_objects_(1, &object, &attrs, access, nt);
     if (s < 0 || !*nt) {
-        VGD_WARN("kmt: D3DKMTShareObjects(0x%x) failed: 0x%08lx", resource, s);
+        VGD_WARN("kmt: D3DKMTShareObjects(0x%x) failed: 0x%08lx", object, s);
         return E_FAIL;
     }
     return S_OK;

@@ -33,6 +33,15 @@ struct Device {
     std::unique_ptr<KmtDevice> kmt;                   // created on first use (kmt.h)
     HANDLE present_context = nullptr;                 // a kernel context of the runtime's, for presents
     HANDLE idle_event = nullptr;                      // set by DXVK when a flush completes (wait_idle)
+    // A monitored fence of the runtime's that the GPU signals when our rendering is done, through our ICD
+    // (icd/patches/0006): presents wait for it on the present context rather than for the GPU here.
+    struct RenderFence {
+        bool tried = false;           // set up once; `sync` stays 0 if the ICD or the KMD cannot
+        D3DKMT_HANDLE sync = 0;       // the runtime's
+        uint32_t icd = 0;             // the same fence opened on our ICD's device
+        uint64_t value = 0;           // last signalled
+        PFN_vkVoidFunction close = nullptr, signal = nullptr;   // vkCloseFenceVGD, vkQueueSignalFenceVGD
+    } render_fence;
     // Output-merger bindings, rebound when RotateResourceIdentities swaps what they view.
     std::vector<ID3D11RenderTargetView*> om_rtvs;
     ID3D11DepthStencilView* om_dsv = nullptr;
@@ -166,6 +175,8 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& args,
                               ResourceObject& out);
 HRESULT open_shared_surface(Device& d, const D3D10DDIARG_OPENRESOURCE& args, ResourceObject& out);
 void destroy_shared_surface(Device& d, ResourceObject& r);
+// Releases the fence presents wait on (Device::render_fence), once the GPU is idle.
+void destroy_render_fence(Device& d);
 
 // Format answers (format.cpp).
 void APIENTRY check_format_support(D3D10DDI_HDEVICE h, DXGI_FORMAT format, UINT* caps);

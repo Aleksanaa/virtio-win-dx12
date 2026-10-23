@@ -136,6 +136,22 @@ HRESULT texture_from_image(ID3D11Device5* device, const D3D11_TEXTURE2D_DESC1& d
     return interop->CreateTexture2DFromVkImage(&desc, image, out);
 }
 
+HRESULT with_submitted_queue(ID3D11Device5* device, HRESULT (*f)(VkQueue queue, void* data), void* data)
+{
+    Com<IDXGIVkInteropDevice1> interop;
+    HRESULT hr = device->QueryInterface(__uuidof(IDXGIVkInteropDevice1), reinterpret_cast<void**>(&interop));
+    if (FAILED(hr))
+        return hr;
+    // Waits for DXVK's CS thread; locking the queue then waits for its submission thread.
+    interop->FlushRenderingCommands();
+    interop->LockSubmissionQueue();
+    VkQueue queue = VK_NULL_HANDLE;
+    interop->GetSubmissionQueue(&queue, nullptr);
+    hr = f(queue, data);
+    interop->ReleaseSubmissionQueue();
+    return hr;
+}
+
 HRESULT image_info(ID3D11Device5* device, const D3D11_TEXTURE2D_DESC1& desc, VkFormat* format,
                    std::vector<VkFormat>* view_formats, VkImageUsageFlags* usage)
 {
