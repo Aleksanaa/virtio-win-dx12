@@ -342,6 +342,9 @@ class CtrlQueue : public VioGpuQueue
                   void *complete_ctx = NULL);
     UINT SubmitNop(void (*complete_cb)(void *), void *complete_ctx, BOOLEAN fenced = FALSE);
     void TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT height, UINT x, UINT y);
+    // TransferToHost2D of the top left width x height, returning once the host has done it: for data the host then
+    // reads on behalf of another queue (the cursor image, which UPDATE_CURSOR on the cursor queue reads).
+    NTSTATUS TransferToHost2DSync(UINT res_id, UINT width, UINT height);
     void TransferToHost3D(UINT res_id, GPU_BOX *box);
 
     void AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents);

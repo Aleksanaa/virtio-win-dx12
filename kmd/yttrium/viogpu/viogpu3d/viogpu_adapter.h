@@ -105,8 +105,20 @@ class VioGpuAdapter : IVioGpuPCI, public IVioGpuQueueSync
     PKEVENT m_ResolutionEvent;
     HANDLE m_ResolutionEventHandle;
 
+    // The hardware cursor: a POINTER_SIZE square resource the host shows over the scanout (virtio-gpu's cursor
+    // queue). dxgkrnl never runs SetPointerShape and SetPointerPosition at once, so this needs no lock. It shows
+    // while Windows wants the pointer visible and the shape is ours (not before the first one, nor after one is
+    // refused, which Windows then draws itself). Hidden, the resource is detached from the cursor; showing it again
+    // re-attaches it with the last position and hot spot.
     VioGpuObj *m_pCursorBuf;
     VioGpuMemSegment m_CursorSegment;
+    BOOLEAN m_bCursorShape;
+    BOOLEAN m_bCursorVisible;
+    BOOLEAN m_bCursorHidden;
+    INT m_CursorX;
+    INT m_CursorY;
+    UINT m_CursorHotX;
+    UINT m_CursorHotY;
 
 #if VIOGPU_WDDM2
     /* Contiguous system memory carved out to back the page table segment.
@@ -213,6 +225,8 @@ class VioGpuAdapter : IVioGpuPCI, public IVioGpuQueueSync
     VOID DpcRoutine(VOID);
     NTSTATUS QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQueryAdapterInfo);
     NTSTATUS Escape(_In_ CONST DXGKARG_ESCAPE *pEscape);
+    NTSTATUS SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape);
+    NTSTATUS SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION *pSetPointerPosition);
     NTSTATUS QueryInterface(_In_ CONST PQUERY_INTERFACE QueryInterface);
     NTSTATUS StopDeviceAndReleasePostDisplayOwnership(_In_ D3DDDI_VIDEO_PRESENT_TARGET_ID TargetId,
                                                       _Out_ DXGK_DISPLAY_INFORMATION *pDisplayInfo);
@@ -284,6 +298,8 @@ class VioGpuAdapter : IVioGpuPCI, public IVioGpuQueueSync
 
     NTSTATUS HWInit(PCM_RESOURCE_LIST pResList);
     NTSTATUS HWClose(void);
+    BOOLEAN UploadCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape);
+    void DestroyCursor(void);
 #if VIOGPU_WDDM2
     NTSTATUS AllocatePageTableSegment(void);
     void FreePageTableSegment(void);

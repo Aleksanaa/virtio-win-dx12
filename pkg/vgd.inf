@@ -73,7 +73,7 @@ HKR,, TypesSupported,   %REG_DWORD%, 7
 
 [VGD_DeviceSettings]
 ; Read by the KMD (viogpu_adapter.cpp), with yttrium's values.
-HKR,, HWCursor,          %REG_DWORD%, 0
+HKR,, HWCursor,          %REG_DWORD%, 1
 HKR,, FlexResolution,    %REG_DWORD%, 1
 HKR,, UsePhysicalMemory, %REG_DWORD%, 0
 ; Slots: D3D9, D3D10, D3D11, D3D12. vgd3d11.dll serves D3D10 and D3D11 (DWM too), vgd3d12.dll D3D12. D3D9 runs on

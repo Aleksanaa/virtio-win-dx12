@@ -61,6 +61,10 @@ class VioGpuVidPN
     UpdateActiveVidPnPresentPath(_In_ CONST DXGKARG_UPDATEACTIVEVIDPNPRESENTPATH *CONST pUpdateActiveVidPnPresentPath);
 
     NTSTATUS SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode);
+    CONST CURRENT_MODE *GetCurrentMode(D3DDDI_VIDEO_PRESENT_SOURCE_ID SourceId) const
+    {
+        return &m_CurrentModes[SourceId];
+    }
     ULONG GetModeCount(void)
     {
         return m_ModeCount;

@@ -929,6 +929,36 @@ void CtrlQueue::TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT hei
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
+NTSTATUS CtrlQueue::TransferToHost2DSync(UINT res_id, UINT width, UINT height)
+{
+    PAGED_CODE();
+
+    PGPU_RES_TRANSF_TO_HOST_2D cmd;
+    PGPU_VBUFFER vbuf;
+    cmd = (PGPU_RES_TRANSF_TO_HOST_2D)AllocCmd(&vbuf, sizeof(*cmd));
+    if (!cmd)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(cmd, sizeof(*cmd));
+
+    cmd->hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+    cmd->resource_id = res_id;
+    cmd->r.width = width;
+    cmd->r.height = height;
+
+    NTSTATUS status = QueueSyncBuffer(vbuf);
+    if (NT_SUCCESS(status))
+    {
+        ReleaseBuffer(vbuf);
+    }
+    else
+    {
+        DbgPrint(TRACE_LEVEL_WARNING, ("%s transfer2d res=%u failed status=0x%x\n", __FUNCTION__, res_id, status));
+    }
+    return status;
+}
+
 void CtrlQueue::TransferToHost3D(UINT res_id, GPU_BOX *box)
 {
     PAGED_CODE();
