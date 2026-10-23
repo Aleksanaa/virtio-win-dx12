@@ -6,7 +6,7 @@
 # Differences from yttrium's MSBuild project, all build-side:
 #   - WPP tracing is stubbed (its .tmh files come from a Windows-only preprocessor). The debug build logs through
 #     DbgPrint/kdebugprint as before; only the WPP recorder (IFR) is gone.
-#   - No version resource (viogpu3d.rc needs MSBuild-generated vendor macros).
+#   - No version resource (yttrium's viogpu3d.rc needs MSBuild-generated vendor macros; not imported).
 #   - clang does not provide MSVC's port I/O intrinsics out of line; shim/portio.c does.
 cmake_minimum_required(VERSION 3.24)
 project(vgd-kmd LANGUAGES C CXX)
