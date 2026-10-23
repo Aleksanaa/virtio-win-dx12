@@ -1,0 +1,41 @@
+From: vgd3d12
+Subject: wsi/win32: allow up to 8 images on the DXGI_SHARED present path
+
+The surface reported exactly two images whenever DXGI presents, because DXGI presents a swapchain's buffers in
+the order they were acquired. That holds for the D3D12 path, where the Vulkan images are the DXGI buffers, but
+not for DXGI_SHARED (yttrium): its images are textures of their own, copied into the DXGI swapchain's current
+buffer at present and acquired in any order. Applications that keep three frames in flight expect three images;
+GravityMark's Vulkan renderer read an unset per-image semaphore with only two and crashed in the acquire.
+
+--- a/src/vulkan/wsi/wsi_common_win32.cpp	2026-10-23 21:24:16.702044365 +0800
++++ b/src/vulkan/wsi/wsi_common_win32.cpp	2026-10-23 21:24:16.703237103 +0800
+@@ -386,16 +386,24 @@
+    caps->minImageCount = 1;
+ 
+    if (!wsi_device->sw && wsi && wsi->dxgi.factory && wsi->dxgi.dcomp &&
+-       (wsi_device->win32.get_d3d12_command_queue
+-#if defined(HAVE_YTTRIUM)
+-        || wsi_device->win32.create_image_memory_from_win32_handle
+-#endif
+-       )) {
++       wsi_device->win32.get_d3d12_command_queue) {
+       /* DXGI doesn't support random presenting order (images need to
+        * be presented in the order they were acquired), so we can't
+        * expose more than two image per swapchain.
+        */
+       caps->minImageCount = caps->maxImageCount = 2;
++#if defined(HAVE_YTTRIUM)
++   } else if (!wsi_device->sw && wsi && wsi->dxgi.factory && wsi->dxgi.dcomp &&
++              wsi_device->win32.create_image_memory_from_win32_handle) {
++      /* DXGI_SHARED: the images are textures of their own, each copied
++       * into the DXGI swapchain's current buffer when presented, and
++       * acquired in any order (wsi_win32_acquire_idle_cpu_image), so the
++       * presenting-order limit above does not apply. Applications that
++       * keep three frames in flight expect at least three images.
++       */
++      caps->minImageCount = 2;
++      caps->maxImageCount = 8;
++#endif
+    } else {
+       caps->minImageCount = 1;
+       /* Software callbacke, there is no real maximum */
