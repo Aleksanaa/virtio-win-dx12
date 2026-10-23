@@ -813,13 +813,16 @@ NTSTATUS VioGpuAdapter::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQ
                 pDriverCaps->SupportSmoothRotation = FALSE;
                 pDriverCaps->SupportNonVGA = IsVgaDevice();
 
-                // The hardware cursor (HWCursor): color shapes only. Windows draws the others itself.
+                // The hardware cursor (HWCursor). Monochrome and masked color shapes are converted to color, so
+                // that the default text I-beam (monochrome) is not left for Windows to draw.
                 if (IsPointerEnabled())
                 {
                     pDriverCaps->MaxPointerWidth = POINTER_SIZE;
                     pDriverCaps->MaxPointerHeight = POINTER_SIZE;
                     pDriverCaps->PointerCaps.Value = 0;
+                    pDriverCaps->PointerCaps.Monochrome = 1;
                     pDriverCaps->PointerCaps.Color = 1;
+                    pDriverCaps->PointerCaps.MaskedColor = 1;
                 }
 
                 DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s Driver caps return\n", __FUNCTION__));
@@ -1332,8 +1335,75 @@ static NTSTATUS VioGpuCopyCapsetToUser(void *destination, const void *source, UL
     return STATUS_SUCCESS;
 }
 
-// Copies a color pointer shape into the cursor resource, creating that the first time, and returns once the host has
-// it: the UPDATE_CURSOR that follows goes on the cursor queue, which the host does not order after the control queue.
+// Monochrome (AND and XOR masks) and masked color (alpha 0: replace, 0xFF: XOR) shapes as ARGB. ARGB cannot invert the
+// screen under a pixel, as the text I-beam's pixels do: those become black with a white outline, which shows on any
+// background.
+static void ConvertMaskedCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pShape, _Out_ UINT32 *pDst)
+{
+    PAGED_CODE();
+
+    // Markers while converting, both transparent so neither is ever a pixel's result.
+    const UINT32 kInvert = 1;
+    const UINT32 kOutline = 2;
+    const BYTE *pixels = (const BYTE *)pShape->pPixels;
+    for (UINT y = 0; y < pShape->Height; y++)
+    {
+        for (UINT x = 0; x < pShape->Width; x++)
+        {
+            UINT32 out;
+            if (pShape->Flags.Monochrome)
+            {
+                BYTE bit = (BYTE)(0x80 >> (x % 8));
+                BOOLEAN andBit = (pixels[y * pShape->Pitch + x / 8] & bit) != 0;
+                BOOLEAN xorBit = (pixels[(pShape->Height + y) * pShape->Pitch + x / 8] & bit) != 0;
+                out = !andBit ? (xorBit ? 0xFFFFFFFF : 0xFF000000) : (xorBit ? kInvert : 0);
+            }
+            else
+            {
+                UINT32 p = ((const UINT32 *)(pixels + y * pShape->Pitch))[x];
+                UINT32 rgb = p & 0xFFFFFF;
+                out = (p >> 24) == 0 ? (0xFF000000 | rgb) : (rgb ? kInvert : 0);
+            }
+            pDst[y * POINTER_SIZE + x] = out;
+        }
+    }
+    for (INT y = 0; y < POINTER_SIZE; y++)
+    {
+        for (INT x = 0; x < POINTER_SIZE; x++)
+        {
+            if (pDst[y * POINTER_SIZE + x] != 0)
+            {
+                continue;
+            }
+            for (INT dy = -1; dy <= 1; dy++)
+            {
+                for (INT dx = -1; dx <= 1; dx++)
+                {
+                    INT nx = x + dx, ny = y + dy;
+                    if (nx >= 0 && ny >= 0 && nx < POINTER_SIZE && ny < POINTER_SIZE &&
+                        pDst[ny * POINTER_SIZE + nx] == kInvert)
+                    {
+                        pDst[y * POINTER_SIZE + x] = kOutline;
+                    }
+                }
+            }
+        }
+    }
+    for (UINT i = 0; i < POINTER_SIZE * POINTER_SIZE; i++)
+    {
+        if (pDst[i] == kInvert)
+        {
+            pDst[i] = 0xFF000000;
+        }
+        else if (pDst[i] == kOutline)
+        {
+            pDst[i] = 0xFFFFFFFF;
+        }
+    }
+}
+
+// Copies a pointer shape into the cursor resource, creating that the first time, and returns once the host has it:
+// the UPDATE_CURSOR that follows goes on the cursor queue, which the host does not order after the control queue.
 BOOLEAN VioGpuAdapter::UploadCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape)
 {
     PAGED_CODE();
@@ -1356,6 +1426,11 @@ BOOLEAN VioGpuAdapter::UploadCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
 
     // The whole square, so nothing a larger earlier shape left outside this one shows.
     RtlZeroMemory(m_pCursorBuf->GetVirtualAddress(), POINTER_SIZE * POINTER_SIZE * 4);
+    if (!pSetPointerShape->Flags.Color)
+    {
+        ConvertMaskedCursor(pSetPointerShape, (UINT32 *)m_pCursorBuf->GetVirtualAddress());
+        return NT_SUCCESS(ctrlQueue.TransferToHost2DSync(m_pCursorBuf->GetId(), POINTER_SIZE, POINTER_SIZE));
+    }
     RECT rect = {0, 0, (LONG)pSetPointerShape->Width, (LONG)pSetPointerShape->Height};
     BLT_INFO dst = {};
     dst.pBits = m_pCursorBuf->GetVirtualAddress();
@@ -1429,9 +1504,13 @@ NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSet
               pSetPointerShape->YHot,
               pSetPointerShape->VidPnSourceId));
 
-    // Color shapes, the only kind the caps offer, that fit the resource. Anything else fails, and Windows then draws
-    // that pointer itself: ours must not show meanwhile.
-    if (!IsPointerEnabled() || pSetPointerShape->VidPnSourceId != 0 || !pSetPointerShape->Flags.Color ||
+    // Shapes of the kinds the caps offer, that fit the resource; the converted kinds only on an unrotated display.
+    // Anything else fails, and Windows then draws that pointer itself: ours must not show meanwhile.
+    DXGK_POINTERFLAGS flags = pSetPointerShape->Flags;
+    D3DKMDT_VIDPN_PRESENT_PATH_ROTATION rotation = vidpn.GetCurrentMode(0)->Rotation;
+    BOOLEAN supported = flags.Color + flags.Monochrome + flags.MaskedColor == 1 &&
+                        (flags.Color || rotation == D3DKMDT_VPPR_IDENTITY || rotation == D3DKMDT_VPPR_UNINITIALIZED);
+    if (!IsPointerEnabled() || pSetPointerShape->VidPnSourceId != 0 || !supported ||
         pSetPointerShape->Width > POINTER_SIZE || pSetPointerShape->Height > POINTER_SIZE ||
         !UploadCursor(pSetPointerShape))
     {
