@@ -11,6 +11,10 @@
 //      same host resource, which lives until both are gone.
 // Present is then zero-copy: the buffer's allocation goes to the runtime, which presents it on the queue's
 // context, where our queue bridge has ordered it after the rendering.
+//
+// Other resources have no runtime allocation: our resources live in Venus memory only. D3D9On12 and D3D11On12
+// present their own back buffers, ordinary D3D12 resources, so Present copies those on its command list into a
+// presentable surface of the queue's (made as swapchain buffers are) and presents that.
 #include "device.h"
 #include "log.h"
 #include "objects.h"
@@ -19,8 +23,10 @@
 #include "viogpu_abi.h"
 
 #include <atomic>
+#include <iterator>
 #include <memory>
 #include <new>
+#include <utility>
 #include <vector>
 
 namespace vgd::umd {
@@ -39,13 +45,13 @@ KmtDevice* kmt_device(Device& d)
 
 // --- Swapchain buffers ---------------------------------------------------------------------------------------
 
-HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const D3D12DDIARG_CREATERESOURCE_0088& args,
-                       const D3D12_RESOURCE_DESC& desc, D3D12DDI_HRTRESOURCE rt_resource, HeapObject& out)
+namespace {
+
+// A texture of `desc` on exported memory with a runtime allocation aliasing it: for the runtime resource
+// `rt_resource`, or, if that is null, a device allocation of our own.
+HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXGI_FORMAT* castable,
+                           UINT castable_count, D3D12DDI_HRTRESOURCE rt_resource, HeapObject& out)
 {
-    VGD_TRACE("CreateHeapAndResource: swapchain buffer %llux%u format %d, heap flags 0x%x, resource flags 0x%x, "
-              "%u castable formats",
-              static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<int>(desc.Format),
-              static_cast<unsigned>(heap.Flags), static_cast<unsigned>(args.Flags), args.NumCastableFormats);
     if (!d.allocation_alias) {
         VGD_WARN("present: the KMD cannot alias allocations (yttrium's unpatched viogpu3d?): no swapchains");
         return E_OUTOFMEMORY;
@@ -57,8 +63,7 @@ HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const
     }
 
     int fd = -1;
-    HRESULT hr = SharedImage::create_exported(d.engine, desc, args.pCastableFormats, args.NumCastableFormats,
-                                              &out.shared, &fd);
+    HRESULT hr = SharedImage::create_exported(d.engine, desc, castable, castable_count, &out.shared, &fd);
     if (FAILED(hr)) {
         VGD_WARN("present: presentable texture failed: 0x%08lx", hr);
         return E_OUTOFMEMORY;
@@ -104,8 +109,10 @@ HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const
     info.PrivateDriverDataSize = sizeof(alias);
     info.Flags = D3D12DDI_ALLOCATION_INFO_FLAGS_0022_PRIMARY;
     D3D12DDICB_ALLOCATE_0022 cb{};
-    cb.pPrivateDriverData = &surface;
-    cb.PrivateDriverDataSize = sizeof(surface);
+    if (rt_resource.handle) {   // resource private data, which a device allocation has none of
+        cb.pPrivateDriverData = &surface;
+        cb.PrivateDriverDataSize = sizeof(surface);
+    }
     cb.hResource = rt_resource.handle;
     cb.NumAllocations = 1;
     cb.pAllocationInfo = &info;
@@ -126,23 +133,49 @@ HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const
     }
     out.allocation = info.hAllocation;
     out.rt_resource = rt_resource;
-    VGD_TRACE("present: swapchain buffer allocation 0x%x (km resource 0x%x) aliases 0x%x: %llu bytes, pitch %u, "
+    VGD_TRACE("present: presentable allocation 0x%x (km resource 0x%x) aliases 0x%x: %llu bytes, pitch %u, "
               "virgl format %lu",
               info.hAllocation, cb.hKMResource, source, static_cast<unsigned long long>(out.shared->size()),
               out.shared->row_pitch(), format);
     return S_OK;
 }
 
+} // namespace
+
+HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const D3D12DDIARG_CREATERESOURCE_0088& args,
+                       const D3D12_RESOURCE_DESC& desc, D3D12DDI_HRTRESOURCE rt_resource, HeapObject& out)
+{
+    VGD_TRACE("CreateHeapAndResource: swapchain buffer %llux%u format %d, heap flags 0x%x, resource flags 0x%x, "
+              "%u castable formats",
+              static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<int>(desc.Format),
+              static_cast<unsigned>(heap.Flags), static_cast<unsigned>(args.Flags), args.NumCastableFormats);
+    return create_presentable(d, desc, args.pCastableFormats, args.NumCastableFormats, rt_resource, out);
+}
+
 void destroy_primary(Device& d, HeapObject& heap)
 {
-    // By resource (which frees its allocations) or by allocation list, never both: both is E_INVALIDARG.
+    // By resource (which frees its allocations) or by allocation list, never both: both is E_INVALIDARG. A present
+    // copy (no runtime resource) may still be read by a present on the queue's context: the runtime waits for it.
     D3D12DDICB_DEALLOCATE_0022 cb{};
-    cb.hResource = heap.rt_resource.handle;
-    cb.Flags = D3D12DDI_DEALLOCATE_FLAGS_0022_ASSUME_NOT_IN_USE | D3D12DDI_DEALLOCATE_FLAGS_0022_SYNCHRONOUS_DESTROY;
+    if (heap.rt_resource.handle) {
+        cb.hResource = heap.rt_resource.handle;
+        cb.Flags = D3D12DDI_DEALLOCATE_FLAGS_0022_ASSUME_NOT_IN_USE;
+    } else {
+        cb.NumAllocations = 1;
+        cb.HandleList = &heap.allocation;
+    }
+    cb.Flags |= D3D12DDI_DEALLOCATE_FLAGS_0022_SYNCHRONOUS_DESTROY;
     HRESULT hr = d.um_callbacks->pfnDeallocateCb(d.rt_device, &cb);
     if (FAILED(hr))
         VGD_WARN("present: DeallocateCb(0x%x) failed: 0x%08lx", heap.allocation, hr);
     heap.allocation = 0;
+}
+
+PresentCopies::~PresentCopies()
+{
+    for (std::unique_ptr<HeapObject>& s : surfaces)
+        if (s && device)
+            destroy_primary(*device, *s);
 }
 
 // --- Textures other drivers share ----------------------------------------------------------------------------
@@ -227,7 +260,69 @@ D3DKMT_HANDLE allocation_of(D3D12DDI_HRESOURCE h)
     return r->heap ? r->heap->allocation : 0;
 }
 
-void APIENTRY present(D3D12DDI_HCOMMANDLIST, D3D12DDI_HCOMMANDQUEUE hq, const D3D12DDIARG_PRESENT_0001* args,
+// Records a copy of `surface`, a resource without a runtime allocation, into the queue's next present copy on `cl`
+// (which the runtime executes on the queue before it presents); that copy's allocation, or 0.
+D3DKMT_HANDLE copy_for_present(CommandListObject& cl, CommandQueueObject& q, const D3D12DDI_ARG_PRESENTSURFACE& surface)
+{
+    ID3D12Resource* src = resource_of(surface.hSurface);
+    if (!src || !cl.list)
+        return 0;
+    const D3D12_RESOURCE_DESC sd = desc_of(src);
+    if (sd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || sd.SampleDesc.Count != 1) {
+        VGD_WARN("Present: cannot copy a %s resource for present", sd.SampleDesc.Count != 1 ? "multisampled" : "non-2D");
+        return 0;
+    }
+    D3D12_RESOURCE_DESC desc = sd;
+    desc.Alignment = 0;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    Device& d = *cl.device;
+    PresentCopies& pc = q.present_copies;
+    pc.device = &d;
+    std::unique_ptr<HeapObject>& slot = pc.surfaces[pc.next++ % std::size(pc.surfaces)];
+    if (slot) {
+        const D3D12_RESOURCE_DESC od = desc_of(slot->owned());
+        if (od.Width != desc.Width || od.Height != desc.Height || od.Format != desc.Format) {
+            destroy_primary(d, *slot);
+            slot.reset();
+        }
+    }
+    if (!slot) {
+        auto heap = std::make_unique<HeapObject>();
+        if (FAILED(create_presentable(d, desc, nullptr, 0, D3D12DDI_HRTRESOURCE{}, *heap)))
+            return 0;
+        VGD_TRACE("Present: copying %llux%u format %d into allocation 0x%x for present",
+                  static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<int>(desc.Format),
+                  heap->allocation);
+        slot = std::move(heap);
+    }
+    ID3D12Resource* dst = slot->owned();
+
+    // The source is in the PRESENT (COMMON) state, as presented resources must be; both go back to it.
+    D3D12_RESOURCE_BARRIER b[2]{};
+    for (D3D12_RESOURCE_BARRIER& x : b)
+        x.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b[0].Transition = {src, surface.SubResourceIndex, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE};
+    b[1].Transition = {dst, 0, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST};
+    cl.list->ResourceBarrier(2, b);
+    D3D12_TEXTURE_COPY_LOCATION to{}, from{};
+    to.pResource = dst;
+    to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    to.SubresourceIndex = 0;
+    from.pResource = src;
+    from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    from.SubresourceIndex = surface.SubResourceIndex;
+    cl.list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+    for (D3D12_RESOURCE_BARRIER& x : b)
+        std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
+    cl.list->ResourceBarrier(2, b);
+    return slot->allocation;
+}
+
+void APIENTRY present(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HCOMMANDQUEUE hq, const D3D12DDIARG_PRESENT_0001* args,
                       D3D12DDI_PRESENT_0051* out, D3D12DDI_PRESENT_CONTEXTS_0051* contexts,
                       D3D12DDI_PRESENT_HWQUEUES_0051* hw_queues)
 {
@@ -241,24 +336,32 @@ void APIENTRY present(D3D12DDI_HCOMMANDLIST, D3D12DDI_HCOMMANDQUEUE hq, const D3
         VGD_WARN("Present: bad arguments");
         return;
     }
-    const D3DKMT_HANDLE src = allocation_of(args->phSurfacesToPresent[0].hSurface);
+    // Set even if this present fails: the runtime submits on it regardless, and dereferences a null one.
+    contexts->hContext = object<CommandQueueObject>(hq)->bridge->context();
+    D3DKMT_HANDLE src = allocation_of(args->phSurfacesToPresent[0].hSurface);
     const D3DKMT_HANDLE dst = allocation_of(args->hDstResource);
     static std::atomic<unsigned> count{0};
     const unsigned n = count.fetch_add(1, std::memory_order_relaxed);
+    bool copied = false;
+    if (!src && hl.pDrvPrivate) {
+        src = copy_for_present(*object<CommandListObject>(hl), *object<CommandQueueObject>(hq),
+                               args->phSurfacesToPresent[0]);
+        copied = src != 0;
+    }
     if (!src) {
-        VGD_WARN("Present: surface %p is not a swapchain buffer", args->phSurfacesToPresent[0].hSurface.pDrvPrivate);
+        VGD_WARN("Present: surface %p has no allocation and could not be copied into one",
+                 args->phSurfacesToPresent[0].hSurface.pDrvPrivate);
         return;
     }
     out->BroadcastSrcAllocation[0] = src;
     out->BroadcastDstAllocation[0] = dst;
-    out->AddedGpuWork = FALSE;
+    out->AddedGpuWork = copied;
     out->BackBufferMultiplicity = 1;
-    contexts->hContext = object<CommandQueueObject>(hq)->bridge->context();
     if (n < 4 || verbose())
-        VGD_TRACE("Present #%u: surfaces %u, src 0x%x, dst 0x%x, flags 0x%x, interval %d, source %u, dirty %u, "
+        VGD_TRACE("Present #%u: surfaces %u, src 0x%x%s, dst 0x%x, flags 0x%x, interval %d, source %u, dirty %u, "
                   "context %p",
-                  n, args->SurfacesToPresent, src, dst, args->Flags.Value, static_cast<int>(args->FlipInterval),
-                  args->VidPnSourceID, args->DirtyRects, contexts->hContext);
+                  n, args->SurfacesToPresent, src, copied ? " (copy)" : "", dst, args->Flags.Value,
+                  static_cast<int>(args->FlipInterval), args->VidPnSourceID, args->DirtyRects, contexts->hContext);
 }
 
 UINT APIENTRY get_present_private_driver_data_size(D3D12DDI_HDEVICE, const D3D12DDIARG_PRESENT_0001*) { return 0; }

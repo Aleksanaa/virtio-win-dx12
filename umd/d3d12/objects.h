@@ -154,9 +154,19 @@ struct FenceObject {
     D3D12DDI_FENCE fence;
 };
 
-// Queues (command_ddi.cpp; present.cpp reads the bridge's context).
+// Presentable copies of presented resources that have no runtime allocation (present.cpp): two, so a present can
+// copy while the one before reads the other.
+struct PresentCopies {
+    Device* device = nullptr;
+    std::unique_ptr<HeapObject> surfaces[2];
+    unsigned next = 0;
+    ~PresentCopies();
+};
+
+// Queues (command_ddi.cpp; present.cpp reads the bridge's context and keeps the present copies).
 struct CommandQueueObject {
     Com<ID3D12CommandQueue> queue;
+    PresentCopies present_copies;
     std::unique_ptr<QueueBridge> bridge;   // declared last, so destroyed first: its threads use the queue
 };
 
