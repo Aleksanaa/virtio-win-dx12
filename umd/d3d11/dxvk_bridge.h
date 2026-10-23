@@ -22,8 +22,8 @@ struct DeviceHandles {
 };
 
 // A DXVK D3D11 device on the Venus ICD's GPU (the first adapter that is not a CPU), of feature level `level`, or
-// of the highest DXVK offers there if `level` is 0. Of `extensions` (device extensions DXVK has no use for), those
-// the GPU supports are enabled too.
+// of the highest DXVK offers there, at most 11_0, if `level` is 0. Of `extensions` (device extensions DXVK has no
+// use for), those the GPU supports are enabled too.
 HRESULT create_device(PFN_vkGetInstanceProcAddr gipa, D3D_FEATURE_LEVEL level, const char* const* extensions,
                       size_t extension_count, ID3D11Device5** out, DeviceHandles* handles);
 

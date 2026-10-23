@@ -100,7 +100,10 @@ HRESULT create_device(PFN_vkGetInstanceProcAddr gipa, D3D_FEATURE_LEVEL level, c
         adapter->enableExtensions(extra);
 
         Rc<DxvkDevice> device = adapter->createDevice();
-        const D3D_FEATURE_LEVEL max = D3D11Device::GetMaxFeatureLevel(*device);
+        // At most 11_0: 11_1 promises target-independent rasterization (ForcedSampleCount with render targets
+        // bound), which DXVK does not do: it rasterizes at the targets' sample count. DWM cuts the windows out of
+        // their shadows with it at 11_1, and the shadows come out erased.
+        const D3D_FEATURE_LEVEL max = std::min(D3D11Device::GetMaxFeatureLevel(*device), D3D_FEATURE_LEVEL_11_0);
         if (!level)
             level = max;
         if (level > max) {
