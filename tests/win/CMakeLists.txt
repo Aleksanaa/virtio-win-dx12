@@ -32,3 +32,7 @@ target_link_options(d3d9probe PRIVATE -static -static-libgcc -static-libstdc++)
 add_executable(vkswapchain vkswapchain.cpp)
 target_link_libraries(vkswapchain PRIVATE vgd-vulkan-headers d3d11 user32)
 target_link_options(vkswapchain PRIVATE -static -static-libgcc -static-libstdc++)
+
+add_executable(uibench uibench.cpp)
+target_link_libraries(uibench PRIVATE dwmapi winmm user32 gdi32)
+target_link_options(uibench PRIVATE -static -static-libgcc -static-libstdc++)

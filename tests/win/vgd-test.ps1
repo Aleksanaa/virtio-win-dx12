@@ -6,6 +6,9 @@
 #   Probe     : run d3dprobe (or d3d11probe with -D3D11) with VGD_LOG set and show the log
 #   Uninstall : remove our package; the device falls back to Microsoft's basic display driver (reboot after)
 #   Status    : show the adapter, its driver and its UMD slots
+#   Perf      : run uibench's desktop scenarios in the logged-on user's session under a DxgKrnl and DWM ETW trace;
+#               writes the build installed, uibench's report and the trace (etl and csv) to -Out, which
+#               tests/perf/summarize.py reads
 # Run from an elevated PowerShell:  powershell -ExecutionPolicy Bypass -File .\vgd-test.ps1 Install
 # Run it from the build tree (build\win\tests\win): it finds umd\vgd3d1{1,2}.dll, pkg\ and tests\win\*.exe in build\win,
 # and kmd\signed\viogpu3d.sys and icd\{vgd_vulkan_virtio,viogpu_wgl}.dll in build. Needs test signing on
@@ -17,7 +20,7 @@
 
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('Install', 'Probe', 'Uninstall', 'Status')]
+    [ValidateSet('Install', 'Probe', 'Uninstall', 'Status', 'Perf')]
     [string]$Action,
     # Probe only: enable the D3D12 debug layer (needs Graphics Tools:
     #   Add-WindowsCapability -Online -Name Tools.Graphics.DirectX~~~~0.0.1.0)
@@ -44,7 +47,11 @@ param(
     # Probe only: also create heaps and placed resources, map and copy through them
     [switch]$Placed,
     # Probe only: run d3d11probe (every D3D11 test; with -Present also its swapchains) instead of d3dprobe
-    [switch]$D3D11
+    [switch]$D3D11,
+    # Perf only: the uibench scenarios to run (all of them by default)
+    [string[]]$Scenario = @(),
+    # Perf only: where the results go (default C:\vgd\perf\<date-time>)
+    [string]$Out = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -263,6 +270,70 @@ switch ($Action) {
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"
         if (Test-Path $log) { Get-Content $log } else { Write-Host '(no log: our UMDs were not loaded)' }
+    }
+
+    'Perf' {
+        Assert-Admin
+        if (-not $Out) { $Out = Join-Path $Work ('perf\' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+        New-Item -ItemType Directory -Force -Path $Out | Out-Null
+        $user = (Get-CimInstance Win32_ComputerSystem).UserName
+        if (-not $user) { throw 'Nobody is logged on: uibench needs a user session.' }
+
+        # What is installed: the package, the files the device runs on (from the driver store), the log settings.
+        $p = Get-ItemProperty (Get-AdapterKey).PSPath
+        $info = @("driver $($p.DriverVersion) $($p.InfPath)", "user $user", "time $(Get-Date -Format o)")
+        $umd = $p.UserModeDriverName | Where-Object { $_ -like '*\vgd3d11.dll' } | Select-Object -First 1
+        if ($umd) {
+            Get-ChildItem (Split-Path $umd) -Recurse -Include *.dll, *.sys | ForEach-Object {
+                $info += 'file {0} {1}' -f $_.Name, (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower().Substring(0, 16)
+            }
+        }
+        $settings = Get-ItemProperty 'HKLM:\SOFTWARE\vgd3d12' -ErrorAction SilentlyContinue
+        foreach ($n in @('VGD_LOG', 'VGD_VERBOSE', 'DXVK_LOG_LEVEL')) { $info += "setting $n=$($settings.$n)" }
+        $info += "logical processors $([Environment]::ProcessorCount)"
+        $info | Set-Content (Join-Path $Out 'info.txt') -Encoding utf8
+
+        $bench = Join-Path $Work 'uibench.exe'
+        Copy-Item (Find-BuildFile 'tests\win\uibench.exe') $bench -Force
+        $etl = Join-Path $Work 'perf.etl'
+        $providers = Join-Path $Work 'perf-providers.txt'
+        @('"Microsoft-Windows-DxgKrnl" 0xFFFFFFFFFFFFFFFF 5', '"Microsoft-Windows-Dwm-Core" 0xFFFFFFFFFFFFFFFF 5') |
+            Set-Content $providers -Encoding ascii
+        & logman.exe stop vgdperf -ets 2>&1 | Out-Null
+        Remove-Item $etl -ErrorAction SilentlyContinue
+        & logman.exe create trace vgdperf -pf $providers -o $etl -bs 1024 -nb 64 512 -ets | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "logman could not start the trace ($LASTEXITCODE)" }
+        $report = Join-Path $Out 'uibench.txt'
+        $task = 'vgduibench'
+        try {
+            # In the user's session: SendInput and DWM's animations need the interactive desktop.
+            $argList = (@('--out', "`"$report`"") + $Scenario) -join ' '
+            $taskAction = New-ScheduledTaskAction -Execute $bench -Argument $argList
+            $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive
+            Register-ScheduledTask -TaskName $task -Action $taskAction -Principal $principal -Force | Out-Null
+            Start-ScheduledTask -TaskName $task
+            Start-Sleep -Seconds 1
+            for ($i = 0; $i -lt 240 -and (Get-ScheduledTask -TaskName $task).State -eq 'Running'; $i++) {
+                Start-Sleep -Milliseconds 500
+            }
+        } finally {
+            Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+            & logman.exe stop vgdperf -ets | Out-Null
+        }
+        Copy-Item $etl (Join-Path $Out 'perf.etl') -Force
+        & tracerpt.exe $etl -o (Join-Path $Out 'perf.csv') -of CSV -y | Out-Null
+        # tracerpt leaves these providers' events unnamed: their names and fields, by id and version, for the summary.
+        $events = foreach ($n in @('Microsoft-Windows-DxgKrnl', 'Microsoft-Windows-Dwm-Core')) {
+            foreach ($e in (Get-WinEvent -ListProvider $n).Events) {
+                $fields = @()
+                if ($e.Template) { $fields = @(([xml]$e.Template).template.data | ForEach-Object { $_.name }) }
+                [pscustomobject]@{ provider = $n; id = $e.Id; version = $e.Version; task = $e.Task.Name
+                                   opcode = $e.Opcode.Name; fields = $fields }
+            }
+        }
+        $events | ConvertTo-Json -Depth 3 -Compress | Set-Content (Join-Path $Out 'events.json') -Encoding utf8
+        if (Test-Path $report) { Get-Content $report } else { Write-Host 'uibench wrote no report' -ForegroundColor Yellow }
+        Write-Host "Results in $Out" -ForegroundColor Green
     }
 
     'Uninstall' {
