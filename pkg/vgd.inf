@@ -76,10 +76,11 @@ HKR,, TypesSupported,   %REG_DWORD%, 7
 HKR,, HWCursor,          %REG_DWORD%, 0
 HKR,, FlexResolution,    %REG_DWORD%, 1
 HKR,, UsePhysicalMemory, %REG_DWORD%, 0
-; Slots: D3D9, D3D10, D3D11, D3D12. vgd3d11.dll serves D3D10 and D3D11 (DWM too); D3D9 has no UMD of ours, and its
-; slot names vgd3d11.dll only because the list cannot hold an empty entry: it has no D3D9 entry point, so D3D9
-; device creation fails. No 32-bit UMDs (UserModeDriverNameWow).
-HKR,, UserModeDriverName,      %REG_MULTI_SZ%, %13%\vgd3d11.dll, %13%\vgd3d11.dll, %13%\vgd3d11.dll, %13%\vgd3d12.dll
+; Slots: D3D9, D3D10, D3D11, D3D12. vgd3d11.dll serves D3D10 and D3D11 (DWM too), vgd3d12.dll D3D12. D3D9 runs on
+; Windows' D3D9On12, on vgd3d12.dll: "<>" is dxgkrnl's null UMD (IsNullUmdDriver), for which it answers the D3D9
+; runtime's driver-name query with STATUS_INVALID_PARAMETER, and the runtime then uses d3d9on12.dll
+; (D3D9RequestsD3D9on12). An empty entry instead fails the adapter's start. No 32-bit UMDs (UserModeDriverNameWow).
+HKR,, UserModeDriverName,      %REG_MULTI_SZ%, "<>", %13%\vgd3d11.dll, %13%\vgd3d11.dll, %13%\vgd3d12.dll
 HKR,, InstalledDisplayDrivers, %REG_MULTI_SZ%, vgd3d11, vgd3d11, vgd3d11, vgd3d12
 ; The Vulkan loader finds the ICD through the adapter (its manifest is in the DriverStore with it). The UMDs load it
 ; from their own directory without the loader.
