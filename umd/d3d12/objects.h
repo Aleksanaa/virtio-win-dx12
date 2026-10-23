@@ -67,6 +67,9 @@ struct CommandListObject {
     Com<ID3D12GraphicsCommandList1> list1;
     Com<ID3D12GraphicsCommandList2> list2;
     Com<ID3D12GraphicsCommandList5> list5;
+    // Since its last reset, the list was handed to Present and recorded nothing (present.cpp): the runtime's own present
+    // list, which ExecuteCommandLists then skips (command_ddi.cpp).
+    bool present_only = false;
 
     void error(HRESULT hr) const;
 };
@@ -155,11 +158,16 @@ struct FenceObject {
 };
 
 // Presentable copies of presented resources that have no runtime allocation (present.cpp): two, so a present can
-// copy while the one before reads the other.
+// copy while the one before reads the other; the paging queue they are made resident on; and the list that copies.
 struct PresentCopies {
     Device* device = nullptr;
     std::unique_ptr<HeapObject> surfaces[2];
     unsigned next = 0;
+    D3DKMT_HANDLE paging_queue = 0, paging_fence = 0;
+    Com<ID3D12CommandAllocator> allocator;
+    Com<ID3D12GraphicsCommandList> list;
+    Com<ID3D12Fence> fence;
+    uint64_t fence_value = 0;
     ~PresentCopies();
 };
 

@@ -176,6 +176,7 @@ void APIENTRY close_command_list(D3D12DDI_HCOMMANDLIST hl)
 void APIENTRY reset_command_list(D3D12DDI_HCOMMANDLIST hl, const D3D12DDIARG_RESETCOMMANDLIST_0040* args)
 {
     CommandListObject& l = obj(hl);
+    l.present_only = false;
     auto* rec = object<CommandRecorderObject>(args->hDrvCommandRecorder);
     if (!rec->pool) {
         VGD_WARN("ResetCommandList: recorder has no target pool");
@@ -612,10 +613,16 @@ void APIENTRY destroy_command_queue(D3D12DDI_HDEVICE, D3D12DDI_HCOMMANDQUEUE hq)
 
 void APIENTRY execute_command_lists(D3D12DDI_HCOMMANDQUEUE hq, UINT count, const D3D12DDI_HCOMMANDLIST* lists)
 {
-    std::vector<ID3D12CommandList*> l(count);
+    // The runtime executes its present list before each present even when Present added nothing to it. Executing it
+    // would put a wait on our completion on the context just ahead of the present, and a windowed Blt present waits for
+    // the context holding the device, which blocks the CPU signal that would complete it: a deadlock. So it is skipped.
+    std::vector<ID3D12CommandList*> l;
+    l.reserve(count);
     for (UINT i = 0; i < count; i++)
-        l[i] = list(lists[i]);
-    object<CommandQueueObject>(hq)->bridge->execute(count, l.data());
+        if (!obj(lists[i]).present_only)
+            l.push_back(list(lists[i]));
+    if (!l.empty())
+        object<CommandQueueObject>(hq)->bridge->execute(static_cast<UINT>(l.size()), l.data());
 }
 
 } // namespace

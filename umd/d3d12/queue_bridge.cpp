@@ -94,6 +94,8 @@ bool QueueBridge::create_kernel_fence(D3DKMT_HANDLE* out)
 void QueueBridge::execute(UINT count, ID3D12CommandList* const* lists)
 {
     const uint64_t value = ++next_;
+    if (verbose())
+        VGD_TRACE("queue: execute %llu: %u lists", static_cast<unsigned long long>(value), count);
     if (blocking_) {
         queue_->ExecuteCommandLists(count, lists);
         queue_->Signal(finished_.get(), value);
@@ -158,6 +160,12 @@ bool QueueBridge::wait_from_cpu(D3DKMT_HANDLE fence, uint64_t value)
     return ok;
 }
 
+void QueueBridge::wait_idle()
+{
+    if (!blocking_ && next_)
+        wait_from_cpu(done_, next_);
+}
+
 void QueueBridge::gate_loop()
 {
     for (;;) {
@@ -198,7 +206,11 @@ void QueueBridge::completion_loop()
         s.ObjectCount = 1;
         s.ObjectHandleArray = &done_;
         s.FenceValueArray = &value;
+        if (verbose())
+            VGD_TRACE("queue: done %llu: signalling", static_cast<unsigned long long>(value));
         HRESULT hr = device_.kt_callbacks->pfnSignalSynchronizationObjectFromCpuCb(device_.rt_device.handle, &s);
+        if (verbose())
+            VGD_TRACE("queue: done %llu: signalled (0x%08lx)", static_cast<unsigned long long>(value), hr);
         if (FAILED(hr))
             VGD_WARN("queue: done signal %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
     }

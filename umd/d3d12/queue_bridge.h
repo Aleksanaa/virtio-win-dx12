@@ -36,6 +36,9 @@ public:
     // Creates the kernel context the runtime signals and waits on; failure fails queue creation.
     HRESULT init();
     void execute(UINT count, ID3D12CommandList* const* lists);
+    // Waits on the CPU until everything executed so far is complete as the runtime's context sees it (done
+    // signalled), so that work the runtime submits next has nothing of ours left to wait for (present.cpp).
+    void wait_idle();
     // The kernel context the runtime fences on; present happens on it too.
     HANDLE context() const { return context_; }
 

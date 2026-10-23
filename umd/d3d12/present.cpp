@@ -13,8 +13,10 @@
 // context, where our queue bridge has ordered it after the rendering.
 //
 // Other resources have no runtime allocation: our resources live in Venus memory only. D3D9On12 and D3D11On12
-// present their own back buffers, ordinary D3D12 resources, so Present copies those on its command list into a
-// presentable surface of the queue's (made as swapchain buffers are) and presents that.
+// present their own back buffers, ordinary D3D12 resources, so Present copies those into a presentable surface of
+// the queue's (made as swapchain buffers are) and presents that. The copy completes before Present returns: these
+// are windowed Blt presents, which dxgkrnl carries out waiting for the context with the device held, so work of ours
+// still pending on the context deadlocked it against the CPU signal that would complete it (queue_bridge.h).
 #include "device.h"
 #include "log.h"
 #include "objects.h"
@@ -176,6 +178,11 @@ PresentCopies::~PresentCopies()
     for (std::unique_ptr<HeapObject>& s : surfaces)
         if (s && device)
             destroy_primary(*device, *s);
+    if (paging_queue && device) {
+        D3DDDI_DESTROYPAGINGQUEUE d{paging_queue};
+        if (FAILED(device->kt_callbacks->pfnDestroyPagingQueueCb(device->rt_device.handle, &d)))
+            VGD_WARN("present: DestroyPagingQueueCb(0x%x) failed", paging_queue);
+    }
 }
 
 // --- Textures other drivers share ----------------------------------------------------------------------------
@@ -260,12 +267,50 @@ D3DKMT_HANDLE allocation_of(D3D12DDI_HRESOURCE h)
     return r->heap ? r->heap->allocation : 0;
 }
 
-// Records a copy of `surface`, a resource without a runtime allocation, into the queue's next present copy on `cl`
-// (which the runtime executes on the queue before it presents); that copy's allocation, or 0.
-D3DKMT_HANDLE copy_for_present(CommandListObject& cl, CommandQueueObject& q, const D3D12DDI_ARG_PRESENTSURFACE& surface)
+// Makes a present copy's allocation resident and waits for it. The runtime does this for its own resources (swapchain
+// buffers among them) but not for our allocations, and dxgkrnl fails the present of one that is not ("Allocation is
+// not requested to be resident"), which removes the device.
+bool make_resident(Device& d, PresentCopies& pc, D3DKMT_HANDLE allocation)
+{
+    const HANDLE dev = d.rt_device.handle;
+    if (!pc.paging_queue) {
+        D3DDDICB_CREATEPAGINGQUEUE c{};
+        c.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL;
+        const HRESULT hr = d.kt_callbacks->pfnCreatePagingQueueCb(dev, &c);
+        if (FAILED(hr)) {
+            VGD_WARN("Present: CreatePagingQueueCb failed: 0x%08lx", hr);
+            return false;
+        }
+        pc.paging_queue = c.hPagingQueue;
+        pc.paging_fence = c.hSyncObject;
+    }
+    D3DDDI_MAKERESIDENT mr{};
+    mr.hPagingQueue = pc.paging_queue;
+    mr.NumAllocations = 1;
+    mr.AllocationList = &allocation;
+    mr.Flags.CantTrimFurther = 1;
+    HRESULT hr = d.kt_callbacks->pfnMakeResidentCb(dev, &mr);
+    if (hr == E_PENDING) {   // resident once the paging queue's fence reaches the value
+        UINT64 value = mr.PagingFenceValue;
+        D3DDDICB_WAITFORSYNCHRONIZATIONOBJECTFROMCPU w{};
+        w.ObjectCount = 1;
+        w.ObjectHandleArray = &pc.paging_fence;
+        w.FenceValueArray = &value;
+        hr = d.kt_callbacks->pfnWaitForSynchronizationObjectFromCpuCb(dev, &w);
+    }
+    if (FAILED(hr)) {
+        VGD_WARN("Present: MakeResidentCb(0x%x) failed: 0x%08lx", allocation, hr);
+        return false;
+    }
+    return true;
+}
+
+// Copies `surface`, a resource without a runtime allocation, into the queue's next present copy, on the queue after
+// its earlier work, and waits until that and all earlier work is complete; that copy's allocation, or 0.
+D3DKMT_HANDLE copy_for_present(Device& d, CommandQueueObject& q, const D3D12DDI_ARG_PRESENTSURFACE& surface)
 {
     ID3D12Resource* src = resource_of(surface.hSurface);
-    if (!src || !cl.list)
+    if (!src)
         return 0;
     const D3D12_RESOURCE_DESC sd = desc_of(src);
     if (sd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || sd.SampleDesc.Count != 1) {
@@ -279,9 +324,24 @@ D3DKMT_HANDLE copy_for_present(CommandListObject& cl, CommandQueueObject& q, con
     desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
-    Device& d = *cl.device;
     PresentCopies& pc = q.present_copies;
     pc.device = &d;
+    if (!pc.list) {
+        HRESULT hr = d.d3d->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator),
+                                                   pc.allocator.put_void());
+        if (SUCCEEDED(hr))
+            hr = d.d3d->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, pc.allocator.get(), nullptr,
+                                          __uuidof(ID3D12GraphicsCommandList), pc.list.put_void());
+        if (SUCCEEDED(hr))
+            hr = pc.list->Close();
+        if (SUCCEEDED(hr))
+            hr = d.d3d->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), pc.fence.put_void());
+        if (FAILED(hr)) {
+            VGD_WARN("Present: no command list for present copies: 0x%08lx", hr);
+            pc.list = nullptr;
+            return 0;
+        }
+    }
     std::unique_ptr<HeapObject>& slot = pc.surfaces[pc.next++ % std::size(pc.surfaces)];
     if (slot) {
         const D3D12_RESOURCE_DESC od = desc_of(slot->owned());
@@ -294,12 +354,21 @@ D3DKMT_HANDLE copy_for_present(CommandListObject& cl, CommandQueueObject& q, con
         auto heap = std::make_unique<HeapObject>();
         if (FAILED(create_presentable(d, desc, nullptr, 0, D3D12DDI_HRTRESOURCE{}, *heap)))
             return 0;
+        if (!make_resident(d, pc, heap->allocation)) {
+            destroy_primary(d, *heap);
+            return 0;
+        }
         VGD_TRACE("Present: copying %llux%u format %d into allocation 0x%x for present",
                   static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<int>(desc.Format),
                   heap->allocation);
         slot = std::move(heap);
     }
     ID3D12Resource* dst = slot->owned();
+    ID3D12GraphicsCommandList* list = pc.list.get();
+    if (FAILED(pc.allocator->Reset()) || FAILED(list->Reset(pc.allocator.get(), nullptr))) {
+        VGD_WARN("Present: could not reset the present copy list");
+        return 0;
+    }
 
     // The source is in the PRESENT (COMMON) state, as presented resources must be; both go back to it.
     D3D12_RESOURCE_BARRIER b[2]{};
@@ -307,7 +376,7 @@ D3DKMT_HANDLE copy_for_present(CommandListObject& cl, CommandQueueObject& q, con
         x.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     b[0].Transition = {src, surface.SubResourceIndex, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE};
     b[1].Transition = {dst, 0, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST};
-    cl.list->ResourceBarrier(2, b);
+    list->ResourceBarrier(2, b);
     D3D12_TEXTURE_COPY_LOCATION to{}, from{};
     to.pResource = dst;
     to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -315,10 +384,23 @@ D3DKMT_HANDLE copy_for_present(CommandListObject& cl, CommandQueueObject& q, con
     from.pResource = src;
     from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     from.SubresourceIndex = surface.SubResourceIndex;
-    cl.list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+    list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
     for (D3D12_RESOURCE_BARRIER& x : b)
         std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
-    cl.list->ResourceBarrier(2, b);
+    list->ResourceBarrier(2, b);
+    if (FAILED(list->Close())) {
+        VGD_WARN("Present: could not close the present copy list");
+        return 0;
+    }
+    ID3D12CommandList* lists[] = {list};
+    q.queue->ExecuteCommandLists(1, lists);
+    const uint64_t value = ++pc.fence_value;
+    q.queue->Signal(pc.fence.get(), value);
+    if (FAILED(pc.fence->SetEventOnCompletion(value, nullptr))) {   // a null event blocks until it completes
+        VGD_WARN("Present: waiting for the present copy failed");
+        return 0;
+    }
+    q.bridge->wait_idle();
     return slot->allocation;
 }
 
@@ -342,9 +424,11 @@ void APIENTRY present(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HCOMMANDQUEUE hq, const
     const D3DKMT_HANDLE dst = allocation_of(args->hDstResource);
     static std::atomic<unsigned> count{0};
     const unsigned n = count.fetch_add(1, std::memory_order_relaxed);
+    if (hl.pDrvPrivate)
+        object<CommandListObject>(hl)->present_only = true;   // we record nothing into it
     bool copied = false;
     if (!src && hl.pDrvPrivate) {
-        src = copy_for_present(*object<CommandListObject>(hl), *object<CommandQueueObject>(hq),
+        src = copy_for_present(*object<CommandListObject>(hl)->device, *object<CommandQueueObject>(hq),
                                args->phSurfacesToPresent[0]);
         copied = src != 0;
     }
@@ -355,7 +439,7 @@ void APIENTRY present(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HCOMMANDQUEUE hq, const
     }
     out->BroadcastSrcAllocation[0] = src;
     out->BroadcastDstAllocation[0] = dst;
-    out->AddedGpuWork = copied;
+    out->AddedGpuWork = FALSE;   // a copy is complete already
     out->BackBufferMultiplicity = 1;
     if (n < 4 || verbose())
         VGD_TRACE("Present #%u: surfaces %u, src 0x%x%s, dst 0x%x, flags 0x%x, interval %d, source %u, dirty %u, "
