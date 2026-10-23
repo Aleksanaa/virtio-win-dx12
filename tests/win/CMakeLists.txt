@@ -28,3 +28,7 @@ target_link_options(d3d11caps PRIVATE -static -static-libgcc -static-libstdc++)
 add_executable(d3d9probe d3d9probe.cpp)
 target_link_libraries(d3d9probe PRIVATE d3d9 psapi user32)
 target_link_options(d3d9probe PRIVATE -static -static-libgcc -static-libstdc++)
+
+add_executable(vkswapchain vkswapchain.cpp)
+target_link_libraries(vkswapchain PRIVATE vgd-vulkan-headers d3d11 user32)
+target_link_options(vkswapchain PRIVATE -static -static-libgcc -static-libstdc++)
