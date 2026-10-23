@@ -29,3 +29,8 @@ include(cmake/dxvk.cmake)
 
 add_subdirectory(umd)
 add_subdirectory(tests/win)
+
+# The driver package (pkg/), which vgd-test.ps1 Install stages in the guest with the build outputs it lists.
+foreach(f vgd.inf vgd_vulkan_virtio.json)
+  configure_file(pkg/${f} pkg/${f} COPYONLY)
+endforeach()

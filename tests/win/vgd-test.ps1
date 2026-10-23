@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: MIT
-# Test-only manual install of our UMDs before the signed package exists.
-#   Install   : copy vgd3d12.dll and vgd3d11.dll to System32 and point the adapter's UserModeDriverName slots at them:
-#               D3D10 and D3D11 at vgd3d11.dll (DWM too), D3D12 at vgd3d12.dll, D3D9 stays yttrium's (reboot after)
+# Test install of our driver package (pkg/vgd.inf): viogpu3d.sys, vgd3d11.dll, vgd3d12.dll, and our builds of the
+# Venus Vulkan and OpenGL drivers.
+#   Install   : stage the package from the build, stamp, catalog and test-sign it, install it, then remove yttrium's
+#               package and what it left in System32 (reboot after)
 #   Probe     : run d3dprobe (or d3d11probe with -D3D11) with VGD_LOG set and show the log
-#   Uninstall : restore the saved UserModeDriverName value and remove the DLLs (reboot after)
-#   Status    : show the current value
+#   Uninstall : remove our package; the device falls back to Microsoft's basic display driver (reboot after)
+#   Status    : show the adapter, its driver and its UMD slots
 # Run from an elevated PowerShell:  powershell -ExecutionPolicy Bypass -File .\vgd-test.ps1 Install
-# Run it from the build tree (build\win\tests\win): it finds umd\vgd3d12.dll, umd\vgd3d11.dll, tests\win\d3dprobe.exe and
-# tests\win\d3d11probe.exe in build\win, and icd\vgd_vulkan_virtio.dll in build\win or build (where icd\build.sh puts it).
+# Run it from the build tree (build\win\tests\win): it finds umd\vgd3d1{1,2}.dll, pkg\ and tests\win\*.exe in build\win,
+# and kmd\signed\viogpu3d.sys and icd\{vgd_vulkan_virtio,viogpu_wgl}.dll in build. Needs test signing on
+# (bcdedit /set testsigning on): Install signs the package with a test certificate of its own, which it creates once
+# and trusts (viogpu3d.sys keeps its own signature, from yttrium's test certificate).
 #
-# DWM loads vgd3d11.dll after the reboot. If the desktop does not come back: Safe Mode (which does not load it), then
-# Uninstall; or roll the VM back to a snapshot taken before Install.
+# DWM loads vgd3d11.dll once the package is installed. If the desktop does not come back: Safe Mode (basic display),
+# then Uninstall; or roll the VM back to a snapshot taken before Install.
 
 param(
     [Parameter(Mandatory = $true, Position = 0)]
@@ -46,12 +49,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Work = 'C:\vgd'
-$SysDll = Join-Path $env:SystemRoot 'System32\vgd3d12.dll'
-$SysDll11 = Join-Path $env:SystemRoot 'System32\vgd3d11.dll'
-# Our build of yttrium's Venus ICD (icd/), which vgd3d12.dll loads from its own directory.
-$SysIcd = Join-Path $env:SystemRoot 'System32\vgd_vulkan_virtio.dll'
-$Saved = Join-Path $Work 'original-UserModeDriverName.txt'
 $DisplayClass = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+$Provider = 'vgd project'   # pkg/vgd.inf's provider, which identifies our packages in the driver store
+$CertSubject = 'CN=vgd test signing'
 
 function Find-BuildFile([string]$rel) {
     foreach ($base in @($PSScriptRoot, (Join-Path $PSScriptRoot '..\..'), (Join-Path $PSScriptRoot '..\..\..'))) {
@@ -61,29 +61,6 @@ function Find-BuildFile([string]$rel) {
     throw "Cannot find $rel next to $PSScriptRoot"
 }
 
-# Copies a DLL into System32 unless the same file is already there. A DLL some process has loaded (DWM keeps
-# vgd3d11.dll and the ICD loaded) cannot be overwritten, but it can be renamed: the old file moves aside as .old,
-# the processes keep using it until they restart, and the next Install deletes it.
-function Install-File([string]$src, [string]$dst) {
-    $old = "$dst.old"
-    if (Test-Path $old) { Remove-Item $old -ErrorAction SilentlyContinue }
-    if ((Test-Path $dst) -and (Get-FileHash $src).Hash -eq (Get-FileHash $dst).Hash) {
-        Write-Host "$dst is up to date"
-        return
-    }
-    try { Copy-Item $src $dst -Force -ErrorAction Stop }
-    catch {
-        if (Test-Path $old) {
-            Write-Host "$dst and $old are in use by:" -ForegroundColor Yellow
-            & tasklist.exe /m (Split-Path $dst -Leaf)
-            throw "Close those processes (or reboot) and run Install again."
-        }
-        Move-Item $dst $old -ErrorAction Stop
-        Copy-Item $src $dst -ErrorAction Stop
-        Write-Host "$dst was in use: the old one is $old until processes using it restart (reboot)" -ForegroundColor Yellow
-    }
-}
-
 function Assert-Admin {
     $id = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not $id.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -91,59 +68,148 @@ function Assert-Admin {
     }
 }
 
-# The display adapter key written by yttrium's viogpu3d.inf.
+# The VirtIO GPU's display adapter key, whichever package drives it.
 function Get-AdapterKey {
     $keys = @(Get-ChildItem $DisplayClass -ErrorAction SilentlyContinue | Where-Object {
         $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-        $p -and ($p.UserModeDriverName -match 'viogpu_d3d10')
+        $p -and ($p.MatchingDeviceId -match '^pci\\ven_1af4&dev_1050')
     })
-    if ($keys.Count -ne 1) { throw "Expected one viogpu adapter key, found $($keys.Count)." }
+    if ($keys.Count -ne 1) { throw "Expected one VirtIO GPU adapter key, found $($keys.Count)." }
     return $keys[0]
 }
 
-function Show-Status($key) {
-    $p = Get-ItemProperty $key.PSPath
-    Write-Host "Adapter key : $($key.Name)"
+function Show-Status {
+    $p = Get-ItemProperty (Get-AdapterKey).PSPath
     Write-Host "DriverDesc  : $($p.DriverDesc)"
+    Write-Host "Provider    : $($p.ProviderName), $($p.DriverDate) $($p.DriverVersion), $($p.InfPath)"
     Write-Host 'UserModeDriverName:'
     $i = 0
     foreach ($e in $p.UserModeDriverName) { Write-Host ("  [{0}] {1}" -f $i++, $e) }
-    Write-Host "System32 DLLs present: vgd3d12 $(Test-Path $SysDll), vgd3d11 $(Test-Path $SysDll11)"
+    Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "Device      : $($_.FriendlyName), status $($_.Status), problem $($_.Problem)"
+    }
+}
+
+# Third-party packages in the driver store (oem*.inf) whose INF matches `pattern`.
+function Find-Packages([string]$pattern) {
+    Get-ChildItem (Join-Path $env:SystemRoot 'INF') -Filter 'oem*.inf' |
+        Where-Object { Select-String -Path $_.FullName -Pattern $pattern -SimpleMatch -Quiet } |
+        ForEach-Object { $_.Name }
+}
+
+# Deletes a file, or renames it to .old when a process has it loaded; the next Install deletes the .old.
+function Remove-Leftover([string]$path) {
+    if (Test-Path "$path.old") { Remove-Item "$path.old" -Force -ErrorAction SilentlyContinue }
+    if (-not (Test-Path $path)) { return }
+    try { Remove-Item $path -Force -ErrorAction Stop; Write-Host "Removed $path" }
+    catch {
+        Move-Item $path "$path.old" -Force
+        Write-Host "$path is in use: renamed to .old, deleted by the next Install after a reboot" -ForegroundColor Yellow
+    }
+}
+
+# What yttrium's package and our earlier test installs leave behind once their packages are gone.
+function Remove-YttriumLeftovers {
+    # yttrium's resolution service, whose binary went with its package.
+    if (Get-Service vgpusrv -ErrorAction SilentlyContinue) {
+        Stop-Service vgpusrv -Force -ErrorAction SilentlyContinue
+        & sc.exe delete vgpusrv | Out-Null
+        Write-Host 'Removed the vgpusrv service'
+    }
+    # yttrium's user-mode files, which its INF copied to System32 and SysWOW64 (our package has its own build of
+    # viogpu_wgl.dll in the DriverStore). Its opengl32.dll is left alone: that name is Windows' own.
+    $names = @('viogpu_d3d10.dll', 'yttrium12.dll', 'viogpu_wgl.dll', 'libEGL.dll', 'libGLESv1_CM.dll',
+               'libGLESv2.dll', 'libvulkan_virtio.dll', 'vulkan_lvp.dll',
+               'lvp_icd.x86_64.json', 'virtio_icd.x86_64.json', 'lvp_icd.x86.json', 'virtio_icd.x86.json')
+    foreach ($dir in @('System32', 'SysWOW64')) {
+        foreach ($n in $names) { Remove-Leftover (Join-Path $env:SystemRoot "$dir\$n") }
+    }
+    # Its Vulkan ICD registrations (the manifests above).
+    foreach ($key in @('HKLM:\SOFTWARE\Khronos\Vulkan\Drivers', 'HKLM:\SOFTWARE\WOW6432Node\Khronos\Vulkan\Drivers')) {
+        if (-not (Test-Path $key)) { continue }
+        (Get-Item $key).Property | Where-Object { $_ -match '\\(lvp|virtio)_icd\.[^\\]*\.json$' } | ForEach-Object {
+            Remove-ItemProperty -Path $key -Name $_
+            Write-Host "Removed the Vulkan ICD registration $_"
+        }
+    }
+    # Earlier test installs: the UMDs and ICD in System32 (vgd-test.ps1 before the package), the KMD copies and
+    # saved ImagePath of kmd-swap.ps1, and the saved UserModeDriverName.
+    foreach ($n in @('vgd3d11.dll', 'vgd3d12.dll', 'vgd_vulkan_virtio.dll')) {
+        Remove-Leftover (Join-Path $env:SystemRoot "System32\$n")
+    }
+    Get-ChildItem (Join-Path $env:SystemRoot 'System32\drivers') -Filter 'vgd_viogpu3d_*.sys' | ForEach-Object {
+        Remove-Leftover $_.FullName
+    }
+    foreach ($n in @('viogpu3d-ImagePath.txt', 'original-UserModeDriverName.txt')) {
+        Remove-Item (Join-Path $Work $n) -ErrorAction SilentlyContinue
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 
 switch ($Action) {
     'Status' {
-        Show-Status (Get-AdapterKey)
+        Show-Status
     }
 
     'Install' {
         Assert-Admin
-        $dll = Find-BuildFile 'umd\vgd3d12.dll'
-        $dll11 = Find-BuildFile 'umd\vgd3d11.dll'
-        $probe = Find-BuildFile 'tests\win\d3dprobe.exe'
-        $key = Get-AdapterKey
-        $current = @((Get-ItemProperty $key.PSPath).UserModeDriverName)
-
-        # Save the original value once; repeated installs keep the first (yttrium's) value.
-        if (-not (Test-Path $Saved)) {
-            $original = @($current | Where-Object { $_ -notmatch 'vgd3d1[12]' })
-            Set-Content -Path $Saved -Value $original -Encoding ASCII
-            & reg.exe export ($key.Name) (Join-Path $Work 'adapter-key-backup.reg') /y | Out-Null
+        # Stage the package: the INF and the build outputs it lists.
+        $pkg = Join-Path $Work 'pkg'
+        if (Test-Path $pkg) { Remove-Item $pkg -Recurse -Force }
+        New-Item -ItemType Directory -Path $pkg | Out-Null
+        $files = [ordered]@{
+            'viogpu3d.sys'           = 'kmd\signed\viogpu3d.sys'
+            'vgd3d11.dll'            = 'umd\vgd3d11.dll'
+            'vgd3d12.dll'            = 'umd\vgd3d12.dll'
+            'vgd_vulkan_virtio.dll'  = 'icd\vgd_vulkan_virtio.dll'
+            'vgd_vulkan_virtio.json' = 'pkg\vgd_vulkan_virtio.json'
+            'viogpu_wgl.dll'         = 'icd\viogpu_wgl.dll'
         }
-        $original = @(Get-Content $Saved)
-
-        Install-File $dll $SysDll
-        Install-File $dll11 $SysDll11
-        $icd = $null
-        try { $icd = Find-BuildFile 'icd\vgd_vulkan_virtio.dll' }
-        catch { Write-Host "No icd\vgd_vulkan_virtio.dll: vgd3d12.dll will fall back to the registered ICD (no present)." -ForegroundColor Yellow }
-        if ($icd) {
-            Install-File $icd $SysIcd
-            Write-Host "ICD: $SysIcd sha256 $((Get-FileHash $SysIcd -Algorithm SHA256).Hash.ToLower())"
+        foreach ($name in $files.Keys) {
+            $src = Find-BuildFile $files[$name]
+            Copy-Item $src (Join-Path $pkg $name)
+            Write-Host ("{0,-23} {1}  {2}" -f $name, (Get-FileHash $src -Algorithm SHA256).Hash.ToLower().Substring(0, 16), $src)
         }
-        Copy-Item $probe (Join-Path $Work 'd3dprobe.exe') -Force
+        # DriverVer: today, and a version that grows with every install (yyddd.hhmm), so PnP ranks the new package
+        # above the one installed before it.
+        $now = Get-Date
+        $ver = '1.0.{0}.{1}' -f (($now.Year % 100) * 1000 + $now.DayOfYear), ($now.Hour * 100 + $now.Minute)
+        $driverVer = 'DriverVer   = {0},{1}' -f $now.ToString('MM/dd/yyyy', [Globalization.CultureInfo]::InvariantCulture), $ver
+        $inf = Join-Path $pkg 'vgd.inf'
+        (Get-Content (Find-BuildFile 'pkg\vgd.inf')) -replace '^DriverVer\s*=.*$', $driverVer | Set-Content $inf -Encoding ASCII
+
+        # Catalog and test-sign it. Not with yttrium's certificate: it is not marked for code signing, which
+        # Set-AuthenticodeSignature requires. Ours is trusted as a root and a publisher, so PnP installs without asking.
+        $cert = Get-ChildItem Cert:\LocalMachine\My | Where-Object Subject -eq $CertSubject | Select-Object -First 1
+        if (-not $cert) {
+            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $CertSubject -CertStoreLocation Cert:\LocalMachine\My `
+                -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddYears(20)
+            Write-Host "Created the test certificate $CertSubject ($($cert.Thumbprint))"
+        }
+        foreach ($name in @('Root', 'TrustedPublisher')) {
+            $store = [Security.Cryptography.X509Certificates.X509Store]::new($name, 'LocalMachine')
+            $store.Open('ReadWrite')
+            $store.Add([Security.Cryptography.X509Certificates.X509Certificate2]::new($cert.RawData))
+            $store.Close()
+        }
+        $cat = Join-Path $pkg 'vgd.cat'
+        New-FileCatalog -Path $pkg -CatalogFilePath $cat -CatalogVersion 2.0 | Out-Null
+        $sig = Set-AuthenticodeSignature -FilePath $cat -Certificate $cert -HashAlgorithm SHA256
+        if ($sig.Status -ne 'Valid') { throw "Signing vgd.cat failed: $($sig.Status) $($sig.StatusMessage)" }
+
+        & pnputil.exe /add-driver $inf /install
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "pnputil /add-driver failed with $LASTEXITCODE" }
+
+        # The packages this one replaces: yttrium's, our D3D12 extension (pkg/vgd3d12.inf), and our earlier installs.
+        $old = @(Find-Packages 'viogpu_d3d10_x64.dll') + @(Find-Packages '{e6eb91c4-82d6-49e5-bb39-81ea7ddae195}') +
+               @(Find-Packages "`"$Provider`"" | Where-Object {
+                   -not (Select-String -Path (Join-Path $env:SystemRoot "INF\$_") -Pattern ",$ver" -SimpleMatch -Quiet) })
+        foreach ($p in $old) {
+            & pnputil.exe /delete-driver $p
+            if ($LASTEXITCODE -ne 0) { Write-Host "Could not delete $p (still in use?); Status shows what the device uses." -ForegroundColor Yellow }
+        }
+        Remove-YttriumLeftovers
 
         # Processes that do not inherit the environment log too, DWM included: the UMDs read these from the registry,
         # and C:\vgd must be writable by DWM's account. DXVK writes <exe>_vgd3d11.log there. Local, not on the share:
@@ -162,12 +228,14 @@ switch ($Action) {
             Set-ItemProperty -Path $settings -Name VGD_SHADER_DUMP -Value $dump
         } else { Remove-ItemProperty -Path $settings -Name VGD_SHADER_DUMP -ErrorAction SilentlyContinue }
 
-        # Slots: D3D9 stays yttrium's; D3D10 and D3D11 are vgd3d11, D3D12 is vgd3d12.
-        $slots = @($original[0], $SysDll11, $SysDll11, $SysDll)
-        Set-ItemProperty -Path $key.PSPath -Name UserModeDriverName -Type MultiString -Value $slots
-        Show-Status $key
+        Copy-Item (Find-BuildFile 'tests\win\d3dprobe.exe') (Join-Path $Work 'd3dprobe.exe') -Force
+        # OpenGL runs on zink, which needs the Vulkan loader; Windows does not ship it.
+        if (-not (Test-Path (Join-Path $env:SystemRoot 'System32\vulkan-1.dll'))) {
+            Write-Host 'No System32\vulkan-1.dll: OpenGL (zink) needs the Vulkan Runtime installed.' -ForegroundColor Yellow
+        }
+        Show-Status
         Write-Host ''
-        Write-Host 'Installed. Reboot (DWM then runs on vgd3d11.dll), then run:  .\vgd-test.ps1 Probe -D3D11' -ForegroundColor Green
+        Write-Host "Installed $ver. Reboot, then run:  .\vgd-test.ps1 Probe -D3D11" -ForegroundColor Green
     }
 
     'Probe' {
@@ -199,23 +267,14 @@ switch ($Action) {
 
     'Uninstall' {
         Assert-Admin
-        $key = Get-AdapterKey
-        if (Test-Path $Saved) {
-            $original = @(Get-Content $Saved)
-            Set-ItemProperty -Path $key.PSPath -Name UserModeDriverName -Type MultiString -Value $original
-            Remove-Item $Saved
-        } else {
-            Write-Host 'No saved value; leaving UserModeDriverName as is.' -ForegroundColor Yellow
+        $ours = @(Find-Packages "`"$Provider`"")
+        if ($ours.Count -eq 0) { Write-Host 'No package of ours is installed.' -ForegroundColor Yellow }
+        foreach ($p in $ours) {
+            & pnputil.exe /delete-driver $p /uninstall /force
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) { throw "pnputil /delete-driver $p failed with $LASTEXITCODE" }
         }
-        # A DLL may be loaded by a running process (vgd3d11.dll by DWM); then it goes after the reboot.
-        foreach ($f in @($SysDll, $SysDll11)) {
-            try { Remove-Item $f -ErrorAction Stop }
-            catch { if (Test-Path $f) { Write-Host "Could not delete $f now (in use); rerun Uninstall after reboot." -ForegroundColor Yellow } }
-        }
-        try { if (Test-Path $SysIcd) { Remove-Item $SysIcd -ErrorAction Stop } }
-        catch { Write-Host "Could not delete $SysIcd now (in use); rerun Uninstall after reboot." -ForegroundColor Yellow }
-        Show-Status $key
+        Show-Status
         Write-Host ''
-        Write-Host 'Uninstalled. Reboot to make the adapter use the original value.' -ForegroundColor Green
+        Write-Host 'Uninstalled. Reboot; the device then runs on the basic display driver until a package is installed.' -ForegroundColor Green
     }
 }

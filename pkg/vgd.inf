@@ -1,0 +1,109 @@
+; SPDX-License-Identifier: BSD-3-Clause
+; Driver package for the VirtIO GPU (Venus): yttrium's viogpu3d.sys as we build it (kmd/), our D3D10/11 and D3D12
+; UMDs, and yttrium's Venus Vulkan and OpenGL (WGL on zink) drivers as we build them (icd/), all in the DriverStore.
+; It replaces yttrium's package; none of yttrium's own binaries are installed (its D3D10 and D3D12 UMDs, EGL/GLES,
+; lavapipe, the resolution service).
+; Based on yttrium's viogpu3d_x64.inx (Copyright 2019-2022 Red Hat, Inc., kmd/yttrium/viogpu/LICENSE).
+;
+; vgd-test.ps1 Install stages it with the build outputs, stamps DriverVer, catalogs and test-signs it.
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Display
+ClassGuid   = {4d36e968-e325-11ce-bfc1-08002be10318}
+Provider    = %Provider%
+; Stamped at install (vgd-test.ps1), so each install outranks the one before it.
+DriverVer   = 10/23/2026,1.0.0.0
+CatalogFile = vgd.cat
+PnpLockdown = 1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+viogpu3d.sys           = 1
+vgd3d11.dll            = 1
+vgd3d12.dll            = 1
+vgd_vulkan_virtio.dll  = 1
+vgd_vulkan_virtio.json = 1
+viogpu_wgl.dll         = 1
+
+[DestinationDirs]
+DefaultDestDir = 13   ; DriverStore
+
+[Manufacturer]
+%Provider% = VGD, NTamd64.10.0...22000
+
+[VGD.NTamd64.10.0...22000]
+%Device.Desc% = VGD_Inst, PCI\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01
+
+[VGD_Inst.NT]
+Include      = msdv.inf
+FeatureScore = F9
+CopyFiles    = VGD_Files
+AddReg       = VGD_DeviceSettings
+
+[VGD_Files]
+viogpu3d.sys
+vgd3d11.dll
+vgd3d12.dll
+vgd_vulkan_virtio.dll
+vgd_vulkan_virtio.json
+viogpu_wgl.dll
+
+[VGD_Inst.NT.Services]
+; The service keeps yttrium's name, so installing over its package moves the device to our driver.
+AddService = VioGpu3D, 0x00000002, VGD_Service, VGD_EventLog   ; SPSVCINST_ASSOCSERVICE
+
+[VGD_Inst.NT.HW]
+AddReg = VGD_PCI_MSIX
+
+[VGD_Service]
+ServiceType   = 1   ; SERVICE_KERNEL_DRIVER
+StartType     = 3   ; SERVICE_DEMAND_START
+ErrorControl  = 0   ; SERVICE_ERROR_IGNORE
+ServiceBinary = %13%\viogpu3d.sys
+
+[VGD_EventLog]
+AddReg = VGD_EventLog.AddReg
+
+[VGD_EventLog.AddReg]
+HKR,, EventMessageFile, %REG_EXPAND_SZ%, "%%SystemRoot%%\System32\IoLogMsg.dll"
+HKR,, TypesSupported,   %REG_DWORD%, 7
+
+[VGD_DeviceSettings]
+; Read by the KMD (viogpu_adapter.cpp), with yttrium's values.
+HKR,, HWCursor,          %REG_DWORD%, 0
+HKR,, FlexResolution,    %REG_DWORD%, 1
+HKR,, UsePhysicalMemory, %REG_DWORD%, 0
+; Slots: D3D9, D3D10, D3D11, D3D12. vgd3d11.dll serves D3D10 and D3D11 (DWM too); D3D9 has no UMD of ours, and its
+; slot names vgd3d11.dll only because the list cannot hold an empty entry: it has no D3D9 entry point, so D3D9
+; device creation fails. No 32-bit UMDs (UserModeDriverNameWow).
+HKR,, UserModeDriverName,      %REG_MULTI_SZ%, %13%\vgd3d11.dll, %13%\vgd3d11.dll, %13%\vgd3d11.dll, %13%\vgd3d12.dll
+HKR,, InstalledDisplayDrivers, %REG_MULTI_SZ%, vgd3d11, vgd3d11, vgd3d11, vgd3d12
+; The Vulkan loader finds the ICD through the adapter (its manifest is in the DriverStore with it). The UMDs load it
+; from their own directory without the loader.
+HKR,, VulkanDriverName,        %REG_MULTI_SZ%, %13%\vgd_vulkan_virtio.json
+; OpenGL: Windows' opengl32.dll loads this ICD, which renders through zink on the Vulkan driver above and presents
+; through D3D11 (vgd3d11.dll). Flags and version as yttrium's package sets them.
+HKR,, OpenGLDriverName,        %REG_MULTI_SZ%, %13%\viogpu_wgl.dll
+HKR,, OpenGLFlags,             %REG_DWORD%, 3
+HKR,, OpenGLVersion,           %REG_DWORD%, 4096
+; As yttrium's package sets them: preemption on; GPU timeouts do not reset the device (TdrDebugMode 1: ignore).
+HKLM, "SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Scheduler", EnablePreemption, %REG_DWORD%, 1
+HKLM, "SYSTEM\CurrentControlSet\Control\GraphicsDrivers", TdrDebugMode, %REG_DWORD%, 1
+
+[VGD_PCI_MSIX]
+; yttrium's: line-based interrupts (MSISupported 0).
+HKR, "Interrupt Management",, 0x00000010
+HKR, "Interrupt Management\MessageSignaledInterruptProperties",, 0x00000010
+HKR, "Interrupt Management\MessageSignaledInterruptProperties", MSISupported,       0x00010001, 0
+HKR, "Interrupt Management\MessageSignaledInterruptProperties", MessageNumberLimit, 0x00010001, 4
+
+[Strings]
+Provider      = "vgd project"
+DiskName      = "vgd install disk"
+Device.Desc   = "VirtIO GPU (Venus) with vgd D3D10/11/12"
+REG_MULTI_SZ  = 0x00010000
+REG_EXPAND_SZ = 0x00020000
+REG_DWORD     = 0x00010001

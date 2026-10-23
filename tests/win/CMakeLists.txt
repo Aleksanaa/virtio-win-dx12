@@ -13,7 +13,7 @@ target_link_libraries(d3d11probe PRIVATE d3d11 dxgi dxguid user32)
 target_link_options(d3d11probe PRIVATE -static -static-libgcc -static-libstdc++)
 
 # The guest scripts next to the probes, so a copy of build/ is all the guest needs (they find the rest from there).
-foreach(script vgd-test.ps1 kmd-swap.ps1 kmt-trace.wds)
+foreach(script vgd-test.ps1 kmt-trace.wds)
   configure_file(${script} ${script} COPYONLY)
 endforeach()
 
