@@ -6,6 +6,7 @@
 #include "device.h"
 #include "engine.h"
 #include "log.h"
+#include "module.h"
 #include "viogpu_abi.h"
 
 #include <cstring>
@@ -153,10 +154,9 @@ extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter12(D3D12DDIARG_OPEN
     return S_OK;
 }
 
-BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
+BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID)
 {
-    // Unloaded by FreeLibrary (reserved is null); at process exit nothing runs after us.
-    if (reason == DLL_PROCESS_DETACH && !reserved)
-        vgd::umd::log_shutdown();
+    if (reason == DLL_PROCESS_ATTACH)
+        vgd::umd::pin_module(self);
     return TRUE;
 }

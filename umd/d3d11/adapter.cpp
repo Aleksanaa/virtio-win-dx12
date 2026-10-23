@@ -4,6 +4,7 @@
 // gives it to the first device created at that level.
 #include "device.h"
 #include "dxvk_bridge.h"
+#include "module.h"
 #include "viogpu_abi.h"
 #include "vulkan_icd.h"
 
@@ -223,10 +224,9 @@ extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter10_2(D3D10DDIARG_OP
     return S_OK;
 }
 
-BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
+BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID)
 {
-    // Unloaded by FreeLibrary (reserved is null); at process exit nothing runs after us.
-    if (reason == DLL_PROCESS_DETACH && !reserved)
-        vgd::umd::log_shutdown();
+    if (reason == DLL_PROCESS_ATTACH)
+        vgd::umd::pin_module(self);
     return TRUE;
 }

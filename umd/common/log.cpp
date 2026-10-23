@@ -65,20 +65,6 @@ void log_init(const char* component)
     g_verbose = setting("VGD_VERBOSE", v, sizeof(v)) && v[0] == '1';
 }
 
-void log_exceptions_off(); // stacks.cpp
-
-void log_shutdown()
-{
-    // A handler left behind outlives the DLL: the process's next exception calls into unmapped code, which CFG
-    // turns into a fast fail in ntdll (dxdiag and Task Manager close the adapter they queried and run on).
-    log_exceptions_off();
-    std::lock_guard lock(g_lock);
-    if (g_file != INVALID_HANDLE_VALUE) {
-        CloseHandle(g_file);
-        g_file = INVALID_HANDLE_VALUE;
-    }
-}
-
 bool verbose() { return g_verbose; }
 
 void logf(LogLevel level, const char* fmt, ...)

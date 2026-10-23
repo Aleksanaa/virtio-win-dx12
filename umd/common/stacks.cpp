@@ -129,12 +129,6 @@ void log_exceptions()
         RemoveVectoredExceptionHandler(h);
 }
 
-void log_exceptions_off()
-{
-    if (void* h = g_handler.exchange(nullptr))
-        RemoveVectoredExceptionHandler(h);
-}
-
 void log_thread_stacks(const char* why)
 {
     using GetThreadDescriptionProc = HRESULT(WINAPI*)(HANDLE, PWSTR*);
