@@ -109,6 +109,18 @@ LONG CALLBACK log_exception(EXCEPTION_POINTERS* e)
     std::snprintf(what, sizeof(what), "%s on thread %lu %ls",
                   code == kGccThrow ? "C++ exception thrown" : "access violation", GetCurrentThreadId(), name);
     logf(LogLevel::warn, "%s", what);
+    if (code == EXCEPTION_ACCESS_VIOLATION && e->ExceptionRecord->NumberParameters >= 2) {
+        // What was accessed, and the registers that usually hold the pointer involved.
+        const ULONG_PTR kind = e->ExceptionRecord->ExceptionInformation[0];
+        const CONTEXT& c = *e->ContextRecord;
+        logf(LogLevel::warn, "  %s 0x%llx; rax %llx rbx %llx rcx %llx rdx %llx rsi %llx rdi %llx r8 %llx r9 %llx",
+             kind == 0 ? "reading" : kind == 1 ? "writing" : "executing",
+             static_cast<unsigned long long>(e->ExceptionRecord->ExceptionInformation[1]),
+             static_cast<unsigned long long>(c.Rax), static_cast<unsigned long long>(c.Rbx),
+             static_cast<unsigned long long>(c.Rcx), static_cast<unsigned long long>(c.Rdx),
+             static_cast<unsigned long long>(c.Rsi), static_cast<unsigned long long>(c.Rdi),
+             static_cast<unsigned long long>(c.R8), static_cast<unsigned long long>(c.R9));
+    }
     log_frames("at", *e->ContextRecord);
     return EXCEPTION_CONTINUE_SEARCH;
 }
