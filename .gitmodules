@@ -9,3 +9,7 @@
 	path = third_party/dxvk
 	url = https://github.com/doitsujin/dxvk.git
 	ignore = untracked
+[submodule "third_party/vkd3d-proton"]
+	path = third_party/vkd3d-proton
+	url = https://github.com/HansKristian-Work/vkd3d-proton.git
+	ignore = untracked

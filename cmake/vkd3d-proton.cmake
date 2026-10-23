@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# vkd3d-proton (third_party/vkd3d-proton, vendored) built with its own meson build for the MinGW target, as static
+# vkd3d-proton (third_party/vkd3d-proton, git submodule) built with its own meson build for the MinGW target, as static
 # libraries the D3D12 UMD links in (targets at the end). widl (IDL headers) and glslang (its internal shaders) come
 # from the dev shell.
 

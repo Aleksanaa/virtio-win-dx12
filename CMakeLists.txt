@@ -21,8 +21,8 @@ add_library(vgd-directx-headers INTERFACE)
 target_include_directories(vgd-directx-headers SYSTEM INTERFACE
     third_party/DirectX-Headers/include third_party/DirectX-Headers/include/directx)
 
-# The D3D12 and D3D11 implementations, each built with its own meson build: vkd3d-proton (vendored) and DXVK
-# (submodule).
+# The D3D12 and D3D11 implementations, each built with its own meson build: vkd3d-proton and DXVK
+# (both git submodules).
 include(cmake/meson.cmake)
 include(cmake/vkd3d-proton.cmake)
 include(cmake/dxvk.cmake)
