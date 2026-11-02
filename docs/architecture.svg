@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 480" width="720" height="480" font-family="Helvetica, Arial, sans-serif" font-size="12">
+  <defs>
+    <style>
+      rect { fill: #fff; stroke: #000; stroke-width: 1; }
+      rect.ours { fill: #d9d9d9; }
+      rect.frame { fill: none; }
+      text { fill: #000; }
+      line { stroke: #000; stroke-width: 1; stroke-dasharray: 6 4; }
+      .side { font-size: 11px; }
+    </style>
+  </defs>
+  <rect x="0" y="0" width="720" height="480" style="stroke:none"/>
+
+  <!-- Windows guest -->
+  <rect class="frame" x="10" y="10" width="700" height="234"/>
+  <text x="20" y="28" font-weight="bold">Windows guest</text>
+
+  <rect x="20" y="38" width="580" height="28"/>
+  <text x="310" y="56" text-anchor="middle">Applications, DWM</text>
+
+  <rect x="20" y="70" width="142" height="28"/>
+  <text x="91" y="88" text-anchor="middle">D3D10/11 runtime</text>
+  <rect x="166" y="70" width="142" height="28"/>
+  <text x="237" y="88" text-anchor="middle">D3D9 + D3D9On12</text>
+  <rect x="312" y="70" width="142" height="28"/>
+  <text x="383" y="88" text-anchor="middle">D3D12 runtime</text>
+  <rect x="458" y="70" width="142" height="28"/>
+  <text x="529" y="88" text-anchor="middle">opengl32.dll</text>
+
+  <rect class="ours" x="20" y="102" width="142" height="28"/>
+  <text x="91" y="120" text-anchor="middle">vgd3d11.dll (DXVK)</text>
+  <rect class="ours" x="166" y="102" width="288" height="28"/>
+  <text x="310" y="120" text-anchor="middle">vgd3d12.dll (vkd3d-proton)</text>
+  <rect x="458" y="102" width="142" height="28"/>
+  <text x="529" y="120" text-anchor="middle">viogpu_wgl.dll (zink)</text>
+
+  <rect class="ours" x="20" y="134" width="580" height="28"/>
+  <text x="310" y="152" text-anchor="middle">vgd_vulkan_virtio.dll (Mesa Venus driver)</text>
+
+  <line x1="10" y1="168" x2="710" y2="168"/>
+  <text class="side" x="612" y="163">user mode</text>
+  <text class="side" x="612" y="181">kernel mode</text>
+
+  <rect x="20" y="174" width="580" height="28"/>
+  <text x="310" y="192" text-anchor="middle">dxgkrnl</text>
+  <rect class="ours" x="20" y="206" width="580" height="28"/>
+  <text x="310" y="224" text-anchor="middle">viogpu3d.sys (yttrium WDDM driver)</text>
+
+  <text x="310" y="262" text-anchor="middle" class="side">virtio-gpu (Venus command stream)</text>
+
+  <!-- Linux host -->
+  <rect class="frame" x="10" y="272" width="700" height="170"/>
+  <text x="20" y="290" font-weight="bold">Linux host</text>
+
+  <rect x="20" y="300" width="400" height="28"/>
+  <text x="220" y="318" text-anchor="middle">QEMU virtio-gpu (venus=on)</text>
+  <rect x="424" y="300" width="176" height="28"/>
+  <text x="512" y="318" text-anchor="middle">SPICE / GTK display</text>
+
+  <rect x="20" y="332" width="580" height="28"/>
+  <text x="310" y="350" text-anchor="middle">virglrenderer (Venus)</text>
+
+  <rect x="20" y="364" width="580" height="28"/>
+  <text x="310" y="382" text-anchor="middle">Vulkan driver (RADV, ...)</text>
+
+  <line x1="10" y1="398" x2="710" y2="398"/>
+  <text class="side" x="612" y="411">hardware</text>
+
+  <rect x="20" y="404" width="580" height="28"/>
+  <text x="310" y="422" text-anchor="middle">GPU</text>
+
+  <!-- Key -->
+  <rect class="ours" x="20" y="454" width="14" height="14"/>
+  <text x="42" y="465" class="side">written or patched here</text>
+</svg>
