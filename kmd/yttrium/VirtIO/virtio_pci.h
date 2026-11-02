@@ -42,56 +42,6 @@
 #include "linux/types.h"
 #include "linux/virtio_config.h"
 
-#ifndef VIRTIO_PCI_NO_LEGACY
-
-/* A 32-bit r/o bitmask of the features supported by the host */
-#define VIRTIO_PCI_HOST_FEATURES            0
-
-/* A 32-bit r/w bitmask of features activated by the guest */
-#define VIRTIO_PCI_GUEST_FEATURES           4
-
-/* A 32-bit r/w PFN for the currently selected queue */
-#define VIRTIO_PCI_QUEUE_PFN                8
-
-/* A 16-bit r/o queue size for the currently selected queue */
-#define VIRTIO_PCI_QUEUE_NUM                12
-
-/* A 16-bit r/w queue selector */
-#define VIRTIO_PCI_QUEUE_SEL                14
-
-/* A 16-bit r/w queue notifier */
-#define VIRTIO_PCI_QUEUE_NOTIFY             16
-
-/* An 8-bit device status register.  */
-#define VIRTIO_PCI_STATUS                   18
-
-/* An 8-bit r/o interrupt status register.  Reading the value will return the
-* current contents of the ISR and will also clear it.  This is effectively
-* a read-and-acknowledge. */
-#define VIRTIO_PCI_ISR                      19
-
-/* MSI-X registers: only enabled if MSI-X is enabled. */
-/* A 16-bit vector for configuration changes. */
-#define VIRTIO_MSI_CONFIG_VECTOR            20
-/* A 16-bit vector for selected queue notifications. */
-#define VIRTIO_MSI_QUEUE_VECTOR             22
-
-/* The remaining space is defined by each driver as the per-driver
-* configuration space */
-#define VIRTIO_PCI_CONFIG_OFF(msix_enabled) ((msix_enabled) ? 24 : 20)
-/* Deprecated: please use VIRTIO_PCI_CONFIG_OFF instead */
-#define VIRTIO_PCI_CONFIG(msix_enabled)     VIRTIO_PCI_CONFIG_OFF(msix_enabled)
-
-/* How many bits to shift physical queue address written to QUEUE_PFN.
-* 12 is historical, and due to x86 page size. */
-#define VIRTIO_PCI_QUEUE_ADDR_SHIFT         12
-
-/* The alignment to use between consumer and producer parts of vring.
-* x86 pagesize again. */
-#define VIRTIO_PCI_VRING_ALIGN              4096
-
-#endif /* VIRTIO_PCI_NO_LEGACY */
-
 /* The bit of the ISR which indicates a device configuration change. */
 #define VIRTIO_PCI_ISR_CONFIG     0x2
 /* Vector value used to disable MSI for queue */
@@ -241,9 +191,6 @@ struct virtio_device_ops {
 };
 
 struct virtio_device {
-    // the I/O port BAR of the PCI device (legacy virtio devices only)
-    ULONG_PTR addr;
-
     // true if the device uses MSI interrupts
     bool msix_used;
 
@@ -253,7 +200,7 @@ struct virtio_device {
     // true if the VIRTIO_F_RING_PACKED feature flag has been negotiated
     bool packed_ring;
 
-    // internal device operations, implemented separately for legacy and modern
+    // internal device operations
     const struct virtio_device_ops *device;
 
     // external callbacks implemented separately by different driver model drivers

@@ -74,7 +74,6 @@
 /* the notify function used when creating a virt queue */
 bool vp_notify(struct virtqueue *vq);
 
-NTSTATUS vio_legacy_initialize(VirtIODevice *vdev);
 NTSTATUS vio_modern_initialize(VirtIODevice *vdev);
 
 #endif

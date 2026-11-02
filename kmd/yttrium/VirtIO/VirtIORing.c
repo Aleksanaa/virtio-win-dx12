@@ -433,7 +433,7 @@ static void virtqueue_shutdown_split(struct virtqueue *_vq)
     struct virtqueue_split *vq = splitvq(_vq);
     unsigned int num = vq->vring.num;
     void *pages = vq->vring.desc;
-    unsigned int vring_align = _vq->vdev->addr ? PAGE_SIZE : SMP_CACHE_BYTES;
+    unsigned int vring_align = SMP_CACHE_BYTES;
 
     RtlZeroMemory(pages, vring_size_split(num, vring_align));
     (void)vring_new_virtqueue_split(_vq->index, vq->vring.num, vring_align, _vq->vdev, pages,

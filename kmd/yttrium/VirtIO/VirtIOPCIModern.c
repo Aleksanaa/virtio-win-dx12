@@ -33,7 +33,6 @@
  * SUCH DAMAGE.
  */
 #include "osdep.h"
-#define VIRTIO_PCI_NO_LEGACY
 #include "virtio_pci.h"
 #include "virtio.h"
 #include "kdebugprint.h"
@@ -566,7 +565,7 @@ NTSTATUS vio_modern_initialize(VirtIODevice *vdev)
 
     find_pci_vendor_capabilities(vdev, capabilities, VIRTIO_PCI_CAP_MAX);
 
-    /* Check for a common config, if not found use legacy mode */
+    /* Check for a common config: virtio 1.0 devices have one */
     if (!capabilities[VIRTIO_PCI_CAP_COMMON_CFG]) {
         DPrintf(0, "%s(%p): device not found\n", __FUNCTION__, vdev);
         return STATUS_DEVICE_NOT_CONNECTED;

@@ -35,7 +35,7 @@ set(sources
     viogpu/viogpu3d/driver.cpp viogpu/viogpu3d/viogpu_command.cpp viogpu/viogpu3d/viogpu_device.cpp
     viogpu/viogpu3d/viogpu_allocation.cpp viogpu/viogpu3d/viogpu_adapter.cpp viogpu/viogpu3d/viogpu_shmem_allocator.cpp
     viogpu/viogpu3d/viogpu_vidpn.cpp
-    VirtIO/VirtIOPCICommon.c VirtIO/VirtIOPCILegacy.c VirtIO/VirtIOPCIModern.c VirtIO/VirtIORing-Packed.c
+    VirtIO/VirtIOPCICommon.c VirtIO/VirtIOPCIModern.c VirtIO/VirtIORing-Packed.c
     VirtIO/VirtIORing.c)
 foreach(s IN LISTS sources)
   get_filename_component(n "${s}" NAME_WE)

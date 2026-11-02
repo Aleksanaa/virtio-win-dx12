@@ -460,7 +460,7 @@ static void virtqueue_shutdown_packed(struct virtqueue *_vq)
     struct virtqueue_packed *vq = packedvq(_vq);
     unsigned int num = vq->packed.vring.num;
     void *pages = vq->packed.vring.desc;
-    unsigned int vring_align = _vq->vdev->addr ? PAGE_SIZE : SMP_CACHE_BYTES;
+    unsigned int vring_align = SMP_CACHE_BYTES;
 
     RtlZeroMemory(pages, vring_size_packed(num, vring_align));
     vring_new_virtqueue_packed(_vq->index, num, vring_align, _vq->vdev, pages, _vq->notification_cb,

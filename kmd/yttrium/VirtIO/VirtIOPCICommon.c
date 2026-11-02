@@ -54,10 +54,6 @@ NTSTATUS virtio_device_initialize(VirtIODevice *vdev, const VirtIOSystemOps *pSy
     vdev->maxQueues = ARRAYSIZE(vdev->inline_info);
 
     status = vio_modern_initialize(vdev);
-    if (status == STATUS_DEVICE_NOT_CONNECTED) {
-        /* fall back to legacy virtio device */
-        status = vio_legacy_initialize(vdev);
-    }
     if (NT_SUCCESS(status)) {
         /* Always start by resetting the device */
         virtio_device_reset(vdev);
@@ -366,9 +362,7 @@ int virtio_get_bar_index(PPCI_COMMON_HEADER pPCIHeader, PHYSICAL_ADDRESS BasePA)
     return -1;
 }
 
-/* The notify function used when creating a virt queue, common to both modern
- * and legacy (the difference is in how vq->notification_addr is set up).
- */
+/* The notify function used when creating a virt queue. */
 bool vp_notify(struct virtqueue *vq)
 {
     /* we write the queue's selector into the notification register to
