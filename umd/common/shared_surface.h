@@ -1,14 +1,51 @@
 // SPDX-License-Identifier: MIT
-// The formats of shared and presentable surfaces as the KMD knows them: allocation private data
-// (viogpu::AllocationExchange) carries a virgl format, which the KMD scans out (VioGpuVirglFormatToScanout), or a
-// Mesa pipe format where virgl has none.
+// Shared and presentable surfaces, as both UMDs create and open them. Their host resource is Venus memory:
+//   - creating one, the surface is a linear image on exported memory (our ICD build exports an NT handle); we open
+//     that handle on our kernel device (kmt.h), which gives an allocation handle of this process, and the runtime
+//     allocation is created as an alias of it (viogpu::AllocationAlias, our KMD patch), naming the same host resource;
+//   - opening one is the reverse: an NT handle of the opened runtime resource goes to our ICD's dma-buf import
+//     (icd/patches/0003, 0005), under a linear image of the same size and format.
+// Allocation private data (viogpu::AllocationExchange) carries a virgl format, which the KMD scans out
+// (VioGpuVirglFormatToScanout), or a Mesa pipe format where virgl has none.
 #pragma once
 
+#include "kmt.h"
 #include "viogpu_abi.h"
 
 #include <dxgiformat.h>
 
 namespace vgd::umd {
+
+// The exported memory of a surface being created, opened on our kernel device, and the allocation private data of a
+// runtime allocation aliasing it. The memory stays open until this is destroyed, past the AllocateCb that creates the
+// alias.
+class SurfaceAlias {
+public:
+    explicit SurfaceAlias(KmtDevice* kmt) : kmt_(kmt) {}
+    ~SurfaceAlias();
+    SurfaceAlias(const SurfaceAlias&) = delete;
+    SurfaceAlias& operator=(const SurfaceAlias&) = delete;
+
+    // Opens `fd` (closing the NT handle it is): `size` bytes under a linear 2D image of `format` (virgl_format) with
+    // rows `stride` bytes apart. `display`: a surface that may be scanned out.
+    HRESULT open(int fd, ULONG format, UINT width, UINT height, UINT64 size, UINT stride, bool display);
+    // The host (virtio-gpu) resource id, for logs: the host names resources by it in its errors.
+    UINT host_resource() const;
+
+    viogpu::AllocationAlias data{};   // the allocation private data, once open
+
+private:
+    KmtDevice* kmt_;
+    D3DKMT_HANDLE opened_ = 0;
+};
+
+// The allocation private data of an opened shared resource (`allocations` of them, the first `size` bytes of
+// `data`) if it is one we can import: a shareable blob under a single 2D image. Null, logged as `what`, otherwise.
+const viogpu::AllocationExchange* importable_surface(const char* what, UINT allocations, const void* data, UINT size,
+                                                     D3DKMT_HANDLE allocation, D3DKMT_HANDLE km_resource);
+// An fd of the opened runtime resource `km_resource` for our ICD's import, which takes it over (if the import does
+// not, the caller closes handle_of_fd(fd)); -1, logged as `what`, on failure.
+int import_fd(const char* what, KmtDevice* kmt, D3DKMT_HANDLE km_resource);
 
 // The resource private data of the shared surfaces our UMDs create (the allocation's is a viogpu::AllocationAlias),
 // which openers get back: what the surface is in API terms. It must stay smaller than the allocation's private data,

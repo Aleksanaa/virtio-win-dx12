@@ -4,12 +4,9 @@
 // DXGI creates swapchain buffers as committed resources on PRIMARY heaps, and the compositor (DWM, through
 // yttrium's D3D10 UMD) opens their runtime allocation and imports its host resource into its own Venus context.
 // That resource must be a dma-buf exported from Vulkan memory, and the stock KMD creates a blob only in the context
-// of the device that first opens the allocation, here the D3D12 runtime's device, which has no Venus context. So:
-//   1. the buffer is a linear texture on exported memory (shared_image.h; our ICD build exports an NT handle);
-//   2. we open that handle on a kernel device of our own, which gives an allocation handle of this process;
-//   3. the runtime allocation is created as an alias of it (viogpu::AllocationAlias, our KMD patch): it names the
-//      same host resource, which lives until both are gone.
-// Present is then zero-copy: the buffer's allocation goes to the runtime, which presents it on the queue's
+// of the device that first opens the allocation, here the D3D12 runtime's device, which has no Venus context. So the
+// buffer is a linear texture on exported memory (shared_image.h) under a runtime allocation aliasing it
+// (shared_surface.h); the host resource lives until both are gone. Present is then zero-copy: the buffer's allocation goes to the runtime, which presents it on the queue's
 // context, where our queue bridge has ordered it after the rendering.
 //
 // Other resources have no runtime allocation: our resources live in Venus memory only. D3D9On12 and D3D11On12
@@ -21,7 +18,7 @@
 #include "log.h"
 #include "objects.h"
 #include "kmt.h"
-#include "surface_format.h"
+#include "shared_surface.h"
 #include "viogpu_abi.h"
 
 #include <atomic>
@@ -70,36 +67,13 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
         VGD_WARN("present: presentable texture failed: 0x%08lx", hr);
         return E_OUTOFMEMORY;
     }
-    const HANDLE nt = handle_of_fd(fd);
-    KmtDevice* kmt = kmt_device(d);
-    D3DKMT_HANDLE opened_resource = 0, source = 0;
-    if (kmt && nt != INVALID_HANDLE_VALUE)
-        hr = kmt->open_shared(nt, &opened_resource, &source);
-    else
-        hr = E_FAIL;
-    if (nt != INVALID_HANDLE_VALUE)
-        CloseHandle(nt);   // the opened resource keeps the allocation
+    SurfaceAlias alias(kmt_device(d));
+    hr = alias.open(fd, format, static_cast<UINT>(desc.Width), desc.Height, out.shared->size(),
+                    out.shared->row_pitch(), true);
     if (FAILED(hr)) {
-        VGD_WARN("present: could not open the exported memory (fd %d, handle %p)", fd, nt);
         out.shared.reset();
         return E_OUTOFMEMORY;
     }
-
-    viogpu::AllocationAlias alias{};
-    auto& o = alias.exchange.options;
-    o.target = viogpu::kPipeTexture2d;
-    o.format = format;
-    o.bind = viogpu::kBindRenderTarget | viogpu::kBindSamplerView | viogpu::kBindDisplayTarget | viogpu::kBindShared;
-    o.width = static_cast<ULONG>(desc.Width);
-    o.height = desc.Height;
-    o.depth = 1;
-    o.array_size = 1;
-    alias.exchange.Size = out.shared->size();
-    alias.exchange.BlobMem = viogpu::kBlobMemHost3d;
-    alias.exchange.BlobFlags = viogpu::kBlobFlagShareable;
-    alias.exchange.Stride = out.shared->row_pitch();
-    alias.Magic = viogpu::kAllocationAliasMagic;
-    alias.SourceAllocation = source;
     SharedSurfaceInfo surface;   // what the surface is, for our D3D11 UMD opening it (in DWM)
     surface.format = desc.Format;
     surface.width = static_cast<UINT>(desc.Width);
@@ -107,8 +81,8 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
     surface.bind = SharedSurfaceInfo::kBindShaderResource | SharedSurfaceInfo::kBindRenderTarget;
 
     D3D12DDI_ALLOCATION_INFO_0022 info{};
-    info.pPrivateDriverData = &alias;
-    info.PrivateDriverDataSize = sizeof(alias);
+    info.pPrivateDriverData = &alias.data;
+    info.PrivateDriverDataSize = sizeof(alias.data);
     info.Flags = D3D12DDI_ALLOCATION_INFO_FLAGS_0022_PRIMARY;
     D3D12DDICB_ALLOCATE_0022 cb{};
     if (rt_resource.handle) {   // resource private data, which a device allocation has none of
@@ -122,12 +96,11 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
     if (FAILED(hr)) {
         VGD_WARN("present: AllocateCb (primary) failed: 0x%08lx; retrying as a plain allocation", hr);
         info = {};
-        info.pPrivateDriverData = &alias;
-        info.PrivateDriverDataSize = sizeof(alias);
+        info.pPrivateDriverData = &alias.data;
+        info.PrivateDriverDataSize = sizeof(alias.data);
         cb.hKMResource = 0;
         hr = d.um_callbacks->pfnAllocateCb(d.rt_device, &cb);
     }
-    kmt->close(opened_resource);
     if (FAILED(hr) || !info.hAllocation) {
         VGD_WARN("present: AllocateCb failed: 0x%08lx", hr);
         out.shared.reset();
@@ -137,7 +110,8 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
     out.rt_resource = rt_resource;
     VGD_TRACE("present: presentable allocation 0x%x (km resource 0x%x) aliases 0x%x: %llu bytes, pitch %u, "
               "virgl format %lu",
-              info.hAllocation, cb.hKMResource, source, static_cast<unsigned long long>(out.shared->size()),
+              info.hAllocation, cb.hKMResource, alias.data.SourceAllocation,
+              static_cast<unsigned long long>(out.shared->size()),
               out.shared->row_pitch(), format);
     return S_OK;
 }
@@ -194,26 +168,18 @@ PresentCopies::~PresentCopies()
 
 HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject& out)
 {
-    if (args.NumAllocations != 1 || !args.pOpenAllocationInfo ||
-        args.pOpenAllocationInfo[0].PrivateDriverDataSize < sizeof(viogpu::AllocationExchange)) {
-        VGD_WARN("OpenHeapAndResource: %u allocations, private data %u bytes: not one of yttrium's allocations",
-                 args.NumAllocations,
-                 args.pOpenAllocationInfo ? args.pOpenAllocationInfo[0].PrivateDriverDataSize : 0);
+    const auto* alloc = args.NumAllocations ? args.pOpenAllocationInfo : nullptr;
+    const viogpu::AllocationExchange* e =
+        importable_surface("OpenHeapAndResource", args.NumAllocations, alloc ? alloc->pPrivateDriverData : nullptr,
+                           alloc ? alloc->PrivateDriverDataSize : 0, alloc ? alloc->hAllocation : 0,
+                           args.hKMResource.handle);
+    if (!e)
         return E_OUTOFMEMORY;
-    }
-    const auto& e = *static_cast<const viogpu::AllocationExchange*>(args.pOpenAllocationInfo[0].pPrivateDriverData);
-    const viogpu::ResourceOptions& o = e.options;
-    VGD_TRACE("OpenHeapAndResource: allocation 0x%x, km resource 0x%x: target %lu format %lu bind 0x%lx %lux%lux%lu "
-              "array %lu levels %lu samples %lu; size %llu, blob mem %lu, blob flags 0x%lx, stride %lu",
-              args.pOpenAllocationInfo[0].hAllocation, static_cast<unsigned>(args.hKMResource.handle), o.target,
-              o.format, o.bind, o.width, o.height, o.depth, o.array_size, o.last_level + 1, o.nr_samples,
-              static_cast<unsigned long long>(e.Size), e.BlobMem, e.BlobFlags, e.Stride);
+    const viogpu::ResourceOptions& o = e->options;
     DXGI_FORMAT srgb;
     const DXGI_FORMAT format = dxgi_format(o.format, &srgb);
-    if (o.target != viogpu::kPipeTexture2d || o.depth > 1 || o.array_size > 1 || o.last_level || o.nr_samples > 1 ||
-        e.BlobMem != viogpu::kBlobMemHost3d || !(e.BlobFlags & viogpu::kBlobFlagShareable) ||
-        format == DXGI_FORMAT_UNKNOWN) {
-        VGD_WARN("OpenHeapAndResource: only shareable single 2D textures of swapchain formats so far");
+    if (format == DXGI_FORMAT_UNKNOWN) {
+        VGD_WARN("OpenHeapAndResource: only surfaces of swapchain formats so far");
         return E_OUTOFMEMORY;
     }
     D3D12_RESOURCE_DESC desc{};
@@ -231,22 +197,14 @@ HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject
     if (!(o.bind & viogpu::kBindSamplerView))
         desc.Flags |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
 
-    KmtDevice* kmt = kmt_device(d);
-    if (!kmt)
+    const int fd = import_fd("OpenHeapAndResource", kmt_device(d), args.hKMResource.handle);
+    if (fd < 0)
         return E_OUTOFMEMORY;
-    HANDLE nt = nullptr;
-    if (FAILED(kmt->share(args.hKMResource.handle, &nt)))
-        return E_OUTOFMEMORY;
-    const int fd = fd_of_handle(nt);
-    if (fd < 0) {
-        CloseHandle(nt);
-        return E_OUTOFMEMORY;
-    }
     bool consumed = false;
-    HRESULT hr = SharedImage::create_imported(d.engine, desc, &srgb, srgb != DXGI_FORMAT_UNKNOWN ? 1 : 0, fd, e.Size,
+    HRESULT hr = SharedImage::create_imported(d.engine, desc, &srgb, srgb != DXGI_FORMAT_UNKNOWN ? 1 : 0, fd, e->Size,
                                               &out.shared, &consumed);
     if (!consumed)
-        CloseHandle(nt);
+        CloseHandle(handle_of_fd(fd));
     if (FAILED(hr)) {
         VGD_WARN("OpenHeapAndResource: import of %lux%lu format %d failed: 0x%08lx", o.width, o.height,
                  static_cast<int>(format), hr);

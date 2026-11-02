@@ -23,6 +23,7 @@ add_library(vgd-umd-common STATIC
     common/kmt.cpp
     common/linear_image.cpp
     common/log.cpp
+    common/shared_surface.cpp
     common/shader_container.cpp
     common/stacks.cpp
     common/vulkan_device.cpp

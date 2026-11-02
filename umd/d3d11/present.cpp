@@ -2,17 +2,11 @@
 // Shared surfaces, primaries, Present and the DXGI table.
 //
 // Surfaces another process opens (swapchain buffers DWM composites, DWM's own primaries, DirectComposition surfaces)
-// are runtime allocations whose host resource is Venus memory, as in vgd3d12 (d3d12/present.cpp):
-//   1. the surface is a linear image on exported memory (linear_image.h; our ICD build exports an NT handle), which
-//      DXVK wraps as a texture;
-//   2. we open that handle on a kernel device of our own, which gives an allocation handle of this process;
-//   3. the runtime allocation is created as an alias of it (viogpu::AllocationAlias, our KMD patch), naming the
-//      same host resource.
-// Opening one is the reverse: an NT handle of the opened resource goes to our ICD's dma-buf import, under a linear
-// image of the same size and format. Present hands the allocations to the runtime with the present context waiting
-// for our rendering on them: a fence the GPU signals through our ICD (icd/patches/0006), else a wait here.
+// are runtime allocations whose host resource is Venus memory (shared_surface.h), under a linear image (linear_image.h)
+// that DXVK wraps as a texture. Present hands the allocations to the runtime with the present context waiting for our
+// rendering on them: a fence the GPU signals through our ICD (icd/patches/0006), else a wait here.
 #include "device.h"
-#include "surface_format.h"
+#include "shared_surface.h"
 
 #include <atomic>
 
@@ -93,31 +87,11 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
         VGD_WARN("shared surface: %ux%u format %d failed: 0x%08lx", width, height, a.Format, hr);
         return hr;
     }
-    const HANDLE nt = handle_of_fd(fd);
-    KmtDevice* kmt = d.kernel();
-    D3DKMT_HANDLE opened = 0, source = 0;
-    hr = kmt ? kmt->open_shared(nt, &opened, &source) : E_FAIL;
-    CloseHandle(nt);   // the opened resource keeps the allocation
+    SurfaceAlias alias(d.kernel());
+    hr = alias.open(fd, format, width, height, out.image->size(), out.image->row_pitch(),
+                    a.pPrimaryDesc || (a.BindFlags & D3D10_DDI_BIND_PRESENT));
     if (FAILED(hr))
         return hr;
-
-    viogpu::AllocationAlias alias{};
-    auto& o = alias.exchange.options;
-    o.target = viogpu::kPipeTexture2d;
-    o.format = format;
-    o.bind = viogpu::kBindRenderTarget | viogpu::kBindSamplerView | viogpu::kBindShared;
-    if (a.pPrimaryDesc || (a.BindFlags & D3D10_DDI_BIND_PRESENT))
-        o.bind |= viogpu::kBindDisplayTarget;
-    o.width = width;
-    o.height = height;
-    o.depth = 1;
-    o.array_size = 1;
-    alias.exchange.Size = out.image->size();
-    alias.exchange.BlobMem = viogpu::kBlobMemHost3d;
-    alias.exchange.BlobFlags = viogpu::kBlobFlagShareable;
-    alias.exchange.Stride = out.image->row_pitch();
-    alias.Magic = viogpu::kAllocationAliasMagic;
-    alias.SourceAllocation = source;
     SharedSurfaceInfo surface;
     surface.format = a.Format;
     surface.width = width;
@@ -125,8 +99,8 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     surface.bind = bind;
 
     D3DDDI_ALLOCATIONINFO info{};
-    info.pPrivateDriverData = &alias;
-    info.PrivateDriverDataSize = sizeof(alias);
+    info.pPrivateDriverData = &alias.data;
+    info.PrivateDriverDataSize = sizeof(alias.data);
     if (a.pPrimaryDesc) {
         info.VidPnSourceId = a.pPrimaryDesc->VidPnSourceId;
         info.Flags.Primary = 1;
@@ -137,9 +111,7 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     cb.hResource = rt.handle;
     cb.NumAllocations = 1;
     cb.pAllocationInfo = &info;
-    const UINT host_res = kmt->resource_id(source);   // for the log: the host names it in its errors
     hr = d.kt.pfnAllocateCb(d.rt_device.handle, &cb);
-    kmt->close(opened);
     if (FAILED(hr) || !info.hAllocation) {
         VGD_WARN("shared surface: AllocateCb failed: 0x%08lx", hr);
         return FAILED(hr) ? hr : E_FAIL;
@@ -148,24 +120,24 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     out.allocated = true;
     VGD_TRACE("shared surface: %ux%u format %d%s, allocation 0x%x (km resource 0x%x) aliases 0x%x (host resource "
               "%u): %llu bytes, pitch %u",
-              width, height, a.Format, a.pPrimaryDesc ? " primary" : "", info.hAllocation, cb.hKMResource, source,
-              host_res, static_cast<unsigned long long>(out.image->size()), out.image->row_pitch());
+              width, height, a.Format, a.pPrimaryDesc ? " primary" : "", info.hAllocation, cb.hKMResource,
+              alias.data.SourceAllocation, alias.host_resource(), static_cast<unsigned long long>(out.image->size()),
+              out.image->row_pitch());
     return S_OK;
 }
 
 HRESULT open_shared_surface(Device& d, const D3D10DDIARG_OPENRESOURCE& a, ResourceObject& out)
 {
-    if (a.NumAllocations != 1 || !a.pOpenAllocationInfo ||
-        a.pOpenAllocationInfo[0].PrivateDriverDataSize < sizeof(viogpu::AllocationExchange)) {
-        VGD_WARN("OpenResource: %u allocations, private data %u bytes: not a surface of ours", a.NumAllocations,
-                 a.pOpenAllocationInfo ? a.pOpenAllocationInfo[0].PrivateDriverDataSize : 0);
+    const auto* alloc = a.NumAllocations ? a.pOpenAllocationInfo : nullptr;
+    const viogpu::AllocationExchange* e =
+        importable_surface("OpenResource", a.NumAllocations, alloc ? alloc->pPrivateDriverData : nullptr,
+                           alloc ? alloc->PrivateDriverDataSize : 0, alloc ? alloc->hAllocation : 0,
+                           a.hKMResource.handle);
+    if (!e)
         return E_NOTIMPL;
-    }
-    const auto& e = *static_cast<const viogpu::AllocationExchange*>(a.pOpenAllocationInfo[0].pPrivateDriverData);
-    const viogpu::ResourceOptions& o = e.options;
     DXGI_FORMAT srgb;
-    DXGI_FORMAT format = dxgi_format(o.format, &srgb);
-    UINT width = o.width, height = o.height;
+    DXGI_FORMAT format = dxgi_format(e->options.format, &srgb);
+    UINT width = e->options.width, height = e->options.height;
     UINT bind = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
     const auto* surface = static_cast<const SharedSurfaceInfo*>(a.pPrivateDriverData);
     const bool ours = surface && a.PrivateDriverDataSize == sizeof(SharedSurfaceInfo) &&
@@ -176,37 +148,20 @@ HRESULT open_shared_surface(Device& d, const D3D10DDIARG_OPENRESOURCE& a, Resour
         height = surface->height;
         bind = surface->bind;
     }
-    VGD_TRACE("OpenResource: allocation 0x%x, km resource 0x%x: %s format %d %ux%u bind 0x%x; virgl format %lu, "
-              "size %llu, blob mem %lu, blob flags 0x%lx, stride %lu",
-              a.pOpenAllocationInfo[0].hAllocation, a.hKMResource.handle, ours ? "ours," : "foreign,", format, width,
-              height, bind, o.format, static_cast<unsigned long long>(e.Size), e.BlobMem, e.BlobFlags, e.Stride);
-    if (o.target != viogpu::kPipeTexture2d || e.BlobMem != viogpu::kBlobMemHost3d ||
-        !(e.BlobFlags & viogpu::kBlobFlagShareable) || format == DXGI_FORMAT_UNKNOWN) {
-        VGD_WARN("OpenResource: only shareable 2D blob surfaces of known formats can be opened");
+    VGD_TRACE("OpenResource: %s format %d %ux%u bind 0x%x", ours ? "ours," : "foreign,", format, width, height,
+              bind);
+    if (format == DXGI_FORMAT_UNKNOWN) {
+        VGD_WARN("OpenResource: only surfaces of known formats can be opened");
         return E_NOTIMPL;
     }
-    KmtDevice* kmt = d.kernel();
-    HANDLE nt = nullptr;
-    if (!kmt || FAILED(kmt->share(a.hKMResource.handle, &nt)))
+    const int fd = import_fd("OpenResource", d.kernel(), a.hKMResource.handle);
+    if (fd < 0)
         return E_FAIL;
-    // For the log: the host names resources by this id in its errors (an import of one it does not know kills the
-    // Venus context).
-    D3DKMT_HANDLE opened = 0, source = 0;
-    if (SUCCEEDED(kmt->open_shared(nt, &opened, &source))) {
-        VGD_TRACE("OpenResource: km resource 0x%x is host resource %u", a.hKMResource.handle,
-                  kmt->resource_id(source));
-        kmt->close(opened);
-    }
-    const int fd = fd_of_handle(nt);
-    if (fd < 0) {
-        CloseHandle(nt);
-        return E_FAIL;
-    }
     out.dimension = D3D10DDIRESOURCE_TEXTURE2D;
     out.format = format;
     out.width = width;
     out.height = height;
-    HRESULT hr = surface_texture(d, surface_desc(format, width, height, bind), fd, e.Size, out, nullptr);
+    HRESULT hr = surface_texture(d, surface_desc(format, width, height, bind), fd, e->Size, out, nullptr);
     if (FAILED(hr))
         VGD_WARN("OpenResource: import of %ux%u format %d failed: 0x%08lx", width, height, format, hr);
     return hr;
