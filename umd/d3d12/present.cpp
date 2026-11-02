@@ -2,7 +2,7 @@
 // Swapchain buffers, Present and the DXGI table.
 //
 // DXGI creates swapchain buffers as committed resources on PRIMARY heaps, and the compositor (DWM, through
-// yttrium's D3D10 UMD) opens their runtime allocation and imports its host resource into its own Venus context.
+// vgd3d11) opens their runtime allocation and imports its host resource into its own Venus context.
 // That resource must be a dma-buf exported from Vulkan memory, and the stock KMD creates a blob only in the context
 // of the device that first opens the allocation, here the D3D12 runtime's device, which has no Venus context. So the
 // buffer is a linear texture on exported memory (shared_image.h) under a runtime allocation aliasing it
@@ -159,12 +159,10 @@ PresentCopies::~PresentCopies()
     }
 }
 
-// --- Textures other drivers share ----------------------------------------------------------------------------
-// ID3D12Device::OpenSharedHandle on a texture yttrium's D3D10/11 UMD created shared (a browser compositor's canvas,
-// for WebGPU): the runtime has opened its allocation, whose private data is yttrium's allocation exchange. Its
-// memory is Venus memory exported as a shareable blob, under a linear image (yttrium_venus2_resource.c), so it is
-// imported like the reverse of a swapchain buffer: an NT handle of the opened resource goes to our ICD's dma-buf
-// import (icd/patches/0003, 0005), under a linear image of the same size and format (shared_image.h).
+// --- Textures vgd3d11 shares ---------------------------------------------------------------------------------
+// ID3D12Device::OpenSharedHandle on a texture vgd3d11 created shared (a browser compositor's canvas, for WebGPU): the
+// runtime has opened its allocation, a shared surface (shared_surface.h) imported under a linear image of the same
+// size and format (shared_image.h). Its format is the virgl one: the resource private data vgd3d11 adds is not read.
 
 HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject& out)
 {

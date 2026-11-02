@@ -182,7 +182,7 @@ struct CommandQueueObject {
 HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const D3D12DDIARG_CREATERESOURCE_0088& args,
                        const D3D12_RESOURCE_DESC& desc, D3D12DDI_HRTRESOURCE rt_resource, HeapObject& out);
 void destroy_primary(Device& d, HeapObject& heap);
-// OpenHeapAndResource of a texture yttrium's D3D10/11 UMD shares: `out` gets an imported texture.
+// OpenHeapAndResource of a texture vgd3d11 shares: `out` gets an imported texture.
 HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject& out);
 void fill_present_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& table);
 void fill_present_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& table);
