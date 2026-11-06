@@ -823,6 +823,13 @@ NTSTATUS VioGpuAllocation::GetStandardAllocationDriverData(DXGKARG_GETSTANDARDAL
 
                 allocationExchange->ResourceOptions.flags |= VIRGL_RESOURCE_FLAG_MAP_COHERENT;
 
+                if (pStandardAllocation->pResourcePrivateDriverData)
+                {
+                    VIOGPU_CREATE_RESOURCE_EXCHANGE *resourceExchange =
+                        (VIOGPU_CREATE_RESOURCE_EXCHANGE *)pStandardAllocation->pResourcePrivateDriverData;
+                    resourceExchange->magic = VIOGPU_RESOURCE_STAGING_SURFACE_MAGIC;
+                }
+
                 surfaceData->Pitch = surfaceData->Width * 4;
                 DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s staging surface\n", __FUNCTION__));
                 return STATUS_SUCCESS;
@@ -955,6 +962,18 @@ NTSTATUS VioGpuAllocation::DxgkCreateAllocation(VioGpuAdapter *adapter, DXGKARG_
     allocationInfo->PreferredSegment.Direction0 = 0;
 
     allocationInfo->Flags.CpuVisible = TRUE;
+    /* CDD's staging surfaces are guest RAM that GDI reads with the CPU on every
+     * legacy blt present; mapped write-combined that copy ran at ~100 MB/s
+     * (~50 ms for a full window). Map them cached, as the host and our MDL
+     * mappings access guest RAM. Only these: making every non-blob allocation
+     * cached left the boot display stuck.
+     */
+    const VIOGPU_CREATE_RESOURCE_EXCHANGE *standardResource =
+        (const VIOGPU_CREATE_RESOURCE_EXCHANGE *)pCreateAllocation->pPrivateDriverData;
+    allocationInfo->Flags.Cached =
+        !is_blob && standardResource &&
+        pCreateAllocation->PrivateDriverDataSize == sizeof(VIOGPU_CREATE_RESOURCE_EXCHANGE) &&
+        standardResource->magic == VIOGPU_RESOURCE_STAGING_SURFACE_MAGIC;
 #if VIOGPU_WDDM2
     /* Render and BLT Present still use physical allocation lists. WDDM 2
      * allocations referenced through those lists must explicitly permit

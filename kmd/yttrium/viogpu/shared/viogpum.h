@@ -228,6 +228,10 @@ typedef struct _VIOGPU_CREATE_RESOURCE_EXCHANGE
 } VIOGPU_CREATE_RESOURCE_EXCHANGE;
 #pragma pack()
 
+// VIOGPU_CREATE_RESOURCE_EXCHANGE::magic of the staging surfaces the KMD describes for CDD, which reads them with the
+// CPU (GDI's copy of each legacy blt present): the KMD maps those cached.
+#define VIOGPU_RESOURCE_STAGING_SURFACE_MAGIC 0x47545356 // "VSTG"
+
 #pragma pack(1)
 typedef struct _VIOGPU_CREATE_ALLOCATION_EXCHANGE
 {
