@@ -1,0 +1,44 @@
+From: vgd3d12
+Subject: util/os_time: sleep with a high-resolution waitable timer on Windows
+
+os_time_sleep() used Sleep(), which rounds up to whole timer periods: Sleep(1) takes ~2 ms even with a 1 ms
+system timer, and 15.6 ms with the default one. Venus polls fences, queue progress and ring space with
+sleeps starting at 160 us (vn_relax), so on Windows each such wait overslept by 10x or more while the host
+GPU sat idle (Steel Nomad Light: host GPU 62% busy, no thread saturated). Sleep with a high-resolution
+waitable timer (Windows 10 1803+), which honours sub-millisecond durations; fall back to Sleep() without one.
+Steel Nomad Light then scored 21% more, with the host GPU 72% busy.
+
+--- a/src/util/os_time.c	2026-11-06 20:47:23.266157755 +0800
++++ b/src/util/os_time.c	2026-11-06 20:47:46.474389196 +0800
+@@ -90,11 +90,27 @@
+    usleep(usecs);
+ 
+ #elif DETECT_OS_WINDOWS
+-   DWORD dwMilliseconds = (DWORD) ((usecs + 999) / 1000);
+-   /* Avoid Sleep(O) as that would cause to sleep for an undetermined duration */
+-   if (dwMilliseconds) {
+-      Sleep(dwMilliseconds);
++   if (usecs <= 0)
++      return;
++   /* Sleep() rounds up to whole timer periods (~2 ms for Sleep(1) with a
++    * 1 ms system timer, 15.6 ms with the default one), so a short wait such
++    * as Venus's polling sleeps 10x longer than asked. A high-resolution
++    * waitable timer sleeps for the time requested.
++    */
++   HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
++                                         TIMER_ALL_ACCESS);
++   if (timer) {
++      LARGE_INTEGER due;
++      due.QuadPart = -usecs * 10; /* relative, in 100 ns units */
++      const bool set = SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE);
++      if (set)
++         WaitForSingleObject(timer, INFINITE);
++      CloseHandle(timer);
++      if (set)
++         return;
+    }
++   /* No high-resolution timer (before Windows 10 1803). */
++   Sleep((DWORD) ((usecs + 999) / 1000));
+ #else
+ #  error Unsupported OS
+ #endif
