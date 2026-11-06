@@ -3,10 +3,9 @@
 //
 // Install: unpack the package (the cabinet in our resources) into %ProgramData%\vgd\staging; catalog it and sign the
 // catalog with a certificate made on this computer and trusted there (so PnP installs it without asking); install it
-// on the VirtIO GPU, forced, so it replaces whatever drives the device now (Red Hat's WHQL-signed viogpudo would
-// otherwise outrank a test-signed package); then remove the other packages for the device from the driver store, and
-// what yttrium's package left in System32, and register in Apps & features with a copy of this executable as the
-// uninstaller.
+// on the VirtIO GPU from the next boot, in place of whatever drives it now (install_on_devices); and register in Apps &
+// features with a copy of this executable as the uninstaller. At that boot, the copy (`/cleanup`, a one-shot task)
+// removes the other packages for the device from the driver store and what yttrium's package left in System32.
 //
 // The kernel loads viogpu3d.sys on its own test signature (test signing on), whoever made it; the catalog's signature
 // only serves PnP, which wants a publisher it trusts. That is why the certificate can be local: its private key is
@@ -25,6 +24,11 @@
 #include <fstream>
 
 namespace fs = std::filesystem;
+
+// setupapi.dll; MinGW's setupapi.h lacks it.
+extern "C" BOOL WINAPI SetupGetInfDriverStoreLocationW(PCWSTR FileName, PSP_ALTPLATFORM_INFO_V2 AlternatePlatformInfo,
+                                                       PCWSTR LocaleName, PWSTR ReturnBuffer, DWORD ReturnBufferSize,
+                                                       PDWORD RequiredSize);
 
 namespace {
 
@@ -441,6 +445,53 @@ void unregister_product()
         MoveFileExW(dir.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
 }
 
+// --- The device and the boot after
+
+constexpr wchar_t kCleanupTask[] = L"vgd cleanup";
+
+// Installs the package (`inf`, in the driver store already) on each present VirtIO GPU as its driver from the next
+// boot: the class installer writes the device's configuration but does not restart the device (DI_DONOTCALLCONFIGMG).
+// Restarting a display device under the running desktop crashes the processes that have the old user-mode drivers
+// loaded (DWM in the old Venus ICD), and the display did not always come back. Selecting the driver from our INF
+// alone also makes it win over a better-signed one (Red Hat's WHQL-signed viogpudo).
+int install_on_devices(const std::wstring& inf)
+{
+    HDEVINFO set = SetupDiGetClassDevsW(nullptr, L"PCI", nullptr, DIGCF_ALLCLASSES | DIGCF_PRESENT);
+    if (set == INVALID_HANDLE_VALUE)
+        fail(L"Listing the PCI devices failed");
+    int installed = 0;
+    SP_DEVINFO_DATA dev = {sizeof(dev)};
+    for (DWORD i = 0; SetupDiEnumDeviceInfo(set, i, &dev); i++) {
+        if (!is_virtio_gpu(set, &dev))
+            continue;
+        SP_DEVINSTALL_PARAMS_W params = {sizeof(params)};
+        SetupDiGetDeviceInstallParamsW(set, &dev, &params);
+        wcsncpy(params.DriverPath, inf.c_str(), MAX_PATH - 1);
+        params.Flags |= DI_ENUMSINGLEINF | DI_DONOTCALLCONFIGMG | DI_QUIETINSTALL;
+        if (!SetupDiSetDeviceInstallParamsW(set, &dev, &params) ||
+            !SetupDiBuildDriverInfoList(set, &dev, SPDIT_COMPATDRIVER) ||
+            !SetupDiCallClassInstaller(DIF_SELECTBESTCOMPATDRV, set, &dev) ||
+            !SetupDiCallClassInstaller(DIF_INSTALLDEVICE, set, &dev)) {
+            DWORD error = GetLastError();
+            SetupDiDestroyDeviceInfoList(set);
+            fail(L"Installing the driver on the VirtIO GPU failed", error);
+        }
+        installed++;
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return installed;
+}
+
+// Runs `vgd-setup.exe /cleanup` once at the next boot, as SYSTEM: the packages it replaces are in use until then.
+void schedule_cleanup()
+{
+    std::wstring exe = install_dir() + L"\\" + kSetupName;
+    DWORD code = run(L"schtasks.exe", format(L"/create /f /tn \"%ls\" /sc onstart /ru SYSTEM /rl highest "
+                                             L"/tr \"\\\"%ls\\\" /cleanup\"", kCleanupTask, exe.c_str()));
+    if (code != 0)
+        fail(format(L"Scheduling the cleanup at the next boot failed (schtasks exit code %lu)", code), ERROR_SUCCESS);
+}
+
 }  // namespace
 
 bool install(const SystemState& state, const std::wstring& version, const Progress& progress)
@@ -467,27 +518,42 @@ bool install(const SystemState& state, const std::wstring& version, const Progre
                           &published_name))
         fail(L"Adding the driver package to the driver store failed");
     std::wstring oem = published_name;
-    log(L"Driver store: " + oem);
+    // The device installs from the driver store's copy: %13% (where the INF puts its files) is that folder.
+    wchar_t stored[MAX_PATH];
+    if (!SetupGetInfDriverStoreLocationW(published, nullptr, nullptr, stored, ARRAYSIZE(stored), nullptr))
+        fail(L"Finding " + oem + L" in the driver store failed");
+    log(L"Driver store: " + oem + L", " + stored);
 
-    progress(55, L"Installing the driver on the VirtIO GPU (the screen may go black for a moment)");
-    BOOL reboot = FALSE;
-    if (!UpdateDriverForPlugAndPlayDevicesW(nullptr, kHardwareId, inf.c_str(), INSTALLFLAG_FORCE, &reboot))
-        fail(L"Installing the driver on the VirtIO GPU failed");
-    log(format(L"Installed on the VirtIO GPU%ls", reboot ? L", restart needed" : L""));
+    progress(55, L"Installing the driver on the VirtIO GPU, from the next boot");
+    int devices = install_on_devices(stored);
+    if (devices == 0)
+        fail(L"There is no VirtIO GPU to install the driver on", ERROR_SUCCESS);
+    log(format(L"Installed on %d VirtIO GPU(s); it starts at the next boot", devices));
 
-    progress(85, L"Removing the drivers it replaces");
-    for (const auto& p : gpu_packages())
-        if (_wcsicmp(p.inf.c_str(), oem.c_str()) != 0)
-            remove_package(p);
-    remove_yttrium_leftovers();
-
-    progress(95, L"Registering in Apps & features");
+    progress(80, L"Registering in Apps & features");
     register_product(version, size_kb);
+    progress(90, L"Scheduling the removal of the drivers it replaces at the next boot");
+    schedule_cleanup();
     std::error_code ec;
     fs::remove_all(dir, ec);
     progress(100, L"Done");
-    // Processes keep the user-mode drivers they loaded (DWM included) until they restart.
     return true;
+}
+
+void cleanup()
+{
+    // Only once the VirtIO GPU runs on our package: its other packages, ours included, are not in use then.
+    SystemState s = inspect();
+    log(s.summary());
+    if (s.devices > 0 && _wcsicmp(s.device_provider.c_str(), kProvider) == 0) {
+        for (const auto& p : s.packages)
+            if (_wcsicmp(p.inf.c_str(), s.device_inf.c_str()) != 0)
+                remove_package(p);
+        remove_yttrium_leftovers();
+    } else {
+        log(L"The VirtIO GPU does not run on vgd: nothing to clean up");
+    }
+    run(L"schtasks.exe", format(L"/delete /f /tn \"%ls\"", kCleanupTask));
 }
 
 bool uninstall(const Progress& progress)
@@ -511,6 +577,7 @@ bool uninstall(const Progress& progress)
     }
     progress(60, L"Removing the resolution service");
     delete_our_service(L"vgpusrv");
+    run(L"schtasks.exe", format(L"/delete /f /tn \"%ls\"", kCleanupTask));
     progress(75, L"Removing the signing certificate");
     remove_certs();
     progress(90, L"Removing the Apps & features entry");

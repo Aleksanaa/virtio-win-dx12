@@ -85,16 +85,7 @@ void find_devices(SystemState& s)
         fail(L"Listing the PCI devices failed");
     SP_DEVINFO_DATA dev = {sizeof(dev)};
     for (DWORD i = 0; SetupDiEnumDeviceInfo(set, i, &dev); i++) {
-        std::vector<BYTE> buf(4096);
-        DWORD size = 0;
-        if (!SetupDiGetDeviceRegistryPropertyW(set, &dev, SPDRP_HARDWAREID, nullptr, buf.data(), buf.size() - 4, &size))
-            continue;
-        buf.resize(size + 4);
-        auto ids = multi_sz(buf);
-        bool match = std::any_of(ids.begin(), ids.end(), [](const std::wstring& id) {
-            return upper(id) == kHardwareId;
-        });
-        if (!match)
+        if (!is_virtio_gpu(set, &dev))
             continue;
         if (s.devices++ > 0)
             continue;
@@ -145,6 +136,17 @@ bool has_cert()
 }
 
 }  // namespace
+
+bool is_virtio_gpu(HDEVINFO set, SP_DEVINFO_DATA* dev)
+{
+    std::vector<BYTE> buf(4096);
+    DWORD size = 0;
+    if (!SetupDiGetDeviceRegistryPropertyW(set, dev, SPDRP_HARDWAREID, nullptr, buf.data(), buf.size() - 4, &size))
+        return false;
+    buf.resize(size + 4);
+    auto ids = multi_sz(buf);
+    return std::any_of(ids.begin(), ids.end(), [](const std::wstring& id) { return upper(id) == kHardwareId; });
+}
 
 bool DriverPackage::ours() const
 {

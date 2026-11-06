@@ -5,6 +5,7 @@
 
 #include <windows.h>
 
+#include <setupapi.h>
 #include <shlobj.h>
 
 #include <functional>
@@ -71,6 +72,8 @@ struct SystemState {
 };
 SystemState inspect();
 std::vector<DriverPackage> gpu_packages();
+// Whether a device has kHardwareId among its hardware IDs.
+bool is_virtio_gpu(HDEVINFO set, SP_DEVINFO_DATA* dev);
 
 // Reports a step: overall percentage and what is being done.
 using Progress = std::function<void(int percent, const std::wstring& step)>;
@@ -78,5 +81,35 @@ using Progress = std::function<void(int percent, const std::wstring& step)>;
 // install.cpp. Both return whether Windows needs a restart; both throw Failure.
 bool install(const SystemState& state, const std::wstring& version, const Progress& progress);
 bool uninstall(const Progress& progress);
+// At the boot after an install (`/cleanup`): removes the packages the install replaced, once the device runs on ours.
+void cleanup();
 // Turns test signing on for the next boot (after suspending BitLocker for that one restart); throws Failure.
 void enable_test_signing();
+
+// Every line logged so far, and a function that gets each new one (the window's log view).
+std::vector<std::wstring> log_history();
+void set_log_sink(std::function<void(const std::wstring&)> sink);
+
+// The installer's window (ui.cpp): a wizard showing one page at a time.
+struct Page {
+    std::wstring heading, subheading;
+    std::wstring text;    // written to the log, which every page shows
+    std::wstring status;  // above the progress bar
+    std::vector<std::pair<int, std::wstring>> buttons;  // right-aligned; the first is the default
+    size_t default_index = 0;  // the button Enter presses
+};
+
+class Wizard {
+public:
+    explicit Wizard(const std::wstring& version);
+    ~Wizard();
+    // Shows `page` until a button is pressed; returns its id (IDCANCEL for the window's close box).
+    int ask(const Page& page);
+    // Shows the progress page and runs `work` on a thread meanwhile; returns its result, or sets `error`.
+    bool run(const std::wstring& heading, const std::wstring& subheading,
+             const std::function<bool(const Progress&)>& work, std::wstring& error);
+
+private:
+    struct Impl;
+    Impl* impl;
+};
