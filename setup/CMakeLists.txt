@@ -36,6 +36,6 @@ set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/payload.rc" PROPERTIES
 enable_language(RC)
 add_executable(vgd-setup WIN32 main.cpp system.cpp install.cpp ui.cpp setup.rc "${CMAKE_CURRENT_BINARY_DIR}/payload.rc")
 target_compile_definitions(vgd-setup PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-target_link_libraries(vgd-setup PRIVATE setupapi newdev crypt32 cryptui wintrust ncrypt comctl32 shell32 shlwapi
+target_link_libraries(vgd-setup PRIVATE setupapi crypt32 cryptui wintrust ncrypt comctl32 shell32 shlwapi
     ole32 advapi32 ntdll)
 target_link_options(vgd-setup PRIVATE -municode -s -static -static-libgcc -static-libstdc++)

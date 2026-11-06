@@ -161,7 +161,9 @@ bool confirm_install(const SystemState& s)
     }
     std::wstring text = L"vgd brings Direct3D 9 to 12, Vulkan and OpenGL to the VirtIO GPU, rendered on the host's "
                         L"GPU through Venus.";
-    if (_wcsicmp(s.device_provider.c_str(), kProvider) != 0)
+    if (s.device_driver.empty())
+        text += L"\n\nThe VirtIO GPU has no driver configured now.";
+    else if (_wcsicmp(s.device_provider.c_str(), kProvider) != 0)
         text += format(L"\n\nThe VirtIO GPU runs on %ls (%ls %ls) now; vgd replaces it.", s.device_driver.c_str(),
                        s.device_provider.c_str(), s.device_version.c_str());
     std::wstring others;

@@ -91,7 +91,7 @@ void find_devices(SystemState& s)
             continue;
         HKEY key = SetupDiOpenDevRegKey(set, &dev, DICS_FLAG_GLOBAL, 0, DIREG_DRV, KEY_READ);
         if (key == INVALID_HANDLE_VALUE) {
-            s.device_driver = L"(no driver)";
+            s.device_driver.clear();  // no driver configured
             continue;
         }
         s.device_driver = reg_string(key, nullptr, L"DriverDesc");
@@ -206,8 +206,9 @@ std::wstring SystemState::summary() const
     std::wstring out = format(L"Windows build %lu, %ls\n", build, x64 ? L"x64" : L"not x64");
     out += format(L"VirtIO GPU: %d present\n", devices);
     if (devices)
-        out += format(L"  driver: %ls (%ls, %ls, %ls)\n", device_driver.c_str(), device_provider.c_str(),
-                      device_version.c_str(), device_inf.c_str());
+        out += device_driver.empty() ? std::wstring(L"  driver: none configured\n")
+                                     : format(L"  driver: %ls (%ls, %ls, %ls)\n", device_driver.c_str(),
+                                              device_provider.c_str(), device_version.c_str(), device_inf.c_str());
     out += format(L"Firmware: %ls, Secure Boot %ls\n", uefi ? L"UEFI" : L"BIOS", secure_boot ? L"on" : L"off");
     out += format(L"Test signing: %ls\n", test_signing ? L"on" : L"off");
     out += format(L"Memory integrity (HVCI): %ls\n", hvci ? L"on" : L"off");
