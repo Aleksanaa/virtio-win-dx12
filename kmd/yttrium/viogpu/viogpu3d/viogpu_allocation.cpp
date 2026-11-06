@@ -991,10 +991,11 @@ NTSTATUS VioGpuAllocation::DescribeAllocation(DXGKARG_DESCRIBEALLOCATION *pDescr
 
     pDescribeAllocation->Format = VioGpuToD3DDDIColorFormat(m_options.format);
 
-    // this values are RANDOM
-    pDescribeAllocation->MultisampleMethod.NumQualityLevels = 2;
-    pDescribeAllocation->MultisampleMethod.NumSamples = 2;
+    // dxgkrnl reads this for the blits it builds itself (legacy blt-model presents).
+    pDescribeAllocation->MultisampleMethod.NumQualityLevels = 0;
+    pDescribeAllocation->MultisampleMethod.NumSamples = max(m_options.nr_samples, 1u);
 
+    // 60 Hz, the only mode we report.
     pDescribeAllocation->RefreshRate.Numerator = 148500000;
     pDescribeAllocation->RefreshRate.Denominator = 2475000;
 
