@@ -37,6 +37,29 @@ LONG CALLBACK report_crash(EXCEPTION_POINTERS* e)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// The runtime's "Removing Device." debug message, with the stack that removes the device (module + offset).
+LONG CALLBACK report_device_removal(EXCEPTION_POINTERS* e)
+{
+    const EXCEPTION_RECORD* r = e->ExceptionRecord;
+    if (r->ExceptionCode != DBG_PRINTEXCEPTION_C || r->NumberParameters < 2 ||
+        !std::strstr(reinterpret_cast<const char*>(r->ExceptionInformation[1]), "Removing Device"))
+        return EXCEPTION_CONTINUE_SEARCH;
+    void* frames[32];
+    const USHORT n = RtlCaptureStackBackTrace(0, 32, frames, nullptr);
+    std::printf("DEVICE REMOVAL on thread %lu:\n", GetCurrentThreadId());
+    for (USHORT i = 0; i < n; i++) {
+        HMODULE mod = nullptr;
+        char name[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(frames[i]), &mod))
+            GetModuleFileNameA(mod, name, sizeof(name));
+        const char* base = std::strrchr(name, '\\');
+        std::printf("  %s+0x%llx\n", base ? base + 1 : name,
+                    static_cast<unsigned long long>(static_cast<char*>(frames[i]) - reinterpret_cast<char*>(mod)));
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 template <class T>
 struct Ref {
     T* p = nullptr;
@@ -606,6 +629,12 @@ bool present_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* ada
                 std::printf("    %s: %s: Present failed at frame %u: 0x%08lx\n", t, p.name, frame, hr);
                 break;
             }
+            // ANGLE (old Chromium) treats a failing GetDeviceRemovedReason as a lost context.
+            hr = dev->GetDeviceRemovedReason();
+            if (hr != S_OK) {
+                std::printf("    %s: %s: device removed after frame %u: 0x%08lx\n", t, p.name, frame, hr);
+                break;
+            }
             presented++;
             pump_messages();
         }
@@ -625,6 +654,7 @@ int main(int argc, char** argv)
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // a crash must not swallow the last lines
     g_main_thread = GetCurrentThreadId();
     AddVectoredExceptionHandler(1, report_crash);
+    AddVectoredExceptionHandler(1, report_device_removal);
     std::printf("d3d11probe built " __DATE__ " " __TIME__ "\n");
     bool present = false;
     for (int i = 1; i < argc; i++)
