@@ -21,15 +21,17 @@ struct LinearImage::Plan {
 
 namespace {
 
-uint32_t memory_type(const VulkanDevice& d, uint32_t bits)
+// A type in `bits` with all the `required` properties, device-local if one is.
+uint32_t memory_type(const VulkanDevice& d, uint32_t bits, VkMemoryPropertyFlags required = 0)
 {
     VkPhysicalDeviceMemoryProperties props;
     d.vk.vkGetPhysicalDeviceMemoryProperties(d.physical, &props);
     uint32_t fallback = UINT32_MAX;
     for (uint32_t i = 0; i < props.memoryTypeCount; i++) {
-        if (!(bits & (1u << i)))
+        const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
+        if (!(bits & (1u << i)) || (flags & required) != required)
             continue;
-        if (props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        if (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
             return i;
         if (fallback == UINT32_MAX)
             fallback = i;
@@ -195,8 +197,19 @@ HRESULT LinearImage::create_exported(const VulkanDevice& d, const LinearImageDes
     export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
     VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &export_info};
     mai.allocationSize = req.memoryRequirements.size;
-    mai.memoryTypeIndex = memory_type(d, req.memoryRequirements.memoryTypeBits);
-    if (mai.memoryTypeIndex == UINT32_MAX || d.vk.vkAllocateMemory(d.device, &mai, nullptr, &s->memory_) != VK_SUCCESS)
+    // The KMD reads host-visible images with the CPU: cached memory, as uncached or write-combined reads are slow
+    // (~60 ms for a 5 MB frame).
+    const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    mai.memoryTypeIndex = memory_type(d, req.memoryRequirements.memoryTypeBits,
+                                      desc.host_visible ? host | VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0);
+    if (mai.memoryTypeIndex == UINT32_MAX && desc.host_visible)
+        mai.memoryTypeIndex = memory_type(d, req.memoryRequirements.memoryTypeBits, host);
+    if (mai.memoryTypeIndex == UINT32_MAX) {
+        VGD_WARN("exported image: no %smemory type in image bits 0x%x", desc.host_visible ? "host-visible " : "",
+                 req.memoryRequirements.memoryTypeBits);
+        return E_OUTOFMEMORY;
+    }
+    if (d.vk.vkAllocateMemory(d.device, &mai, nullptr, &s->memory_) != VK_SUCCESS)
         return E_OUTOFMEMORY;
     s->size_ = req.memoryRequirements.size;
     hr = s->bind(p.declared_external, p.linear_pitch);

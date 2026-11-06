@@ -15,13 +15,14 @@ namespace vgd::umd {
 namespace {
 
 // The texture of a shared surface and the image under it: DXVK's image description for the texture, on memory that
-// is exported (*fd set) or imported (fd given).
+// is exported (*fd set; host-visible if asked) or imported (fd given).
 HRESULT surface_texture(Device& d, const D3D11_TEXTURE2D_DESC1& desc, int import_fd, uint64_t import_size,
-                        ResourceObject& out, int* export_fd)
+                        ResourceObject& out, int* export_fd, bool host_visible = false)
 {
     LinearImageDesc ld;
     ld.width = desc.Width;
     ld.height = desc.Height;
+    ld.host_visible = host_visible;
     HRESULT hr = dxvk::image_info(d.d3d.get(), desc, &ld.format, &ld.view_formats, &ld.usage);
     if (FAILED(hr))
         return hr;
@@ -117,8 +118,12 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     // Openers sample it and may render to it; DWM's primaries are render targets.
     const UINT bind = api_bind_flags(a.BindFlags) | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
     const D3D11_TEXTURE2D_DESC1 desc = surface_desc(a.Format, width, height, bind);
+    // A legacy blt-model back buffer (presentable, neither shared nor a primary): dxgkrnl has the KMD copy it into the
+    // window with the CPU, so it lives in memory the KMD can map.
+    const bool blt_source = (a.BindFlags & D3D10_DDI_BIND_PRESENT) && !a.pPrimaryDesc &&
+                            !(a.MiscFlags & D3D10_DDI_RESOURCE_MISC_SHARED);
     int fd = -1;
-    HRESULT hr = surface_texture(d, desc, -1, 0, out, &fd);
+    HRESULT hr = surface_texture(d, desc, -1, 0, out, &fd, blt_source);
     if (FAILED(hr)) {
         VGD_WARN("shared surface: %ux%u format %d failed: 0x%08lx", width, height, a.Format, hr);
         return hr;
