@@ -22,6 +22,11 @@ void APIENTRY destroy_device(D3D10DDI_HDEVICE h)
         if (FAILED(d->kt.pfnDestroyContextCb(d->rt_device.handle, &dc)))
             VGD_WARN("DestroyDevice: DestroyContextCb failed");
     }
+    if (d->paging_queue) {
+        D3DDDI_DESTROYPAGINGQUEUE dq{d->paging_queue};
+        if (FAILED(d->kt.pfnDestroyPagingQueueCb(d->rt_device.handle, &dq)))
+            VGD_WARN("DestroyDevice: DestroyPagingQueueCb failed");
+    }
     if (d->idle_event)
         CloseHandle(d->idle_event);
     d->~Device();

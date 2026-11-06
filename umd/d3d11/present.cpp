@@ -50,6 +50,42 @@ D3D11_TEXTURE2D_DESC1 surface_desc(DXGI_FORMAT format, UINT width, UINT height, 
     return {width, height, 1, 1, format, {1, 0}, D3D11_USAGE_DEFAULT, bind, 0, 0, D3D11_TEXTURE_LAYOUT_UNDEFINED};
 }
 
+// Makes an allocation resident and waits for it. The memory is Venus's and always resident on the host, but dxgkrnl
+// blits legacy blt-model presents itself and fails one whose source it was not asked to keep resident ("Allocation
+// is not requested to be resident"), which removes the device.
+HRESULT make_resident(Device& d, D3DKMT_HANDLE allocation)
+{
+    const HANDLE dev = d.rt_device.handle;
+    if (!d.paging_queue) {
+        D3DDDICB_CREATEPAGINGQUEUE c{};
+        c.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL;
+        const HRESULT hr = d.kt.pfnCreatePagingQueueCb(dev, &c);
+        if (FAILED(hr)) {
+            VGD_WARN("shared surface: CreatePagingQueueCb failed: 0x%08lx", hr);
+            return hr;
+        }
+        d.paging_queue = c.hPagingQueue;
+        d.paging_fence = c.hSyncObject;
+    }
+    D3DDDI_MAKERESIDENT mr{};
+    mr.hPagingQueue = d.paging_queue;
+    mr.NumAllocations = 1;
+    mr.AllocationList = &allocation;
+    mr.Flags.CantTrimFurther = 1;
+    HRESULT hr = d.kt.pfnMakeResidentCb(dev, &mr);
+    if (hr == E_PENDING) {   // resident once the paging queue's fence reaches the value
+        UINT64 value = mr.PagingFenceValue;
+        D3DDDICB_WAITFORSYNCHRONIZATIONOBJECTFROMCPU w{};
+        w.ObjectCount = 1;
+        w.ObjectHandleArray = &d.paging_fence;
+        w.FenceValueArray = &value;
+        hr = d.kt.pfnWaitForSynchronizationObjectFromCpuCb(dev, &w);
+    }
+    if (FAILED(hr))
+        VGD_WARN("shared surface: MakeResidentCb(0x%x) failed: 0x%08lx", allocation, hr);
+    return hr;
+}
+
 } // namespace
 
 bool is_shared_surface(const D3D11DDIARG_CREATERESOURCE& a)
@@ -118,6 +154,11 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     }
     out.allocation = info.hAllocation;
     out.allocated = true;
+    if (a.pPrimaryDesc || (a.BindFlags & D3D10_DDI_BIND_PRESENT)) {
+        hr = make_resident(d, info.hAllocation);
+        if (FAILED(hr))
+            return hr;
+    }
     VGD_TRACE("shared surface: %ux%u format %d%s, allocation 0x%x (km resource 0x%x) aliases 0x%x (host resource "
               "%u): %llu bytes, pitch %u",
               width, height, a.Format, a.pPrimaryDesc ? " primary" : "", info.hAllocation, cb.hKMResource,

@@ -32,6 +32,7 @@ struct Device {
     bool allocation_alias = false;
     std::unique_ptr<KmtDevice> kmt;                   // created on first use (kmt.h)
     HANDLE present_context = nullptr;                 // a kernel context of the runtime's, for presents
+    D3DKMT_HANDLE paging_queue = 0, paging_fence = 0; // for making presentable surfaces resident
     HANDLE idle_event = nullptr;                      // set by DXVK when a flush completes (wait_idle)
     // A monitored fence of the runtime's that the GPU signals when our rendering is done, through our ICD
     // (icd/patches/0006): presents wait for it on the present context rather than for the GPU here.
