@@ -61,7 +61,7 @@ The KMD and the Mesa drivers:
 ```
 cmake/fetch-winkits.sh
 icd/build.sh
-cmake -S kmd -B build/kmd -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/clang-cl-kmd.cmake && ninja -C build/kmd
+cmake -S kmd -B build/kmd -G Ninja -DCMAKE_TOOLCHAIN_FILE=$PWD/cmake/clang-cl-kmd.cmake && ninja -C build/kmd
 cmake -S . -B build/win -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake && cmake --build build/win
 ```
 

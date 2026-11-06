@@ -47,7 +47,7 @@ jobs:
             -addext extendedKeyUsage=codeSigning -keyout "$RUNNER_TEMP/kmd.key" -out "$RUNNER_TEMP/kmd.crt"
           openssl pkcs12 -export -passout pass: -inkey "$RUNNER_TEMP/kmd.key" -in "$RUNNER_TEMP/kmd.crt" \
             -out "$RUNNER_TEMP/kmd.pfx"
-          nix develop -c sh -c "cmake -S kmd -B build/kmd -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/clang-cl-kmd.cmake \
+          nix develop -c sh -c "cmake -S kmd -B build/kmd -G Ninja -DCMAKE_TOOLCHAIN_FILE=$PWD/cmake/clang-cl-kmd.cmake \
             -DVGD_KMD_SIGN_PFX=$RUNNER_TEMP/kmd.pfx && ninja -C build/kmd"
 
       - name: Build the UMDs, the services and the installer
