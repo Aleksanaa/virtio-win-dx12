@@ -43,29 +43,39 @@ We aim for no host patches. However, each way of displaying the guest has a draw
 ### Guest
 
 - Windows 11, x64. Tested on 25H2.
-- Secure Boot off and test signing on (`bcdedit /set testsigning on`). Or you buy me a Windows driver certificate.
+- Secure Boot off. Or you buy me a Windows driver certificate.
 
-## Building and installing
+## Installing
 
-Everything builds on a Linux host inside `nix develop` (see `flake.nix`):
+Run `vgd-setup.exe` in the guest. Download builds from the [Actions](https://github.com/Aleksanaa/virtio-win-dx12/actions)
+page and tagged releases.
+
+Do take a VM snapshot first.
+
+## Building
+
+Everything builds on a Linux host inside `nix develop` (see `flake.nix`).
+
+The KMD and the Mesa drivers:
 
 ```
-cmake -S . -B build/win -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake && cmake --build build/win
+cmake/fetch-winkits.sh
 icd/build.sh
 cmake -S kmd -B build/kmd -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/clang-cl-kmd.cmake && ninja -C build/kmd
+cmake -S . -B build/win -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake && cmake --build build/win
 ```
 
-The WDK and SDK headers come from Microsoft's NuGet packages (Microsoft.Windows.WDK.x64 and
-Microsoft.Windows.SDK.CPP, 10.0.26100), extracted into `refs/winkits/{wdk,sdk}`.
+`cmake/fetch-winkits.sh` extracts the WDK and SDK headers from Microsoft's NuGet packages (Microsoft.Windows.WDK.x64
+and Microsoft.Windows.SDK.CPP, 10.0.26100) into `refs/winkits/{wdk,sdk}`. The KMD build test-signs `viogpu3d.sys`
+with the PFX in `VGD_KMD_SIGN_PFX`; any code signing certificate does, as the kernel accepts any signature in test
+mode. The installer is `build/win/setup/vgd-setup.exe` (`.github/workflows/build.yml` does the same).
 
-To install, make `build/` visible in the guest and run this from an elevated PowerShell in `build\win\tests\win`:
+For testing, make `build/` visible in the guest and run this from an elevated PowerShell in `build\win\tests\win`; it
+runs the installer silently and sets the drivers' logging up. Its top comment covers the other actions.
 
 ```
 powershell -ExecutionPolicy Bypass -File .\vgd-test.ps1 Install
 ```
-
-Then reboot. Take a VM snapshot first: DWM loads `vgd3d11.dll` as soon as the package is installed. The comment at
-the top of `vgd-test.ps1` covers Uninstall and recovery.
 
 ## Status
 

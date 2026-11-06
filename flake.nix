@@ -19,7 +19,7 @@
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
           cmake ninja pkg-config
-          unzip osslsigncode
+          unzip osslsigncode gcab
           # Mesa (icd/build.sh): meson and its Python code generators.
           meson bison flex
           (python3.withPackages (p: [ p.mako p.pyyaml p.packaging ]))

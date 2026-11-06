@@ -5,14 +5,15 @@
 ; yttrium's package; none of yttrium's own binaries are installed (its D3D10 and D3D12 UMDs, EGL/GLES, lavapipe).
 ; Based on yttrium's viogpu3d_x64.inx (Copyright 2019-2022 Red Hat, Inc., kmd/yttrium/viogpu/LICENSE).
 ;
-; vgd-test.ps1 Install stages it with the build outputs, stamps DriverVer, catalogs and test-signs it.
+; The installer (setup/) carries it: the build stamps DriverVer and packs it with the files it lists, and the installer
+; catalogs it and signs the catalog on the guest.
 
 [Version]
 Signature   = "$WINDOWS NT$"
 Class       = Display
 ClassGuid   = {4d36e968-e325-11ce-bfc1-08002be10318}
 Provider    = %Provider%
-; Stamped at install (vgd-test.ps1), so each install outranks the one before it.
+; Stamped by the build (setup/payload.cmake) with the version and the build.
 DriverVer   = 10/23/2026,1.0.0.0
 CatalogFile = vgd.cat
 PnpLockdown = 1

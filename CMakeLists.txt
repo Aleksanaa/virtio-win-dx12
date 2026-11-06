@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 cmake_minimum_required(VERSION 3.24)
-project(vgd3d12 LANGUAGES C CXX)
+project(vgd3d12 VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +31,5 @@ add_subdirectory(umd)
 add_subdirectory(tests/win)
 add_subdirectory(svc)
 
-# The driver package (pkg/), which vgd-test.ps1 Install stages in the guest with the build outputs it lists.
-foreach(f vgd.inf vgd_vulkan_virtio.json)
-  configure_file(pkg/${f} pkg/${f} COPYONLY)
-endforeach()
+# The installer, with the driver package (pkg/) inside.
+add_subdirectory(setup)
