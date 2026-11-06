@@ -106,6 +106,8 @@ class VioGpuAllocation
     }
     bool HasCpuCopyBacking() const
     {
+        if (m_alias_source)
+            return m_alias_source->HasCpuCopyBacking();
         return m_is_blob ? m_blob_kernel_va != NULL : m_cpu_copy_va != NULL;
     }
     bool IsBlobPending() const

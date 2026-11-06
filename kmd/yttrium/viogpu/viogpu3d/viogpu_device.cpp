@@ -382,7 +382,9 @@ NTSTATUS VioGpuDevice::Present(_Inout_ DXGKARG_PRESENT *pPresent)
 
     if (pPresent->Flags.Blt)
     {
-        if (IsVenusContext())
+        // A blob source is copied with the CPU whichever context presents it: legacy blt-model presents come on the
+        // D3D runtime's own device, which never takes a capset, and a virgl copy cannot read a Venus blob.
+        if (IsVenusContext() || (src && src->IsBlob()))
         {
             NTSTATUS stageStatus =
                 cmd->SetCpuCopyBlt(src, dst, &pPresent->SrcRect,

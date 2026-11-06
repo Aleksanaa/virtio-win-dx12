@@ -486,6 +486,12 @@ NTSTATUS VioGpuAllocation::MapForCpuCopy(ULONG ctx_id,
     *map_size = 0;
     *io_mapping = FALSE;
 
+    // The source owns the host resource and its mapping.
+    if (m_alias_source)
+    {
+        return m_alias_source->MapForCpuCopy(ctx_id, map_va, map_size, io_mapping);
+    }
+
     if (m_is_blob)
     {
         NTSTATUS status = EnsureBlobCreatedAndWait(ctx_id);
