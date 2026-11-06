@@ -1,0 +1,39 @@
+From: vgd3d12
+Subject: venus: poll the first round of relax sleeps by yielding on Windows
+
+vn_relax polls fences, semaphores, queries and ring progress with sleeps
+starting at 160 us: 16 of those (~2.5 ms), then 16 of 320 us, 32 of 640 us
+and so on. Windows cannot sleep for less than ~0.5 ms even on a
+high-resolution timer (a 160 us wait takes ~530 us), so the first round polls
+at a third of the intended rate, and that is where most GPU waits end: the
+host GPU had finished a median ~480 us before the guest noticed (Steel Nomad
+Light, correlated host and guest traces). Yield until each of the first
+round's deadlines instead, which polls on time; later rounds sleep as before,
+so a long wait (idle, vsync) spins for at most ~2.5 ms.
+
+Steel Nomad Light with 0008: ~6000 -> 6517, host GPU 72% -> 77% busy, guest
+vCPU ~2.2 -> ~3.4 cores during the run. Spinning in every round as well gave
+6599 at ~3.5 cores, for waits of up to ~50 ms.
+
+--- a/src/virtio/vulkan/vn_common.c	2026-09-27 03:39:26.000000000 +0800
++++ b/src/virtio/vulkan/vn_common.c	2026-11-06 22:59:29.226198311 +0800
+@@ -291,6 +291,20 @@
+    }
+
+    const uint32_t shift = util_last_bit(*iter) - busy_wait_order - 1;
++#ifdef _WIN32
++   /* Windows cannot sleep for less than ~0.5 ms, so the first round of
++    * sleeps would poll at a third of the intended rate, and most GPU waits
++    * end within it. Yield until each of those deadlines instead; later,
++    * longer sleeps (from ~2.5 ms into the wait) use the timer.
++    */
++   if (shift == 0) {
++      const int64_t deadline =
++         os_time_get_nano() + base_sleep_us * INT64_C(1000);
++      while (os_time_get_nano() < deadline)
++         thrd_yield();
++      return;
++   }
++#endif
+    os_time_sleep(base_sleep_us << shift);
+ }
