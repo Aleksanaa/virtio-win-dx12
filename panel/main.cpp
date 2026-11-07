@@ -135,7 +135,8 @@ void Window::paint(HDC dc)
     ui_.fill(layer, 8, kLayer);
     ui_.stroke(layer, 8, kBlack, 0.1f);
 
-    float w = std::min(width_ - kPaneW - 2 * kPad, kMaxContent), x = kPaneW + kPad;
+    // the page is at most kMaxContent wide, centred in the space beside the pane
+    float avail = width_ - kPaneW - 2 * kPad, w = std::min(avail, kMaxContent), x = kPaneW + kPad + (avail - w) / 2;
     scroll_[page_] = std::clamp(scroll_[page_], 0.f, maxScroll());
     ui_.offset = scroll_[page_];
     rt_->PushAxisAlignedClip({kPaneW + 1, 1, width_, height_}, D2D1_ANTIALIAS_MODE_ALIASED);
