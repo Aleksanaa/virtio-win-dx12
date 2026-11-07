@@ -37,7 +37,12 @@ void APIENTRY relocate_device_funcs(D3D10DDI_HDEVICE, D3D11_1DDI_DEVICEFUNCS*) {
 
 BOOL APIENTRY flush(D3D10DDI_HDEVICE h, UINT flags)
 {
-    Device::from(h)->ctx->Flush();
+    // Another device or process may read a shared surface once this returns, ordered by nothing else: our rendering
+    // runs on DXVK's Vulkan queue, which the runtime does not schedule. So complete it.
+    Device* d = Device::from(h);
+    d->flush_clears();
+    if (FAILED(d->wait_idle()))
+        d->set_error(D3DDDIERR_DEVICEREMOVED);
     return TRUE;
 }
 
@@ -63,6 +68,15 @@ void APIENTRY check_deferred_context_handle_sizes(D3D10DDI_HDEVICE, UINT* count,
 }
 
 } // namespace
+
+void Device::flush_clears()
+{
+    // An interop transition ends DXVK's pass without suspending it, which runs all pending clears, not only this
+    // surface's. A flush suspends the pass and keeps them.
+    if (pending_clear && FAILED(dxvk::flush_shared_clears(d3d.get(), pending_clear.get())))
+        VGD_WARN("flush_clears: the interop transition failed");
+    pending_clear = nullptr;
+}
 
 HRESULT Device::wait_idle()
 {
@@ -105,6 +119,19 @@ HRESULT create_device(D3D10DDIARG_CREATEDEVICE& args, const viogpu::AdapterInfo&
         d->~Device();
         return hr;
     }
+    // A context of the runtime's, for presents and for the keyed mutex signals of shared surfaces (ReleaseSync fails
+    // without one, even on a device that never presents). Physical, not virtual: yttrium's KMD rejects virtual
+    // application contexts. Nothing is submitted to it; the runtime queues on it.
+    D3DDDICB_CREATECONTEXT cc{};
+    cc.NodeOrdinal = 0;
+    cc.EngineAffinity = 1;
+    hr = d->kt.pfnCreateContextCb(d->rt_device.handle, &cc);
+    if (FAILED(hr) || !cc.hContext) {
+        VGD_WARN("CreateDevice: CreateContextCb failed: 0x%08lx", hr);
+        d->~Device();
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+    d->present_context = cc.hContext;
 
     auto& t = *args.p11_1DeviceFuncs;
     VGD_FILL_STUBS(t, "device", VGD_SLOTS_D3D11_1_DEVICE);

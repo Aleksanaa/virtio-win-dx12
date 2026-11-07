@@ -5,6 +5,7 @@
 // DXVK's headers first: they enable the Win32 parts of the Vulkan headers before including them.
 #include "d3d11/d3d11_device.h"
 #include "d3d11/d3d11_interop.h"
+#include "d3d11/d3d11_texture.h"
 #include "dxgi/dxgi_interfaces.h"
 #include "dxvk/dxvk_instance.h"
 
@@ -126,14 +127,45 @@ HRESULT create_device(PFN_vkGetInstanceProcAddr gipa, D3D_FEATURE_LEVEL level, c
     }
 }
 
-HRESULT texture_from_image(ID3D11Device5* device, const D3D11_TEXTURE2D_DESC1& desc, VkImage image,
+void release_instance_cache()
+{
+    std::lock_guard g(g_lock);
+    g_instance = nullptr;
+}
+
+HRESULT texture_from_image(ID3D11Device5* device, const D3D11_TEXTURE2D_DESC1& desc, VkImage image, bool imported,
                            ID3D11Texture2D** out)
 {
     Com<IDXGIVkInteropDevice1> interop;
     HRESULT hr = device->QueryInterface(__uuidof(IDXGIVkInteropDevice1), reinterpret_cast<void**>(&interop));
     if (FAILED(hr))
         return hr;
-    return interop->CreateTexture2DFromVkImage(&desc, image, out);
+    hr = interop->CreateTexture2DFromVkImage(&desc, image, out);
+    if (SUCCEEDED(hr)) {
+        const auto wrapped = GetCommonTexture(*out)->GetImage();
+        // Shared surfaces use GENERAL at each handoff, not an optimized layout
+        // chosen for a private render target. Imports already contain pixels.
+        wrapped->setLayout(VK_IMAGE_LAYOUT_GENERAL);
+        if (imported)
+            wrapped->trackLayout(wrapped->getAvailableSubresources(), VK_IMAGE_LAYOUT_GENERAL);
+    }
+    return hr;
+}
+
+HRESULT flush_shared_clears(ID3D11Device5* device, ID3D11Resource* resource)
+{
+    Com<IDXGIVkInteropDevice1> interop;
+    Com<IDXGIVkInteropSurface> surface;
+    HRESULT hr = device->QueryInterface(__uuidof(IDXGIVkInteropDevice1), reinterpret_cast<void**>(&interop));
+    if (SUCCEEDED(hr))
+        hr = resource->QueryInterface(__uuidof(IDXGIVkInteropSurface), reinterpret_cast<void**>(&surface));
+    if (FAILED(hr))
+        return hr;
+    const auto range = GetCommonTexture(resource)->GetImage()->getAvailableSubresources();
+    // The interop boundary ends the pass and emits deferred clears even when
+    // the layout is unchanged. Flush alone can leave a clear deferred in DXVK.
+    interop->TransitionSurfaceLayout(surface.ptr(), &range, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+    return S_OK;
 }
 
 HRESULT with_submitted_queue(ID3D11Device5* device, HRESULT (*f)(VkQueue queue, void* data), void* data)

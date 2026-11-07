@@ -37,7 +37,7 @@ HRESULT surface_texture(Device& d, const D3D11_TEXTURE2D_DESC1& desc, int import
     if (FAILED(hr))
         return hr;
     Com<ID3D11Texture2D> tex;
-    hr = dxvk::texture_from_image(d.d3d.get(), desc, out.image->image(), tex.put());
+    hr = dxvk::texture_from_image(d.d3d.get(), desc, out.image->image(), !export_fd, tex.put());
     if (FAILED(hr)) {
         VGD_WARN("shared surface: DXVK did not take the image: 0x%08lx", hr);
         return hr;
@@ -200,7 +200,7 @@ HRESULT open_shared_surface(Device& d, const D3D10DDIARG_OPENRESOURCE& a, Resour
         VGD_WARN("OpenResource: only surfaces of known formats can be opened");
         return E_NOTIMPL;
     }
-    const int fd = import_fd("OpenResource", d.kernel(), a.hKMResource.handle);
+    const int fd = import_fd("OpenResource", d.kernel(), alloc->hAllocation, *e);
     if (fd < 0)
         return E_FAIL;
     out.dimension = D3D10DDIRESOURCE_TEXTURE2D;
@@ -215,9 +215,11 @@ HRESULT open_shared_surface(Device& d, const D3D10DDIARG_OPENRESOURCE& a, Resour
 
 void destroy_shared_surface(Device& d, ResourceObject& r)
 {
-    // The image goes with the texture: the GPU must be done with it first.
-    if (r.image)
+    // The image goes with the texture: the GPU must be done with it first, and with a clear DXVK still holds for it.
+    if (r.image) {
+        d.flush_clears();
         d.wait_idle();
+    }
     r.resource = nullptr;
     r.image.reset();
     if (r.allocated) {
@@ -355,21 +357,9 @@ namespace {
 
 HRESULT present_allocations(Device& d, D3DKMT_HANDLE src, D3DKMT_HANDLE dst, void* dxgi_context)
 {
-    if (!d.present_context) {
-        // A physical (non-virtual) context: yttrium's KMD rejects virtual application contexts. Nothing is
-        // submitted to it; presents are queued on it.
-        D3DDDICB_CREATECONTEXT cc{};
-        cc.NodeOrdinal = 0;
-        cc.EngineAffinity = 1;
-        HRESULT hr = d.kt.pfnCreateContextCb(d.rt_device.handle, &cc);
-        if (FAILED(hr) || !cc.hContext) {
-            VGD_WARN("Present: CreateContextCb failed: 0x%08lx", hr);
-            return E_OUTOFMEMORY;
-        }
-        d.present_context = cc.hContext;
-    }
     // The runtime presents the allocations as they are: our rendering on them must be complete. The present
     // context waits for it on the GPU where it can, else we wait here.
+    d.flush_clears();
     HRESULT hr = wait_for_rendering_on_gpu(d);
     if (FAILED(hr))
         hr = d.wait_idle();
@@ -513,7 +503,16 @@ HRESULT APIENTRY query_resource_residency(DXGI_DDI_ARG_QUERYRESOURCERESIDENCY* a
     return S_OK;
 }
 
-HRESULT APIENTRY resolve_shared_resource(DXGI_DDI_ARG_RESOLVESHAREDRESOURCE*) { return S_OK; }
+HRESULT APIENTRY resolve_shared_resource(DXGI_DDI_ARG_RESOLVESHAREDRESOURCE* a)
+{
+    Device& d = *Device::from(a->hDevice);
+    ResourceObject* r = ResourceObject::from(a->hResource);
+    // ReleaseSync and GetDC reach this boundary without an application Flush.
+    // The runtime's context cannot order work submitted on DXVK's own device.
+    d.flush_clears();
+    VGD_TRACE("ResolveSharedResource: allocation 0x%x: complete rendering before handoff", r->allocation);
+    return d.wait_idle();
+}
 
 // Nothing is ever discarded: offered resources keep their memory.
 HRESULT APIENTRY offer_resources(DXGI_DDI_ARG_OFFERRESOURCES*) { return S_OK; }

@@ -27,9 +27,15 @@ struct DeviceHandles {
 HRESULT create_device(PFN_vkGetInstanceProcAddr gipa, D3D_FEATURE_LEVEL level, const char* const* extensions,
                       size_t extension_count, ID3D11Device5** out, DeviceHandles* handles);
 
+// Drop the cached instance outside DllMain. Live devices retain their own references.
+void release_instance_cache();
+
 // A texture over `image`, an image we created on the device for `desc` (see image_info), which stays ours.
-HRESULT texture_from_image(ID3D11Device5* device, const D3D11_TEXTURE2D_DESC1& desc, VkImage image,
+HRESULT texture_from_image(ID3D11Device5* device, const D3D11_TEXTURE2D_DESC1& desc, VkImage image, bool imported,
                            ID3D11Texture2D** out);
+
+// Emit deferred clears before an external texture can leave this device.
+HRESULT flush_shared_clears(ID3D11Device5* device, ID3D11Resource* resource);
 
 // The Vulkan format, the further view formats and the usage DXVK gives an image of `desc` (a single-sample colour
 // 2D texture), for images we create for it: DXVK's views and copies assume them.

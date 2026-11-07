@@ -3,14 +3,19 @@
 // every test on it, printing PASS/FAIL per test. Shaders are compiled in the guest by d3dcompiler_47.dll.
 //   --present  also show swapchains in a window for a few seconds each (watch them): flip model, then the legacy
 //              blt model, then ResizeBuffers.
+//   --present-blt  run the legacy presentation phase without a prior flip swapchain.
+//   --present-check  compare visible colours with a GDI reference. Keep both windows uncovered.
 #include <windows.h>
 #include <d3d11_4.h>
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
+#include <dwmapi.h>
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cwchar>
 #include <cstring>
 #include <vector>
 
@@ -22,6 +27,24 @@ DWORD g_main_thread = 0;
 LONG CALLBACK report_crash(EXCEPTION_POINTERS* e)
 {
     const EXCEPTION_RECORD* r = e->ExceptionRecord;
+    if (r->ExceptionCode == 0x87a) {
+        std::printf("DirectX exception, %lu parameters:\n", r->NumberParameters);
+        for (DWORD i = 0; i < r->NumberParameters; i++)
+            std::printf("  0x%llx\n", static_cast<unsigned long long>(r->ExceptionInformation[i]));
+        void* frames[32];
+        const USHORT count = CaptureStackBackTrace(0, 32, frames, nullptr);
+        for (USHORT i = 0; i < count; i++) {
+            HMODULE module = nullptr;
+            char path[MAX_PATH] = "?";
+            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              static_cast<LPCSTR>(frames[i]), &module);
+            if (module)
+                GetModuleFileNameA(module, path, MAX_PATH);
+            std::printf("  %s+0x%llx\n", path, static_cast<unsigned long long>(
+                reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(module)));
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
         return EXCEPTION_CONTINUE_SEARCH;
     HMODULE mod = nullptr;
@@ -65,10 +88,12 @@ struct Ref {
     T* p = nullptr;
     Ref() = default;
     Ref(const Ref&) = delete;
-    ~Ref()
+    ~Ref() { reset(); }
+    void reset()
     {
         if (p)
             p->Release();
+        p = nullptr;
     }
     T** put() { return &p; }
     T* operator->() const { return p; }
@@ -258,7 +283,7 @@ bool textured_test(ID3D11Device* dev, ID3D11DeviceContext* ctx)
         return result(t, false);
     Ref<ID3D11VertexShader> vs;
     Ref<ID3D11PixelShader> ps;
-    const uint32_t texels_in[4] = {0xff0000ff, 0xff00ff00, 0xffff0000, 0xffffffff};
+    const uint32_t texels_in[4] = {0xff8040bf, 0xff80bf40, 0xff4080bf, 0xffbf8040};
     D3D11_TEXTURE2D_DESC td{2, 2, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_IMMUTABLE,
                             D3D11_BIND_SHADER_RESOURCE, 0, 0};
     D3D11_SUBRESOURCE_DATA ti{texels_in, 8, 0};
@@ -287,9 +312,9 @@ bool textured_test(ID3D11Device* dev, ID3D11DeviceContext* ctx)
     ctx->Draw(3, 0);
     std::vector<uint32_t> texels;
     UINT w;
-    bool ok = read_back(dev, ctx, tex, &texels, &w) && expect_texel(t, texels, w, 8, 8, 0xff0000ff) &&
-              expect_texel(t, texels, w, 56, 8, 0xff00ff00) && expect_texel(t, texels, w, 8, 56, 0xffff0000) &&
-              expect_texel(t, texels, w, 56, 56, 0xffffffff);
+    bool ok = read_back(dev, ctx, tex, &texels, &w) && expect_texel(t, texels, w, 8, 8, texels_in[0]) &&
+              expect_texel(t, texels, w, 56, 8, texels_in[1]) && expect_texel(t, texels, w, 8, 56, texels_in[2]) &&
+              expect_texel(t, texels, w, 56, 56, texels_in[3]);
     ctx->ClearState();
     return result(t, ok);
 }
@@ -524,7 +549,50 @@ bool update_test(ID3D11Device* dev, ID3D11DeviceContext* ctx)
     return result(t, ok);
 }
 
-// A texture created shared on one device and opened on another: the path DWM takes to composite swapchains.
+bool shared_child(ID3D11Device* dev, ID3D11DeviceContext* ctx, HANDLE handle)
+{
+    Ref<ID3D11Texture2D> opened;
+    if (!check("shared child", "OpenSharedResource", dev->OpenSharedResource(handle, IID_PPV_ARGS(opened.put()))))
+        return false;
+    std::vector<uint32_t> texels;
+    UINT width;
+    return read_back(dev, ctx, opened, &texels, &width) &&
+           expect_texel("shared child", texels, width, 0, 0, 0xff00ffff) &&
+           expect_texel("shared child", texels, width, 95, 63, 0xff00ffff);
+}
+
+bool run_shared_child(HANDLE handle)
+{
+    wchar_t path[MAX_PATH], command[MAX_PATH + 80];
+    const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (!length || length >= MAX_PATH)
+        return false;
+    std::swprintf(command, std::size(command), L"\"%ls\" --shared-child %llu", path,
+                  static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)));
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(path, command, nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
+        return false;
+    const DWORD wait = WaitForSingleObject(process.hProcess, 15000);
+    DWORD code = 1;
+    if (wait == WAIT_OBJECT_0)
+        GetExitCodeProcess(process.hProcess, &code);
+    else {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, 5000);
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    std::printf("shared child pid %lu: wait 0x%08lx, exit 0x%08lx\n", process.dwProcessId, wait, code);
+    return wait == WAIT_OBJECT_0 && code == 0;
+}
+
+// A texture shared across devices and processes, as DWM opens compositor surfaces.
 bool shared_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* adapter)
 {
     const char* t = "shared";
@@ -545,18 +613,168 @@ bool shared_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* adap
         !check(t, "QueryInterface(IDXGIResource)", tex->QueryInterface(IID_PPV_ARGS(dxgi.put()))) ||
         !check(t, "GetSharedHandle", dxgi->GetSharedHandle(&shared)))
         return result(t, false);
-    const float color[4] = {0.0f, 0.5f, 1.0f, 1.0f};
+    const float color[4] = {0.0f, 1.0f, 1.0f, 1.0f};
     ctx->ClearRenderTargetView(rtv, color);
     ctx->Flush();
+    const bool cross_process = result("shared cross-process", run_shared_child(shared));
     Ref<ID3D11Texture2D> opened;
     if (!check(t, "OpenSharedResource", dev2->OpenSharedResource(shared, IID_PPV_ARGS(opened.put()))))
         return result(t, false);
+    // Reopening on the creator exercises a different runtime allocation handle.
+    Ref<ID3D11Texture2D> same_device;
+    if (!check(t, "OpenSharedResource(same device)", dev->OpenSharedResource(shared, IID_PPV_ARGS(same_device.put()))))
+        return result(t, false);
     std::vector<uint32_t> texels;
     UINT w;
-    // B8G8R8A8: blue 0xff, green 0x80 (0.5 rounded), red 0.
-    bool ok = read_back(dev2, ctx2, opened, &texels, &w) && expect_texel(t, texels, w, 0, 0, 0xffff8000) &&
-              expect_texel(t, texels, w, 95, 63, 0xffff8000);
-    return result(t, ok);
+    // B8G8R8A8 in little-endian memory: blue and green 0xff, red 0.
+    bool ok = read_back(dev2, ctx2, opened, &texels, &w) && expect_texel(t, texels, w, 0, 0, 0xff00ffff) &&
+              expect_texel(t, texels, w, 95, 63, 0xff00ffff);
+    if (!ok)
+        return result(t, false);
+    ok = read_back(dev, ctx, same_device, &texels, &w) && expect_texel(t, texels, w, 0, 0, 0xff00ffff);
+    // An imported texture must retain the blob after the exporting resource dies.
+    rtv.reset();
+    dxgi.reset();
+    tex.reset();
+    same_device.reset();
+    ctx->ClearState();
+    ctx->Flush();
+    ok = ok && read_back(dev2, ctx2, opened, &texels, &w) && expect_texel(t, texels, w, 95, 63, 0xff00ffff);
+    return result(t, ok && cross_process);
+}
+
+bool shared_nt_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* adapter)
+{
+    const char* t = "shared NT";
+    D3D11_TEXTURE2D_DESC desc{96, 64, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                              D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, 0,
+                              D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX};
+    Ref<ID3D11Texture2D> tex;
+    Ref<ID3D11RenderTargetView> rtv;
+    Ref<IDXGIResource1> resource;
+    Ref<IDXGIKeyedMutex> producer;
+    if (!check(t, "CreateTexture2D", dev->CreateTexture2D(&desc, nullptr, tex.put())) ||
+        !check(t, "CreateRenderTargetView", dev->CreateRenderTargetView(tex, nullptr, rtv.put())) ||
+        !check(t, "IDXGIResource1", tex->QueryInterface(IID_PPV_ARGS(resource.put()))) ||
+        !check(t, "IDXGIKeyedMutex", tex->QueryInterface(IID_PPV_ARGS(producer.put()))))
+        return result(t, false);
+    HANDLE handle = nullptr;
+    if (!check(t, "CreateSharedHandle", resource->CreateSharedHandle(nullptr,
+               DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &handle)))
+        return result(t, false);
+    Ref<ID3D11Device> dev2;
+    Ref<ID3D11Device1> dev21;
+    Ref<ID3D11DeviceContext> ctx2;
+    Ref<ID3D11Texture2D> opened;
+    Ref<IDXGIKeyedMutex> consumer;
+    bool ok = check(t, "D3D11CreateDevice", D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+                         0, nullptr, 0, D3D11_SDK_VERSION, dev2.put(), nullptr, ctx2.put())) &&
+              check(t, "ID3D11Device1", dev2->QueryInterface(IID_PPV_ARGS(dev21.put()))) &&
+              check(t, "OpenSharedResource1", dev21->OpenSharedResource1(handle, IID_PPV_ARGS(opened.put())));
+    CloseHandle(handle);
+    if (!ok || !check(t, "consumer mutex", opened->QueryInterface(IID_PPV_ARGS(consumer.put()))))
+        return result(t, false);
+    // AcquireSync can return WAIT_TIMEOUT, which is not a failed HRESULT.
+    if (producer->AcquireSync(0, 5000) != S_OK)
+        return result(t, false);
+    const float color[4] = {0.0f, 1.0f, 1.0f, 1.0f};
+    ctx->ClearRenderTargetView(rtv, color);
+    std::vector<uint32_t> texels;
+    UINT width;
+    const HRESULT release = producer->ReleaseSync(1);
+    if (!ok || !check(t, "ReleaseSync(producer)", release) || consumer->AcquireSync(1, 5000) != S_OK)
+        return result(t, false);
+    ok = read_back(dev2, ctx2, opened, &texels, &width) &&
+         expect_texel(t, texels, width, 95, 63, 0xff00ffff);
+    return result(t, check(t, "ReleaseSync(consumer)", consumer->ReleaseSync(2)) && ok);
+}
+
+// Keep both imports open while full updates and dirty rectangles cross the mutex.
+// Odd dimensions expose row-pitch errors. Every pixel is checked on every frame.
+bool shared_updates_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* adapter)
+{
+    const char* t = "shared NT updates";
+    constexpr UINT w = 257, h = 131, frames = 16;
+    D3D11_TEXTURE2D_DESC desc{w, h, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, {1, 0}, D3D11_USAGE_DEFAULT,
+                              D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, 0,
+                              D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX};
+    Ref<ID3D11Texture2D> tex, opened;
+    Ref<IDXGIResource1> resource;
+    Ref<IDXGIKeyedMutex> producer, consumer;
+    Ref<ID3D11Device> dev2;
+    Ref<ID3D11Device1> dev21;
+    Ref<ID3D11DeviceContext> ctx2;
+    Ref<ID3D11DeviceContext1> ctx1, ctx21;
+    Ref<ID3D11RenderTargetView> rtv, rtv2;
+    if (!check(t, "CreateTexture2D", dev->CreateTexture2D(&desc, nullptr, tex.put())) ||
+        !check(t, "producer resource", tex->QueryInterface(IID_PPV_ARGS(resource.put()))) ||
+        !check(t, "producer mutex", tex->QueryInterface(IID_PPV_ARGS(producer.put()))) ||
+        !check(t, "producer context", ctx->QueryInterface(IID_PPV_ARGS(ctx1.put()))) ||
+        !check(t, "producer RTV", dev->CreateRenderTargetView(tex, nullptr, rtv.put())) ||
+        !check(t, "second device", D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr,
+                   0, nullptr, 0, D3D11_SDK_VERSION, dev2.put(), nullptr, ctx2.put())) ||
+        !check(t, "second device1", dev2->QueryInterface(IID_PPV_ARGS(dev21.put()))) ||
+        !check(t, "consumer context", ctx2->QueryInterface(IID_PPV_ARGS(ctx21.put()))))
+        return result(t, false);
+    HANDLE handle = nullptr;
+    if (!check(t, "CreateSharedHandle", resource->CreateSharedHandle(nullptr,
+               DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &handle)))
+        return result(t, false);
+    const HRESULT hr = dev21->OpenSharedResource1(handle, IID_PPV_ARGS(opened.put()));
+    CloseHandle(handle);
+    if (!check(t, "OpenSharedResource1", hr) ||
+        !check(t, "consumer mutex", opened->QueryInterface(IID_PPV_ARGS(consumer.put()))) ||
+        !check(t, "consumer RTV", dev2->CreateRenderTargetView(opened, nullptr, rtv2.put())))
+        return result(t, false);
+    std::vector<uint32_t> expected(w * h), actual;
+    auto pixels_match = [&](ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* image,
+                            UINT frame, const char* direction) {
+        UINT width = 0;
+        if (!read_back(device, context, image, &actual, &width) || width != w || actual.size() != expected.size())
+            return false;
+        for (UINT y = 0; y < h; y++)
+            for (UINT x = 0; x < w; x++)
+                if (actual[y * w + x] != expected[y * w + x]) {
+                    std::printf("    %s frame %u %s: ", t, frame, direction);
+                    expect_texel(t, actual, w, x, y, expected[y * w + x]);
+                    return false;
+                }
+        return true;
+    };
+    for (UINT frame = 0; frame < frames; frame++) {
+        if (producer->AcquireSync(2 * frame, 5000) != S_OK)
+            return result(t, false);
+        for (UINT y = 0; y < h; y++)
+            for (UINT x = 0; x < w; x++)
+                expected[y * w + x] = 0xff000000u | ((x + frame * 17) & 255) |
+                    (((y * 3 + frame * 11) & 255) << 8) | (((x ^ y ^ (frame * 23)) & 255) << 16);
+        ctx->UpdateSubresource(tex, 0, nullptr, expected.data(), w * 4, 0);
+        const D3D11_RECT dirty{LONG(frame * 7), 19, LONG(frame * 7 + 67), 83};
+        const float cyan[] = {0, 1, 1, 1};
+        ctx1->ClearView(rtv, cyan, &dirty, 1);
+        for (LONG y = dirty.top; y < dirty.bottom; y++)
+            for (LONG x = dirty.left; x < dirty.right; x++)
+                expected[y * w + x] = 0xff00ffff;
+        // ReleaseSync must submit the producer's commands without an explicit Flush.
+        if (!check(t, "producer ReleaseSync", producer->ReleaseSync(2 * frame + 1)) ||
+            consumer->AcquireSync(2 * frame + 1, 5000) != S_OK)
+            return result(t, false);
+        const bool forward = pixels_match(dev2, ctx2, opened, frame, "producer to consumer");
+        const D3D11_RECT reply{193, 97, 251, 129};
+        const float yellow[] = {1, 1, 0, 1};
+        ctx21->ClearView(rtv2, yellow, &reply, 1);
+        for (LONG y = reply.top; y < reply.bottom; y++)
+            for (LONG x = reply.left; x < reply.right; x++)
+                expected[y * w + x] = 0xffffff00;
+        if (!check(t, "consumer ReleaseSync", consumer->ReleaseSync(2 * frame + 2)) || !forward ||
+            producer->AcquireSync(2 * frame + 2, 5000) != S_OK)
+            return result(t, false);
+        const bool reverse = pixels_match(dev, ctx, tex, frame, "consumer to producer");
+        if (!check(t, "producer return key", producer->ReleaseSync(2 * frame + 2)) || !reverse)
+            return result(t, false);
+    }
+    std::printf("    %u frames, %ux%u, full updates and bidirectional dirty rectangles\n", frames, w, h);
+    return result(t, true);
 }
 
 void pump_messages()
@@ -568,9 +786,26 @@ void pump_messages()
     }
 }
 
-// Swapchains in a window (watch them): flip model, the legacy blt model, then flip model again after
-// ResizeBuffers. Each phase cycles colours for about two seconds.
-bool present_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* adapter)
+COLORREF reference_color = RGB(0, 0, 0);
+
+LRESULT CALLBACK reference_window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
+{
+    if (message == WM_PAINT) {
+        PAINTSTRUCT paint{};
+        HDC dc = BeginPaint(window, &paint);
+        HBRUSH brush = CreateSolidBrush(reference_color);
+        FillRect(dc, &paint.rcPaint, brush);
+        DeleteObject(brush);
+        EndPaint(window, &paint);
+        return 0;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
+// Each model uses a fresh window. After flip presentation, Windows ignores
+// legacy blt updates to that HWND even after the flip swapchain is destroyed.
+bool present_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* adapter, bool blt_only,
+                  bool check_screen)
 {
     const char* t = "present";
     Ref<IDXGIFactory2> factory;
@@ -581,8 +816,19 @@ bool present_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* ada
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = L"d3d11probe";
     RegisterClassW(&wc);
-    HWND wnd = CreateWindowW(L"d3d11probe", L"d3d11probe", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 100, 100, 640, 400,
-                             nullptr, nullptr, wc.hInstance, nullptr);
+    HWND reference = nullptr;
+    if (check_screen) {
+        WNDCLASSW reference_class{};
+        reference_class.lpfnWndProc = reference_window_proc;
+        reference_class.hInstance = wc.hInstance;
+        reference_class.lpszClassName = L"d3d11probe-reference";
+        RegisterClassW(&reference_class);
+        reference = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                                     reference_class.lpszClassName, L"GDI colour reference", WS_POPUP | WS_VISIBLE,
+                                     800, 100, 160, 160, nullptr, nullptr, wc.hInstance, nullptr);
+        if (!reference)
+            return result(t, false);
+    }
     struct Phase {
         const char* name;
         DXGI_SWAP_EFFECT effect;
@@ -593,6 +839,21 @@ bool present_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* ada
                             {"flip sequential, ResizeBuffers 640x360", DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, 2, 320, 180}};
     bool ok = true;
     for (const Phase& p : phases) {
+        if (blt_only && p.effect != DXGI_SWAP_EFFECT_DISCARD)
+            continue;
+        struct Window {
+            HWND handle;
+            ~Window() { if (handle) DestroyWindow(handle); }
+        } window{CreateWindowW(wc.lpszClassName, L"d3d11probe", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                100, 100, 640, 400, nullptr, nullptr, wc.hInstance, nullptr)};
+        const HWND wnd = window.handle;
+        if (!wnd) {
+            ok = false;
+            continue;
+        }
+        SetForegroundWindow(wnd);
+        if (check_screen)
+            SetWindowPos(wnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         DXGI_SWAP_CHAIN_DESC1 sd{};
         sd.Width = p.width;
         sd.Height = p.height;
@@ -627,6 +888,7 @@ bool present_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* ada
             hr = sc->Present(1, 0);
             if (FAILED(hr)) {
                 std::printf("    %s: %s: Present failed at frame %u: 0x%08lx\n", t, p.name, frame, hr);
+                std::printf("    GetDeviceRemovedReason: 0x%08lx\n", dev->GetDeviceRemovedReason());
                 break;
             }
             // ANGLE (old Chromium) treats a failing GetDeviceRemovedReason as a lost context.
@@ -637,13 +899,47 @@ bool present_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* ada
             }
             presented++;
             pump_messages();
+            if (check_screen && (frame == 30 || frame == 90)) {
+                const int red = static_cast<int>(std::lround(color[0] * 255));
+                const int green = static_cast<int>(std::lround(color[1] * 255));
+                const int blue = static_cast<int>(std::lround(color[2] * 255));
+                reference_color = RGB(red, green, blue);
+                InvalidateRect(reference, nullptr, FALSE);
+                UpdateWindow(reference);
+                DwmFlush();
+                RECT client{};
+                GetClientRect(wnd, &client);
+                POINT sample{client.right / 2, client.bottom / 2};
+                ClientToScreen(wnd, &sample);
+                const bool uncovered = GetAncestor(WindowFromPoint(sample), GA_ROOT) == wnd;
+                POINT reference_sample{80, 80};
+                ClientToScreen(reference, &reference_sample);
+                const bool reference_uncovered = GetAncestor(WindowFromPoint(reference_sample), GA_ROOT) == reference;
+                HDC screen = GetDC(nullptr);
+                const COLORREF pixel = GetPixel(screen, sample.x, sample.y);
+                const COLORREF expected = GetPixel(screen, reference_sample.x, reference_sample.y);
+                ReleaseDC(nullptr, screen);
+                // Both samples include the user's desktop colour filter.
+                const bool match = uncovered && reference_uncovered && pixel != CLR_INVALID && expected != CLR_INVALID &&
+                                   std::abs(int(GetRValue(pixel)) - int(GetRValue(expected))) <= 3 &&
+                                   std::abs(int(GetGValue(pixel)) - int(GetGValue(expected))) <= 3 &&
+                                   std::abs(int(GetBValue(pixel)) - int(GetBValue(expected))) <= 3;
+                std::printf("    %s: frame %u screen RGB %u,%u,%u GDI reference %u,%u,%u: %s\n", p.name, frame,
+                            GetRValue(pixel), GetGValue(pixel), GetBValue(pixel), GetRValue(expected),
+                            GetGValue(expected), GetBValue(expected),
+                            match ? "PASS" : "FAIL");
+                ok = ok && match;
+                if (!uncovered || !reference_uncovered)
+                    std::printf("    screen sample is covered by another window\n");
+            }
         }
         std::printf("    %s: %s: %u of 120 frames presented\n", t, p.name, presented);
         ok = ok && presented == 120;
         ctx->ClearState();
         ctx->Flush();
     }
-    DestroyWindow(wnd);
+    if (reference)
+        DestroyWindow(reference);
     return result(t, ok);
 }
 
@@ -657,10 +953,21 @@ int main(int argc, char** argv)
     AddVectoredExceptionHandler(1, report_device_removal);
     std::printf("d3d11probe built " __DATE__ " " __TIME__ "\n");
     bool present = false;
+    bool blt_only = false;
+    bool check_screen = false;
+    HANDLE child_handle = nullptr;
     for (int i = 1; i < argc; i++)
         if (!std::strcmp(argv[i], "--present"))
             present = true;
+        else if (!std::strcmp(argv[i], "--present-blt"))
+            present = blt_only = true;
+        else if (!std::strcmp(argv[i], "--present-check"))
+            present = check_screen = true;
+        else if (!std::strcmp(argv[i], "--shared-child") && i + 1 < argc)
+            child_handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::strtoull(argv[++i], nullptr, 10)));
 
+    if (check_screen)
+        SetProcessDPIAware();
     HMODULE compiler = LoadLibraryW(L"d3dcompiler_47.dll");
     g_compile = compiler ? reinterpret_cast<D3DCompileFn>(reinterpret_cast<void*>(GetProcAddress(compiler, "D3DCompile")))
                          : nullptr;
@@ -696,13 +1003,19 @@ int main(int argc, char** argv)
             failures++;
             continue;
         }
+        if (child_handle)
+            return result("shared child pixels", shared_child(dev, ctx, child_handle)) ? 0 : 1;
         for (auto test : {clear_test, triangle_test, textured_test, depth_test, compute_test, queries_test,
                           update_test})
             failures += !test(dev, ctx);
         failures += !shared_test(dev, ctx, adapter);
+        failures += !shared_nt_test(dev, ctx, adapter);
+        failures += !shared_updates_test(dev, ctx, adapter);
         if (present)
-            failures += !present_test(dev, ctx, adapter);
+            failures += !present_test(dev, ctx, adapter, blt_only, check_screen);
     }
+    if (child_handle)
+        return 1;
     std::printf("%s\n", failures ? "Some tests FAILED" : "All passed!");
     return failures ? 1 : 0;
 }

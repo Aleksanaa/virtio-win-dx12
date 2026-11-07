@@ -198,7 +198,7 @@ HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject
     if (!(o.bind & viogpu::kBindSamplerView))
         desc.Flags |= D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
 
-    const int fd = import_fd("OpenHeapAndResource", kmt_device(d), args.hKMResource.handle);
+    const int fd = import_fd("OpenHeapAndResource", kmt_device(d), alloc->hAllocation, *e);
     if (fd < 0)
         return E_OUTOFMEMORY;
     bool consumed = false;
