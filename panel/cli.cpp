@@ -32,6 +32,13 @@ const wchar_t kHelp[] =
     L"  /log       Print what the drivers log, as they log it, until Ctrl+C. Run as administrator for the\n"
     L"             kernel driver's messages and services' output too.\n"
     L"      /all       every program's debug output, not only the drivers'\n"
+    L"  /set       List the settings, as on the Settings page, with their values and the values they take.\n"
+    L"  /set NAME VALUE...\n"
+    L"             Change settings (as administrator). Drivers loaded already keep their logging settings:\n"
+    L"             programs started afterwards get them.\n"
+    L"  /restart-dwm\n"
+    L"             Restart the Desktop Window Manager (as administrator), for the desktop's own drivers to\n"
+    L"             take the logging settings.\n"
     L"  /page N    Open the control panel on page N: 0 Overview, 1 Settings, 2 Logs, 3 Tests, 4 Tools.\n"
     L"  /help      Show this help.\n"
     L"\n"
@@ -138,6 +145,39 @@ int runTests(const std::vector<std::string>& names, bool verbose)
     return failed ? 1 : 0;
 }
 
+// /set: without arguments the list, else NAME VALUE pairs to change.
+int runSet(const std::vector<std::wstring>& args)
+{
+    Output out(STD_OUTPUT_HANDLE), err(STD_ERROR_HANDLE);
+    if (args.empty()) {
+        std::wstring text;
+        for (const SettingLine& s : listSettings()) {
+            std::wstring name = s.name, value = s.value;
+            name.resize(std::max<size_t>(name.size() + 1, 16), L' ');
+            value.resize(std::max<size_t>(value.size() + 1, 9), L' ');
+            text += name + value + s.title + L" (" + s.values + L")\n";
+        }
+        out.print(text + L"Change them with /set NAME VALUE, also several at once.\n");
+        return 0;
+    }
+    if (args.size() % 2) {
+        err.print(L"No value for " + args.back() + L".\n");
+        return 2;
+    }
+    bool logging = false;
+    for (size_t i = 0; i < args.size(); i += 2) {
+        std::wstring e = changeSetting(args[i], args[i + 1], &logging);
+        if (!e.empty()) {
+            err.print(e + L".\n");
+            return 1;
+        }
+        out.print(args[i] + L" = " + args[i + 1] + L"\n");
+    }
+    if (logging)
+        out.print(L"Programs started from now on use these; /restart-dwm for the desktop's own.\n");
+    return 0;
+}
+
 HANDLE g_quit;
 
 int followLog(bool all)
@@ -209,6 +249,24 @@ int runCommandLine(int argc, wchar_t** argv, int* page)
                 all = true;
             }
             return followLog(all);
+        }
+        if (o == L"set") {
+            std::vector<std::wstring> args;
+            for (int j = i + 1; j < argc; j++) {
+                std::wstring a = argv[j];
+                for (wchar_t& c : a)
+                    c = std::towlower(c);
+                args.push_back(a);
+            }
+            return runSet(args);
+        }
+        if (o == L"restart-dwm") {
+            if (!elevated()) {
+                Output(STD_ERROR_HANDLE).print(L"Restarting the Desktop Window Manager needs administrator rights.\n");
+                return 1;
+            }
+            restartDwm();
+            return 0;
         }
         if (o == L"debug")
             continue;

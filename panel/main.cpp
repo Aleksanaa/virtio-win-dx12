@@ -596,7 +596,7 @@ int Window::run(HINSTANCE inst, int show, int page)
     if (!hwnd_)
         return 1;
     pages_.push_back(makeOverview(hwnd_));
-    pages_.push_back(makeSettings());
+    pages_.push_back(makeSettings(hwnd_));
     pages_.push_back(makeLogs(hwnd_));
     pages_.push_back(makeTests(hwnd_));
     pages_.push_back(makeTools());
@@ -626,6 +626,23 @@ int Window::run(HINSTANCE inst, int show, int page)
 }
 
 }  // namespace
+
+bool restartElevated(HWND window, int page)
+{
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    std::wstring args = L"/page " + std::to_wstring(page);
+    SHELLEXECUTEINFOW sei = {sizeof(sei)};
+    sei.lpVerb = L"runas";
+    sei.lpFile = self;
+    sei.lpParameters = args.c_str();
+    sei.hwnd = window;
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei))
+        return false;
+    PostMessageW(window, WM_CLOSE, 0, 0);
+    return true;
+}
 
 }  // namespace panel
 

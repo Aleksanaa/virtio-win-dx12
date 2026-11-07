@@ -5,7 +5,6 @@
 #include "panel.h"
 
 #include <commdlg.h>
-#include <shellapi.h>
 #include <shlobj.h>
 
 #include <deque>
@@ -263,17 +262,7 @@ void Logs::elevate()
 {
     bool was = capture_.running();
     capture_.stop();
-    wchar_t self[MAX_PATH];
-    GetModuleFileNameW(nullptr, self, MAX_PATH);
-    SHELLEXECUTEINFOW sei = {sizeof(sei)};
-    sei.lpVerb = L"runas";
-    sei.lpFile = self;
-    sei.lpParameters = L"/page 2";
-    sei.hwnd = window_;
-    sei.nShow = SW_SHOWNORMAL;
-    if (ShellExecuteExW(&sei))
-        PostMessageW(window_, WM_CLOSE, 0, 0);
-    else if (was)
+    if (!restartElevated(window_, 2) && was)
         start();
 }
 

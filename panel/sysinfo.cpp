@@ -247,6 +247,28 @@ std::vector<std::wstring> devices(const GUID& cls)
 
 }  // namespace
 
+HKEY openDriverKey(REGSAM access)
+{
+    HKEY out = nullptr;
+    HDEVINFO set = SetupDiGetClassDevsW(nullptr, L"PCI", nullptr, DIGCF_ALLCLASSES | DIGCF_PRESENT);
+    if (set == INVALID_HANDLE_VALUE)
+        return nullptr;
+    SP_DEVINFO_DATA dev = {sizeof(dev)};
+    for (DWORD i = 0; !out && SetupDiEnumDeviceInfo(set, i, &dev); i++) {
+        if (!isVirtioGpu(set, &dev))
+            continue;
+        HKEY key = SetupDiOpenDevRegKey(set, &dev, DICS_FLAG_GLOBAL, 0, DIREG_DRV, access | KEY_QUERY_VALUE);
+        if (key == INVALID_HANDLE_VALUE)
+            continue;
+        if (regString(key, nullptr, L"ProviderName") == kProvider)
+            out = key;
+        else
+            RegCloseKey(key);
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return out;
+}
+
 // The current mode and scale of each display attached to the adapter Windows names `adapterName` (all displays when
 // it is empty).
 std::vector<Display> readDisplays(const std::wstring& adapterName)

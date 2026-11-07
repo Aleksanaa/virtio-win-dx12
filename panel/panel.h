@@ -32,6 +32,7 @@ constexpr float kTextPrimary = 1, kTextSecondary = 0.786f, kTextTertiary = 0.544
 constexpr float kCardFill = 0.0512f, kCardHover = 0.0837f;  // CardBackgroundFillColorDefault, and pointer over
 constexpr float kControl = 0.0605f, kControlHover = 0.0837f, kControlPressed = 0.0326f, kControlStroke = 0.0698f;
 constexpr float kStrongStroke = 0.544f;  // ControlStrongStrokeColorDefault
+constexpr float kTextDisabled = 0.3628f, kControlDisabled = 0.0419f, kStrokeDisabled = 0.2465f;
 constexpr UINT32 kSuccess = 0x6ccb5f, kCaution = 0xfce100, kCritical = 0xff99a4;
 constexpr UINT32 kCautionBg = 0x433519, kCriticalBg = 0x442726;
 extern UINT32 accent;      // SystemAccentColorLight2, from Windows' accent palette
@@ -82,11 +83,13 @@ public:
     D2D1_RECT_F scrollArea = {};  // what the last frame scrolled, in window DIPs, and its height
     float scrollHeight = 0;
 
-    // WinUI controls. Buttons are 32 high; the toggle and the combo box are placed by their right edge.
+    // WinUI controls. Buttons are 32 high; the toggle and the combo box are placed by their right edge, and are greyed
+    // out and not clickable when not `enabled`.
     float button(const std::wstring& s, float x, float y, int id, bool accent);
     float buttonWidth(const std::wstring& s);
-    void toggle(float right, float cy, int id, bool on);
-    void comboBox(float right, float cy, int id, const std::vector<std::wstring>& options, int selected);
+    void toggle(float right, float cy, int id, bool on, bool enabled = true);
+    void comboBox(float right, float cy, int id, const std::vector<std::wstring>& options, int selected,
+                  bool enabled = true);
     // A Settings card (68 high): icon, title, description; returns the vertical centre for the control on its right.
     float settingsCard(float x, float y, float w, float h, const wchar_t* icon, const std::wstring& title,
                        const std::wstring& desc, int clickId = kNoId, UINT32 iconColor = theme::kWhite,
@@ -179,7 +182,7 @@ constexpr UINT kPageMessage = WM_APP + 1;
 constexpr UINT_PTR kPageTimer = 100;
 
 std::unique_ptr<Page> makeOverview(HWND window);
-std::unique_ptr<Page> makeSettings();
+std::unique_ptr<Page> makeSettings(HWND window);
 std::unique_ptr<Page> makeLogs(HWND window);
 std::unique_ptr<Page> makeTests(HWND window);
 std::unique_ptr<Page> makeTools();
@@ -214,6 +217,8 @@ struct SystemInfo {
 };
 SystemInfo readSystemInfo();
 std::vector<Display> readDisplays(const std::wstring& adapterName);
+// The VirtIO GPU's driver key (where pkg/vgd.inf puts the KMD's settings) when it runs vgd's driver, else null.
+HKEY openDriverKey(REGSAM access);
 
 // ---- the graphics probe (probe.cpp) -------------------------------------------------------------------------------
 // `vgd-panel.exe /probe` creates a Vulkan instance and D3D12, D3D11 and OpenGL devices on the VirtIO GPU and prints
@@ -304,6 +309,19 @@ private:
 std::wstring formatLogLine(const LogLine& l);
 // The process runs as administrator.
 bool elevated();
+// Starts the panel again as administrator, on page `page`, and closes this window; false when that did not start.
+bool restartElevated(HWND window, int page);
+
+// The settings (settingspage.cpp), also for the command line: by its name there, its value and the values it takes.
+struct SettingLine {
+    std::wstring name, value, values, title;
+};
+std::vector<SettingLine> listSettings();
+// Changes a setting; returns why it could not, else empty. *logging is set when the change is for programs started
+// afterwards.
+std::wstring changeSetting(const std::wstring& name, const std::wstring& value, bool* logging);
+// Ends this session's Desktop Window Manager, which Windows starts again with the drivers' current settings.
+void restartDwm();
 
 // ---- the system report (report.cpp): what the Overview shows and /info prints ---------------------------------------
 

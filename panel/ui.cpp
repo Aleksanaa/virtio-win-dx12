@@ -367,12 +367,19 @@ float Ui::button(const std::wstring& s, float x, float y, int id, bool isAccent)
 }
 
 // With its On/Off label on the left, as Settings shows it.
-void Ui::toggle(float right, float cy, int id, bool on)
+void Ui::toggle(float right, float cy, int id, bool on, bool enabled)
 {
-    bool h = hover == id, p = h && pressed == id;
+    bool h = enabled && hover == id, p = h && pressed == id;
     float x = right - 40, knob = p || h ? 7 : 6;
     D2D1_RECT_F r = {x, cy - 10, x + 40, cy + 10};
-    if (on) {
+    if (!enabled) {
+        if (on)
+            fill(r, 10, kWhite, kStrokeDisabled);
+        else
+            stroke(r, 10, kWhite, kStrokeDisabled);
+        color(kWhite, on ? kTextDisabled : kStrokeDisabled);
+        rt_->FillEllipse(D2D1::Ellipse({on ? x + 30 : x + 10, cy}, knob, knob), brush_);
+    } else if (on) {
         fill(r, 10, accent, h ? 0.9f : 1);
         color(kBlack);
         rt_->FillEllipse(D2D1::Ellipse({x + 30, cy}, knob, knob), brush_);
@@ -382,25 +389,28 @@ void Ui::toggle(float right, float cy, int id, bool on)
         color(kWhite, kTextSecondary);
         rt_->FillEllipse(D2D1::Ellipse({x + 10, cy}, knob, knob), brush_);
     }
-    text(on ? L"On" : L"Off", kBody, {x - 60, cy - 10, x - 12, cy + 10}, kWhite, kTextPrimary,
+    text(on ? L"On" : L"Off", kBody, {x - 60, cy - 10, x - 12, cy + 10}, kWhite, enabled ? kTextPrimary : kTextDisabled,
          DWRITE_TEXT_ALIGNMENT_TRAILING);
-    hot({x - 44, cy - 16, right, cy + 16}, id);
+    if (enabled)
+        hot({x - 44, cy - 16, right, cy + 16}, id);
 }
 
-void Ui::comboBox(float right, float cy, int id, const std::vector<std::wstring>& options, int selected)
+void Ui::comboBox(float right, float cy, int id, const std::vector<std::wstring>& options, int selected, bool enabled)
 {
     float w = 0;
     for (const auto& o : options)
         w = std::max(w, measure(o, kBody));
     w = std::max(160.f, w + 12 + 40);
     D2D1_RECT_F r = {right - w, cy - 16, right, cy + 16};
-    bool h = hover == id, p = h && pressed == id;
-    fill(r, 4, kWhite, p ? kControlPressed : h ? kControlHover : kControl);
+    bool h = enabled && hover == id, p = h && pressed == id;
+    fill(r, 4, kWhite, !enabled ? kControlDisabled : p ? kControlPressed : h ? kControlHover : kControl);
     stroke(r, 4, kWhite, kControlStroke);
-    text(options[selected], kBody, {r.left + 12, r.top, r.right - 36, r.bottom});
-    text(L"", kIconSmall, {r.right - 32, r.top, r.right - 12, r.bottom}, kWhite, kTextSecondary,
-         DWRITE_TEXT_ALIGNMENT_CENTER);
-    hot(r, id);
+    text(options[selected], kBody, {r.left + 12, r.top, r.right - 36, r.bottom}, kWhite,
+         enabled ? kTextPrimary : kTextDisabled);
+    text(L"", kIconSmall, {r.right - 32, r.top, r.right - 12, r.bottom}, kWhite,
+         enabled ? kTextSecondary : kTextDisabled, DWRITE_TEXT_ALIGNMENT_CENTER);
+    if (enabled)
+        hot(r, id);
 }
 
 void Ui::card(D2D1_RECT_F r, bool h)
