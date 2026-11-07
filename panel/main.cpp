@@ -65,7 +65,13 @@ private:
     DWORD leaveTick_ = 0, repeatAt_ = 0;
     bool animating_ = false;
     LARGE_INTEGER lastFrame_{};
-    bool selecting_ = false;  // dragging a text selection
+    // A click in text selects the word, a double-click the whole text and a third click clears it; dragging past the
+    // drag threshold selects from where it was pressed instead.
+    bool selecting_ = false, selDragged_ = false;
+    int selText_ = kNoId;
+    UINT32 selPos_ = 0;
+    POINT selFrom_{};
+    DWORD selDouble_ = 0;  // when the last double-click was
 };
 
 Window* g_window;
@@ -352,6 +358,13 @@ LRESULT Window::proc(UINT msg, WPARAM wp, LPARAM lp)
         TrackMouseEvent(&t);
         sbY_ = y;
         if (selecting_) {
+            if (!selDragged_) {
+                if (abs(GET_X_LPARAM(lp) - selFrom_.x) < GetSystemMetrics(SM_CXDRAG) &&
+                    abs(GET_Y_LPARAM(lp) - selFrom_.y) < GetSystemMetrics(SM_CYDRAG))
+                    return 0;
+                selDragged_ = true;
+                ui_.selectStart(selText_, selPos_);
+            }
             ui_.selectTo(x, y);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
@@ -395,11 +408,23 @@ LRESULT Window::proc(UINT msg, WPARAM wp, LPARAM lp)
         int textId;
         UINT32 pos;
         if (!sbHot_ && !ui_.hover && ui_.textAt(x, y, &textId, &pos)) {
-            if (msg == WM_LBUTTONDBLCLK)
+            POINT at = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (msg == WM_LBUTTONDBLCLK) {
+                ui_.selectAll(textId);
+                selDouble_ = GetMessageTime();
+                selFrom_ = at;
+            } else if (DWORD(GetMessageTime()) - selDouble_ <= GetDoubleClickTime() &&
+                       abs(at.x - selFrom_.x) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
+                       abs(at.y - selFrom_.y) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2) {
+                ui_.clearSelection();  // the third click
+                selDouble_ -= GetDoubleClickTime() + 1;
+            } else {
                 ui_.selectWord(textId, pos);
-            else {
-                ui_.selectStart(textId, pos);
                 selecting_ = true;
+                selDragged_ = false;
+                selText_ = textId;
+                selPos_ = pos;
+                selFrom_ = at;
             }
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
