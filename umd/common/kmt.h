@@ -15,7 +15,7 @@ namespace vgd::umd {
 
 class KmtDevice {
 public:
-    // The viogpu adapter's device, or null (logged) if there is none or gdi32 lacks the entry points.
+    // Loads the KMT entry points; the first import or surface export binds the device.
     static std::unique_ptr<KmtDevice> open();
     ~KmtDevice();
 
@@ -33,6 +33,7 @@ public:
 
 private:
     KmtDevice() = default;
+    HRESULT bind_adapter(const LUID* luid);
 
     PFND3DKMT_ENUMADAPTERS2 enum_adapters_ = nullptr;
     PFND3DKMT_QUERYADAPTERINFO query_adapter_info_ = nullptr;
@@ -40,12 +41,14 @@ private:
     PFND3DKMT_CREATEDEVICE create_device_ = nullptr;
     PFND3DKMT_DESTROYDEVICE destroy_device_ = nullptr;
     PFND3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query_resource_info_ = nullptr;
+    PFND3DKMT_GETSHAREDRESOURCEADAPTERLUID shared_adapter_luid_ = nullptr;
     PFND3DKMT_OPENRESOURCEFROMNTHANDLE open_resource_ = nullptr;
     PFND3DKMT_DESTROYALLOCATION destroy_allocation_ = nullptr;
     PFND3DKMT_CREATEALLOCATION create_allocation_ = nullptr;
     PFND3DKMT_SHAREOBJECTS share_objects_ = nullptr;
     PFND3DKMT_ESCAPE escape_ = nullptr;
     D3DKMT_HANDLE adapter_ = 0;
+    LUID adapter_luid_{};
     D3DKMT_HANDLE device_ = 0;
 };
 

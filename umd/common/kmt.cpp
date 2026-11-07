@@ -34,13 +34,29 @@ std::unique_ptr<KmtDevice> KmtDevice::open()
         return nullptr;
     }
 
+    get(k->shared_adapter_luid_, "D3DKMTGetSharedResourceAdapterLuid");
+    return k;
+}
+
+HRESULT KmtDevice::bind_adapter(const LUID* luid)
+{
+    if (device_) {
+        if (!luid || (adapter_luid_.HighPart == luid->HighPart && adapter_luid_.LowPart == luid->LowPart))
+            return S_OK;
+        VGD_WARN("kmt: shared resource adapter %08lx:%08lx differs from device adapter %08lx:%08lx",
+                 static_cast<ULONG>(luid->HighPart), luid->LowPart,
+                 static_cast<ULONG>(adapter_luid_.HighPart), adapter_luid_.LowPart);
+        return E_FAIL;
+    }
     D3DKMT_ENUMADAPTERS2 e{};
-    if (k->enum_adapters_(&e) < 0 || !e.NumAdapters)
-        return nullptr;
+    if (enum_adapters_(&e) < 0 || !e.NumAdapters)
+        return E_FAIL;
     std::vector<D3DKMT_ADAPTERINFO> adapters(e.NumAdapters);
     e.pAdapters = adapters.data();
-    if (k->enum_adapters_(&e) < 0)
-        return nullptr;
+    if (enum_adapters_(&e) < 0)
+        return E_FAIL;
+    D3DKMT_HANDLE selected = 0;
+    LUID selected_luid{};
     for (ULONG i = 0; i < e.NumAdapters; i++) {
         viogpu::AdapterInfo info{};
         D3DKMT_QUERYADAPTERINFO q{};
@@ -48,29 +64,38 @@ std::unique_ptr<KmtDevice> KmtDevice::open()
         q.Type = KMTQAITYPE_UMDRIVERPRIVATE;
         q.pPrivateDriverData = &info;
         q.PrivateDriverDataSize = sizeof(info);
-        const bool ours = !k->adapter_ && k->query_adapter_info_(&q) >= 0 && info.IamVioGPU == viogpu::kIam;
+        const bool ours = !selected && (!luid || (adapters[i].AdapterLuid.HighPart == luid->HighPart &&
+                          adapters[i].AdapterLuid.LowPart == luid->LowPart)) &&
+                          query_adapter_info_(&q) >= 0 && info.IamVioGPU == viogpu::kIam;
         if (ours) {
-            k->adapter_ = adapters[i].hAdapter;
+            selected = adapters[i].hAdapter;
+            selected_luid = adapters[i].AdapterLuid;
         } else {
             D3DKMT_CLOSEADAPTER ca{adapters[i].hAdapter};
-            if (k->close_adapter_(&ca) < 0)
+            if (close_adapter_(&ca) < 0)
                 VGD_WARN("kmt: D3DKMTCloseAdapter(0x%x) failed", adapters[i].hAdapter);
         }
     }
-    if (!k->adapter_) {
-        VGD_WARN("kmt: no viogpu adapter among %lu", e.NumAdapters);
-        return nullptr;
+    if (!selected) {
+        VGD_WARN("kmt: matching viogpu adapter unavailable");
+        return E_FAIL;
     }
     D3DKMT_CREATEDEVICE cd{};
-    cd.hAdapter = k->adapter_;
-    NTSTATUS s = k->create_device_(&cd);
+    cd.hAdapter = selected;
+    NTSTATUS s = create_device_(&cd);
     if (s < 0) {
         VGD_WARN("kmt: D3DKMTCreateDevice failed: 0x%08lx", s);
-        return nullptr;
+        D3DKMT_CLOSEADAPTER ca{selected};
+        if (close_adapter_(&ca) < 0)
+            VGD_WARN("kmt: D3DKMTCloseAdapter(0x%x) failed", selected);
+        return E_FAIL;
     }
-    k->device_ = cd.hDevice;
-    VGD_TRACE("kmt: kernel device 0x%x on adapter 0x%x", k->device_, k->adapter_);
-    return k;
+    adapter_ = selected;
+    adapter_luid_ = selected_luid;
+    device_ = cd.hDevice;
+    VGD_TRACE("kmt: adapter 0x%x LUID %08lx:%08lx device 0x%x",
+              adapter_, static_cast<ULONG>(adapter_luid_.HighPart), adapter_luid_.LowPart, device_);
+    return S_OK;
 }
 
 KmtDevice::~KmtDevice()
@@ -89,6 +114,15 @@ KmtDevice::~KmtDevice()
 
 HRESULT KmtDevice::open_shared(HANDLE nt, D3DKMT_HANDLE* resource, D3DKMT_HANDLE* allocation)
 {
+    if (shared_adapter_luid_) {
+        D3DKMT_GETSHAREDRESOURCEADAPTERLUID a{};
+        a.hNtHandle = nt;
+        const NTSTATUS status = shared_adapter_luid_(&a);
+        if (status < 0 || FAILED(bind_adapter(&a.AdapterLuid)))
+            return E_FAIL;
+    } else {
+        return E_FAIL;
+    }
     D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE q{};
     q.hDevice = device_;
     q.hNtHandle = nt;
@@ -150,6 +184,9 @@ HRESULT KmtDevice::share_surface(D3DKMT_HANDLE allocation, const viogpu::Allocat
     *nt = nullptr;
     if (!allocation)
         return E_INVALIDARG;
+    // Exports can precede imports. Establish the device before creating its NT alias.
+    if (FAILED(bind_adapter(nullptr)))
+        return E_FAIL;
     // A legacy shared resource cannot be exported with D3DKMTShareObjects.
     // The alias keeps its backing blob alive and has its own NT-sharing flags.
     viogpu::AllocationAlias alias{};
