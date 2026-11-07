@@ -32,8 +32,9 @@ private:
 
     void paint(HDC dc);
     void drawPane();
-    float maxScroll() const { return std::max(0.f, contentH_[page_] - height_); }
-    bool scrollable() const { return contentH_[page_] > height_ + 0.5f; }
+    float areaH() const { return area_[page_].bottom - area_[page_].top; }
+    float maxScroll() const { return std::max(0.f, contentH_[page_] - areaH()); }
+    bool scrollable() const { return contentH_[page_] > areaH() + 0.5f; }
     Bar bar() const;
     int barPart(float x, float y) const;
     void drawScrollbar();
@@ -56,8 +57,10 @@ private:
     ID2D1DCRenderTarget* rt_ = nullptr;
     ID2D1SolidColorBrush* brush_ = nullptr;
 
-    // The ScrollBar: scroll_ is what is shown, target_ where it is going (wheel and keys animate there).
+    // The ScrollBar: scroll_ is what is shown, target_ where it is going (wheel and keys animate there). It scrolls
+    // area_ (window DIPs): the page, or the part of a page that fills the window which scrolls by itself.
     std::vector<float> scroll_, target_, contentH_;
+    std::vector<D2D1_RECT_F> area_;
     float expand_ = 0;  // 0 the collapsed indicator .. 1 expanded
     bool sbOver_ = false, dragging_ = false;
     int sbHot_ = kSbNone, sbDown_ = kSbNone;
@@ -143,20 +146,35 @@ void Window::paint(HDC dc)
 
     // the page is at most kMaxContent wide, centred in the space beside the pane
     float avail = width_ - kPaneW - 2 * kPad, w = std::min(avail, kMaxContent), x = kPaneW + kPad + (avail - w) / 2;
+    bool fills = pages_[page_]->fills();
     scroll_[page_] = std::clamp(scroll_[page_], 0.f, maxScroll());
-    ui_.offset = scroll_[page_];
+    ui_.scroll = scroll_[page_];
+    ui_.offset = fills ? 0 : ui_.scroll;
+    ui_.view = height_;
+    bool atEnd = scroll_[page_] >= maxScroll() - 1 && target_[page_] >= maxScroll() - 1;
     rt_->PushAxisAlignedClip({kPaneW + 1, 1, width_, height_}, D2D1_ANTIALIAS_MODE_ALIASED);
     rt_->SetTransform(D2D1::Matrix3x2F::Translation(0, -ui_.offset) * D2D1::Matrix3x2F::Scale(scale_, scale_));
     float y = 28;
     ui_.text(pages_[page_]->title(), Ui::kTitle, {x, y, x + w, y + 40});
     y += 40 + 24;
     pages_[page_]->draw(ui_, x, w, y);
-    contentH_[page_] = y + 40;
+    if (fills) {
+        area_[page_] = ui_.scrollArea;
+        contentH_[page_] = ui_.scrollHeight;
+    } else {
+        area_[page_] = {kPaneW, 0, width_, height_};
+        contentH_[page_] = y + 40;
+    }
+    bool grew = atEnd && pages_[page_]->followsEnd() && scroll_[page_] < maxScroll();
     rt_->PopAxisAlignedClip();
     rt_->SetTransform(D2D1::Matrix3x2F::Scale(scale_, scale_));
     ui_.offset = 0;
     drawScrollbar();
     drawPane();
+    if (grew) {  // show the new end in the next frame
+        scroll_[page_] = target_[page_] = maxScroll();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
     if (rt_->EndDraw() == D2DERR_RECREATE_TARGET)
         dropTarget();
     if (pages_[page_]->animating() && !animating_) {
@@ -178,10 +196,10 @@ void Window::paint(HDC dc)
 Window::Bar Window::bar() const
 {
     Bar b;
-    b.top = kArrowH;
-    b.bottom = height_ - kArrowH;
+    b.top = area_[page_].top + kArrowH;
+    b.bottom = area_[page_].bottom - kArrowH;
     float track = b.bottom - b.top;
-    b.thumbLen = std::max(24.f, track * height_ / std::max(contentH_[page_], height_));
+    b.thumbLen = std::max(24.f, track * areaH() / std::max(contentH_[page_], areaH()));
     float m = maxScroll();
     b.thumbTop = b.top + (m > 0 ? (track - b.thumbLen) * scroll_[page_] / m : 0);
     return b;
@@ -189,7 +207,8 @@ Window::Bar Window::bar() const
 
 int Window::barPart(float x, float y) const
 {
-    if (!scrollable() || x < width_ - kBarW || x >= width_)
+    const D2D1_RECT_F& a = area_[page_];
+    if (!scrollable() || x < a.right - kBarW || x >= a.right || y < a.top || y >= a.bottom)
         return kSbNone;
     Bar b = bar();
     if (y < b.top)
@@ -208,17 +227,18 @@ void Window::drawScrollbar()
     if (!scrollable())
         return;
     Bar b = bar();
+    const D2D1_RECT_F& r = area_[page_];
     float e = expand_;
     if (e > 0.01f) {
-        ui_.fill({width_ - kBarW + 2, 2, width_ - 2, height_ - 2}, 6, 0x2c2c2c, 0.96f * e);
+        ui_.fill({r.right - kBarW + 2, r.top + 2, r.right - 2, r.bottom - 2}, 6, 0x2c2c2c, 0.96f * e);
         float up = sbHot_ == kSbUp ? kTextSecondary : kTextTertiary;
         float down = sbHot_ == kSbDown ? kTextSecondary : kTextTertiary;
-        ui_.text(L"", Ui::kArrow, {width_ - kBarW, 2, width_, kArrowH}, kWhite, up * e,
+        ui_.text(L"", Ui::kArrow, {r.right - kBarW, r.top + 2, r.right, r.top + kArrowH}, kWhite, up * e,
                  DWRITE_TEXT_ALIGNMENT_CENTER);
-        ui_.text(L"", Ui::kArrow, {width_ - kBarW, height_ - kArrowH, width_, height_ - 2}, kWhite, down * e,
+        ui_.text(L"", Ui::kArrow, {r.right - kBarW, r.bottom - kArrowH, r.right, r.bottom - 2}, kWhite, down * e,
                  DWRITE_TEXT_ALIGNMENT_CENTER);
     }
-    float w = 2 + 4 * e, cx = width_ - 4 - 4 * e;
+    float w = 2 + 4 * e, cx = r.right - 4 - 4 * e;
     float a = dragging_ || sbHot_ == kSbThumb ? kTextSecondary : kTextTertiary;
     ui_.fill({cx - w / 2, b.thumbTop + 1, cx + w / 2, b.thumbTop + b.thumbLen - 1}, w / 2, kWhite, a);
 }
@@ -232,11 +252,11 @@ void Window::barAction(int part)
     case kSbDown: scrollBy(kLine); break;
     case kSbPageUp:
         if (sbY_ < b.thumbTop)
-            scrollBy(-height_ * 0.875f);
+            scrollBy(-areaH() * 0.875f);
         break;
     case kSbPageDown:
         if (sbY_ >= b.thumbTop + b.thumbLen)
-            scrollBy(height_ * 0.875f);
+            scrollBy(areaH() * 0.875f);
         break;
     }
 }
@@ -508,7 +528,7 @@ LRESULT Window::proc(UINT msg, WPARAM wp, LPARAM lp)
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }
-        float view = height_ * 0.875f;
+        float view = areaH() * 0.875f;
         switch (wp) {
         case VK_PRIOR: scrollBy(-view); break;
         case VK_NEXT: scrollBy(view); break;
@@ -584,6 +604,7 @@ int Window::run(HINSTANCE inst, int show, int page)
     scroll_.assign(pages_.size(), 0);
     target_.assign(pages_.size(), 0);
     contentH_.assign(pages_.size(), 0);
+    area_.assign(pages_.size(), {});
     g_window = this;
     applyScale(GetDpiForWindow(hwnd_));
     // Windows 11: a dark title bar in the base colour and rounded corners; older systems ignore these.

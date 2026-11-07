@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
-// The pages that still show the design's mock data: Settings, Logs and Tools. Each moves to a file of its own
+// The pages that still show the design's mock data: Settings and Tools. Each moves to a file of its own
 // when it is wired to the driver.
 #include "panel.h"
 
-#include <cstdio>
 
 namespace panel {
 
@@ -91,117 +90,6 @@ private:
     int combo_[16] = {0, 0, 0, 0, 0, 1};
 };
 
-// ---- Logs -----------------------------------------------------------------------------------------------------------
-
-struct LogLine {
-    const wchar_t *time, *src;
-    int level;  // 0 info 1 warning 2 error
-    const wchar_t* msg;
-};
-const std::vector<LogLine> kLog = {
-    {L"11:32:01.204", L"vgd3d12", 0, L"adapter: Venus on AMD Radeon 8060S Graphics (RADV GFX1151)"},
-    {L"11:32:01.219", L"vgd3d12", 0, L"device 0x1a2b: feature level 12_1, shader model 6.6"},
-    {L"11:32:01.388", L"vgd3d11", 0, L"dxvk: Venus device, 32 GiB host-visible heap"},
-    {L"11:32:01.402", L"vgd3d11", 1, L"present: blt back buffer 1280×720 B8G8R8A8 in host-visible memory"},
-    {L"11:32:01.733", L"viogpuap", 0, L"resolution: host asks 2560×1600, set"},
-    {L"11:32:02.010", L"viogpu3d", 2, L"fence 0x4512 timed out after 2000 ms on context 3"},
-    {L"11:32:02.011", L"viogpu3d", 1, L"context 3 reset, device removed for pid 4120 (Game.exe)"},
-    {L"11:32:02.311", L"setup", 0, L"已安装 vgd 0.1.0.98.c2f7fde (日本語テスト, 한국어)"},
-    {L"11:32:02.312", L"setup", 0, L"C:\\Users\\用户\\Downloads\\Office Tool\\Office Tool Plus.exe"},
-    {L"11:32:03.120", L"vgd3d12", 0, L"pipeline cache: 1204 entries loaded (18.2 MiB)"},
-    {L"11:32:04.508", L"vgd3d12", 1, L"descriptor heap 0x9: 1000000 descriptors requested, capped at 500000"},
-    {L"11:32:05.002", L"vgpusrv", 0, L"capture: DxgKrnl and DWM providers on"},
-    {L"11:32:06.774", L"vgd3d9", 0, L"D3D9On12 windowed present 640×480, copy host-visible"},
-    {L"11:32:07.100", L"viogpu3d", 0, L"vsync: 60.00 Hz, 0 missed in the last 10 s"},
-};
-
-class Logs : public Page {
-public:
-    explicit Logs(HWND window) : window_(window) {}
-    const wchar_t* title() const override { return L"Logs"; }
-    const wchar_t* icon() const override { return L"\uE8A5"; }
-
-    void draw(Ui& ui, float x, float w, float& y) override
-    {
-        if (capturing_) {
-            DWORD t = (GetTickCount() - captureStart_) / 1000;
-            wchar_t desc[96];
-            swprintf(desc, 96, L"Capturing for %lu:%02lu. Reproduce the problem, then stop.", t / 60, t % 60);
-            float cy = ui.settingsCard(x, y, w, kCardH, L"\uE7C8", L"Capture", desc, kNoId, kCritical);
-            ui.button(L"Stop", x + w - 16 - ui.buttonWidth(L"Stop"), cy - 16, kCaptureId, false);
-        } else {
-            float cy = ui.settingsCard(x, y, w, kCardH, L"\uE7C8", L"Capture",
-                                       L"Records driver, kernel and DWM events while you reproduce a problem");
-            ui.button(L"Start capture", x + w - 16 - ui.buttonWidth(L"Start capture"), cy - 16, kCaptureId, true);
-        }
-        y += kCardH + 20;
-
-        // SelectorBar for the level, actions on the right
-        const wchar_t* levels[] = {L"All", L"Warnings", L"Errors"};
-        float fx = x;
-        for (int i = 0; i < 3; i++) {
-            float tw = ui.measure(levels[i], Ui::kBody) + 24;
-            D2D1_RECT_F r = {fx, y, fx + tw, y + 40};
-            bool sel = filter_ == i, h = ui.hover == kFilterId + i;
-            if (h && !sel)
-                ui.fill({r.left, r.top + 4, r.right, r.bottom - 4}, 4, kWhite, kControl);
-            ui.text(levels[i], Ui::kBody, r, kWhite, sel || h ? kTextPrimary : kTextSecondary,
-                    DWRITE_TEXT_ALIGNMENT_CENTER);
-            if (sel)
-                ui.fill({fx + tw / 2 - 8, y + 36, fx + tw / 2 + 8, y + 39}, 1.5f, accent);
-            ui.hot(r, kFilterId + i);
-            fx += tw;
-        }
-        float bx = x + w - ui.buttonWidth(L"Export");
-        ui.button(L"Export", bx, y + 4, kExportId, false);
-        bx -= 8 + ui.buttonWidth(L"Open folder");
-        ui.button(L"Open folder", bx, y + 4, kFolderId, false);
-        y += 40 + 12;
-
-        std::vector<const LogLine*> shown;
-        for (const LogLine& l : kLog)
-            if (l.level >= filter_)
-                shown.push_back(&l);
-        float rowH = 24, h = shown.size() * rowH + 24;
-        ui.card({x, y, x + w, y + h});
-        float ry = y + 12;
-        for (const LogLine* l : shown) {
-            if (l->level)
-                ui.text(l->level == 2 ? L"\uEB90" : L"\uE7BA", Ui::kIconSmall, {x + 12, ry, x + 30, ry + rowH},
-                        l->level == 2 ? kCritical : kCaution, 1, DWRITE_TEXT_ALIGNMENT_CENTER);
-            ui.text(l->time, Ui::kMono, {x + 38, ry, x + 150, ry + rowH}, kWhite, kTextTertiary);
-            ui.text(l->src, Ui::kMono, {x + 150, ry, x + 234, ry + rowH}, kWhite, kTextSecondary);
-            ui.text(l->msg, Ui::kMono, {x + 238, ry, x + w - 16, ry + rowH});
-            ry += rowH;
-        }
-        y += h;
-    }
-
-    void click(int id) override
-    {
-        if (id >= kFilterId && id < kFilterId + 3)
-            filter_ = id - kFilterId;
-        else if (id == kCaptureId) {
-            capturing_ = !capturing_;
-            captureStart_ = GetTickCount();
-            if (capturing_)
-                SetTimer(window_, kTickTimer, 500, nullptr);
-            else
-                KillTimer(window_, kTickTimer);
-        }
-    }
-
-    bool message(UINT msg, WPARAM wp, LPARAM) override { return msg == WM_TIMER && wp == kTickTimer; }
-
-private:
-    enum : int { kCaptureId = kPageId, kExportId, kFolderId, kFilterId };
-    static constexpr UINT_PTR kTickTimer = kPageTimer + 1;
-    HWND window_;
-    int filter_ = 0;
-    bool capturing_ = false;
-    DWORD captureStart_ = 0;
-};
-
 // ---- Tools ----------------------------------------------------------------------------------------------------------
 
 struct Tool {
@@ -241,7 +129,6 @@ public:
 }  // namespace
 
 std::unique_ptr<Page> makeSettings() { return std::make_unique<Settings>(); }
-std::unique_ptr<Page> makeLogs(HWND window) { return std::make_unique<Logs>(window); }
 std::unique_ptr<Page> makeTools() { return std::make_unique<Tools>(); }
 
 }  // namespace panel

@@ -29,6 +29,9 @@ const wchar_t kHelp[] =
     L"             group (d3d12), a test in one (d3d12.copy) or all. The exit code is 1 when one fails.\n"
     L"      /verbose   also print the output of those that pass\n"
     L"      /debug     turn the D3D12 debug layer on (needs the Graphics Tools optional feature)\n"
+    L"  /log       Print what the drivers log, as they log it, until Ctrl+C. Run as administrator for the\n"
+    L"             kernel driver's messages and services' output too.\n"
+    L"      /all       every program's debug output, not only the drivers'\n"
     L"  /page N    Open the control panel on page N: 0 Overview, 1 Settings, 2 Logs, 3 Tests, 4 Tools.\n"
     L"  /help      Show this help.\n"
     L"\n"
@@ -135,6 +138,29 @@ int runTests(const std::vector<std::string>& names, bool verbose)
     return failed ? 1 : 0;
 }
 
+HANDLE g_quit;
+
+int followLog(bool all)
+{
+    AttachConsole(ATTACH_PARENT_PROCESS);  // for Ctrl+C, also when the output goes to a file
+    Output out(STD_OUTPUT_HANDLE), err(STD_ERROR_HANDLE);
+    g_quit = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    SetConsoleCtrlHandler([](DWORD) -> BOOL { return SetEvent(g_quit); }, TRUE);
+    LogCapture capture;
+    capture.start([&](LogLine&& l) {
+        if (all || !l.component.empty())
+            out.print(formatLogLine(l) + L"\n");
+    });
+    for (const std::wstring& e : {capture.userError, capture.kernelError})
+        if (!e.empty())
+            err.print(e + L".\n");
+    if (!capture.userError.empty() && !capture.kernelError.empty())
+        return 1;
+    WaitForSingleObject(g_quit, INFINITE);
+    capture.stop();
+    return 0;
+}
+
 }  // namespace
 
 int runCommandLine(int argc, wchar_t** argv, int* page)
@@ -172,6 +198,17 @@ int runCommandLine(int argc, wchar_t** argv, int* page)
                 return 0;
             }
             return runTests(names, verbose);
+        }
+        if (o == L"log") {
+            bool all = false;
+            for (int j = i + 1; j < argc; j++) {
+                if (option(argv[j]) != L"all") {
+                    Output(STD_ERROR_HANDLE).print(L"Unknown option: " + std::wstring(argv[j]) + L"\n\n" + kHelp);
+                    return 2;
+                }
+                all = true;
+            }
+            return followLog(all);
         }
         if (o == L"debug")
             continue;

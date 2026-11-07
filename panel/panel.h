@@ -9,12 +9,17 @@
 #include <d2d1.h>
 #include <dwrite.h>
 
+#include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "tests/tests.h"
+
+struct _EVENT_RECORD;
 
 namespace panel {
 
@@ -48,6 +53,9 @@ public:
         rt_ = target;
         hots_.clear();
         selectables_.clear();
+        runs_.clear();
+        scrollArea = {};
+        clip_ = kNoClip;
     }
     ID2D1RenderTarget* rt() const { return rt_; }
 
@@ -62,8 +70,17 @@ public:
     // Clickable areas, in window DIPs; `offset` is the scroll offset of what is being drawn.
     void hot(D2D1_RECT_F r, int id);
     int hit(float x, float y) const;
-    float offset = 0;
+    float offset = 0, view = 0;  // view: the height of what is shown, from offset
     int hover = kNoId, pressed = kNoId;
+
+    // A part of a page that fills the window (Page::fills) and scrolls by itself, like a log's lines: what is drawn
+    // between beginScroll and endScroll is clipped to r, and moved up by `scroll`, which the window keeps; `height` is
+    // all of it. Clicks and text there are only where it shows.
+    void beginScroll(D2D1_RECT_F r, float height);
+    void endScroll();
+    float scroll = 0;
+    D2D1_RECT_F scrollArea = {};  // what the last frame scrolled, in window DIPs, and its height
+    float scrollHeight = 0;
 
     // WinUI controls. Buttons are 32 high; the toggle and the combo box are placed by their right edge.
     float button(const std::wstring& s, float x, float y, int id, bool accent);
@@ -82,17 +99,22 @@ public:
     void progressRing(float cx, float cy, float size, float value);
 
     // Selectable text (a TextBlock with IsTextSelectionEnabled): drawn like text(), and the window lets the user select
-    // in it with the mouse and copy. One text's selection at a time; `id` names the text across frames.
+    // in it with the mouse and copy. One selection at a time; `id` names the text across frames. Texts with the same
+    // `run` (not 0) are lines of one text, like a log's: a selection can go from one to another, in the order of their
+    // ids, which grow down the page.
     void selectable(int id, const std::wstring& s, Font f, D2D1_RECT_F r, UINT32 c = theme::kWhite,
-                    float a = theme::kTextPrimary);
+                    float a = theme::kTextPrimary, int run = 0);
+    // A run's lines by id, also those not drawn (scrolled away), for copying; false for an id that is not a line.
+    void runText(int run, std::function<bool(int id, std::wstring* s)> text) { runs_[run] = std::move(text); }
     // The selectable text under a point (window DIPs) and the character position there.
     bool textAt(float x, float y, int* id, UINT32* pos) const;
     void selectStart(int id, UINT32 pos);
     void selectTo(float x, float y);  // drag: moves the caret of the current selection towards the point
     void selectWord(int id, UINT32 pos);
     void selectAll(int id);
-    void clearSelection() { selId_ = kNoId; }
-    bool selected(int id) const { return selId_ == id && selAnchor_ != selCaret_; }
+    void clearSelection() { selId_ = caretId_ = kNoId; }
+    // `id` is in the selection, which is not empty.
+    bool selected(int id) const;
     int selectionId() const { return selId_; }
     std::wstring selectedText() const;
 
@@ -103,8 +125,11 @@ private:
     IDWriteTextFormat* format(const wchar_t* family, float size, DWRITE_FONT_WEIGHT weight);
     bool hasFont(const wchar_t* family);
     IDWriteTextLayout* layout(const std::wstring& s, Font f, D2D1_RECT_F r) const;
-    struct Selectable { D2D1_RECT_F r; int id; std::wstring s; Font f; };
+    struct Selectable { D2D1_RECT_F r; int id; std::wstring s; Font f; int run; D2D1_RECT_F clip; };
     const Selectable* findSelectable(int id) const;
+    void select(int id, UINT32 anchor, UINT32 caret);
+    void ends(int* firstId, UINT32* firstPos, int* lastId, UINT32* lastPos) const;
+    bool part(int id, int run, UINT32 length, UINT32* start, UINT32* end) const;
     void arc(float cx, float cy, float r, float from, float to, float thickness);
     ID2D1StrokeStyle* round_ = nullptr;  // round caps, for arcs
 
@@ -113,10 +138,15 @@ private:
     ID2D1SolidColorBrush* brush_ = nullptr;
     IDWriteFactory* dw_ = nullptr;
     IDWriteTextFormat* fonts_[kFontCount] = {};
+    static constexpr D2D1_RECT_F kNoClip = {-1e9f, -1e9f, 1e9f, 1e9f};
+    D2D1_RECT_F clip_ = kNoClip;  // where clicks and text are, in window DIPs
+    D2D1_MATRIX_3X2_F unscrolled_ = {};
     std::vector<Hot> hots_;
     std::vector<Selectable> selectables_;  // as drawn in the last frame
-    int selId_ = kNoId;
+    // The selection: from the anchor (where it started) to the caret, each a text and a position in it.
+    int selId_ = kNoId, caretId_ = kNoId, selRun_ = 0;
     UINT32 selAnchor_ = 0, selCaret_ = 0;
+    std::map<int, std::function<bool(int, std::wstring*)>> runs_;
 };
 
 // Puts text on the clipboard.
@@ -136,6 +166,10 @@ public:
     // A message the window does not handle itself (kPageMessage.., timers from kPageTimer); true when it was this
     // page's. The window repaints after it.
     virtual bool message(UINT msg, WPARAM wp, LPARAM lp) { return false; }
+    // The page fills the window, to its bottom, and scrolls a part of itself (Ui::beginScroll) instead of all of it.
+    virtual bool fills() const { return false; }
+    // The page grows at its end (a log): while the view is at the end, it stays there.
+    virtual bool followsEnd() const { return false; }
     // Something on the page moves (a ProgressRing), so the window paints frame after frame while it is shown.
     virtual bool animating() const { return false; }
 };
@@ -219,6 +253,57 @@ bool selectTests(const std::vector<std::string>& names, std::vector<std::string>
 TestResult runTest(const std::string& id, HANDLE cancel);
 // The child: `/run-test <id>`.
 int runTestChild(const std::string& id);
+
+// ---- what the drivers log (logcapture.cpp) -------------------------------------------------------------------------
+
+struct LogLine {
+    SYSTEMTIME time;  // local
+    DWORD pid = 0;
+    std::wstring process;    // the program without .exe, or "kernel"
+    std::wstring component;  // what logged it, for the drivers' lines: a UMD (vgd3d12), "mesa" or "kernel"
+    int level = 0;           // 0 information, 1 warning, 2 error
+    std::wstring text;
+};
+
+// Captures debug output (OutputDebugString) from this session, and with administrator rights from services and
+// the kernel's (DbgPrint) too, as DebugView does. Lines reach the sink on the capture's threads, one at a time.
+class LogCapture {
+public:
+    ~LogCapture();
+    void start(std::function<void(LogLine&&)> sink);
+    void stop();
+    bool running() const { return running_; }
+    // Why a source did not start, after start(); empty when it did.
+    std::wstring userError, kernelError;
+
+private:
+    struct Dbwin {
+        HANDLE bufferReady = nullptr, dataReady = nullptr, section = nullptr;
+        const char* view = nullptr;
+        std::thread thread;
+    };
+    bool openDbwin(Dbwin& d, const wchar_t* prefix, std::wstring* error);
+    void closeDbwin(Dbwin& d);
+    void readDbwin(Dbwin& d);
+    bool startKernel(std::wstring* error);
+    void stopKernel();
+    void kernelEvent(_EVENT_RECORD* r);
+    std::wstring processName(DWORD pid);
+    void emit(LogLine&& l);
+
+    bool running_ = false;
+    HANDLE stop_ = nullptr;
+    Dbwin local_, global_;
+    ULONG64 session_ = 0, trace_ = ~0ull;
+    std::thread kernelThread_;
+    std::function<void(LogLine&&)> sink_;
+    std::mutex sinkMutex_, namesMutex_;
+    std::map<DWORD, std::wstring> names_;
+};
+// A line as /log prints it and the Logs page exports it: time, program[pid], component, level (I/W/E), text.
+std::wstring formatLogLine(const LogLine& l);
+// The process runs as administrator.
+bool elevated();
 
 // ---- the system report (report.cpp): what the Overview shows and /info prints ---------------------------------------
 

@@ -86,17 +86,17 @@ const Ui::Selectable* Ui::findSelectable(int id) const
     return nullptr;
 }
 
-void Ui::selectable(int id, const std::wstring& s, Font f, D2D1_RECT_F r, UINT32 c, float a)
+void Ui::selectable(int id, const std::wstring& s, Font f, D2D1_RECT_F r, UINT32 c, float a, int run)
 {
-    selectables_.push_back({{r.left, r.top - offset, r.right, r.bottom - offset}, id, s, f});
+    selectables_.push_back({{r.left, r.top - offset, r.right, r.bottom - offset}, id, s, f, run, clip_});
     IDWriteTextLayout* l = layout(s, f, r);
     if (!l)
         return;
-    if (selected(id)) {
-        UINT32 start = std::min(selAnchor_, selCaret_), length = std::max(selAnchor_, selCaret_) - start;
+    UINT32 start, end;
+    if (part(id, run, UINT32(s.size()), &start, &end)) {
         DWRITE_HIT_TEST_METRICS m[16];
         UINT32 count = 0;
-        if (SUCCEEDED(l->HitTestTextRange(start, length, r.left, r.top, m, 16, &count)))
+        if (SUCCEEDED(l->HitTestTextRange(start, end - start, r.left, r.top, m, 16, &count)))
             for (UINT32 i = 0; i < count; i++) {
                 color(accentBase);
                 rt_->FillRectangle({m[i].left, m[i].top, m[i].left + m[i].width, m[i].top + m[i].height}, brush_);
@@ -107,10 +107,42 @@ void Ui::selectable(int id, const std::wstring& s, Font f, D2D1_RECT_F r, UINT32
     l->Release();
 }
 
+// The selection's ends in order: the first text and position, then the last.
+void Ui::ends(int* firstId, UINT32* firstPos, int* lastId, UINT32* lastPos) const
+{
+    bool forward = selId_ < caretId_ || (selId_ == caretId_ && selAnchor_ <= selCaret_);
+    *firstId = forward ? selId_ : caretId_;
+    *firstPos = forward ? selAnchor_ : selCaret_;
+    *lastId = forward ? caretId_ : selId_;
+    *lastPos = forward ? selCaret_ : selAnchor_;
+}
+
+// The selected part of text `id`, `length` long.
+bool Ui::part(int id, int run, UINT32 length, UINT32* start, UINT32* end) const
+{
+    if (selId_ == kNoId || (id != selId_ && id != caretId_ && (!run || run != selRun_)))
+        return false;
+    int firstId, lastId;
+    UINT32 firstPos, lastPos;
+    ends(&firstId, &firstPos, &lastId, &lastPos);
+    if (id < firstId || id > lastId)
+        return false;
+    *start = id == firstId ? std::min(firstPos, length) : 0;
+    *end = id == lastId ? std::min(lastPos, length) : length;
+    return *start < *end;
+}
+
+bool Ui::selected(int id) const
+{
+    const Selectable* s = findSelectable(id);
+    UINT32 start, end;
+    return s && part(id, s->run, UINT32(s->s.size()), &start, &end);
+}
+
 bool Ui::textAt(float x, float y, int* id, UINT32* pos) const
 {
     for (const Selectable& s : selectables_) {
-        if (x < s.r.left || x >= s.r.right || y < s.r.top || y >= s.r.bottom)
+        if (x < s.r.left || x >= s.r.right || y < s.r.top || y >= s.r.bottom || y < s.clip.top || y >= s.clip.bottom)
             continue;
         IDWriteTextLayout* l = layout(s.s, s.f, s.r);
         if (!l)
@@ -130,25 +162,58 @@ bool Ui::textAt(float x, float y, int* id, UINT32* pos) const
     return false;
 }
 
-void Ui::selectStart(int id, UINT32 pos)
+void Ui::select(int id, UINT32 anchor, UINT32 caret)
 {
-    selId_ = id;
-    selAnchor_ = selCaret_ = pos;
+    const Selectable* s = findSelectable(id);
+    selId_ = caretId_ = id;
+    selRun_ = s ? s->run : 0;
+    selAnchor_ = anchor;
+    selCaret_ = caret;
 }
+
+void Ui::selectStart(int id, UINT32 pos) { select(id, pos, pos); }
 
 void Ui::selectTo(float x, float y)
 {
     const Selectable* s = findSelectable(selId_);
     if (!s)
         return;
-    IDWriteTextLayout* l = layout(s->s, s->f, s->r);
-    if (!l)
-        return;
-    BOOL trailing, inside;
-    DWRITE_HIT_TEST_METRICS m{};
-    l->HitTestPoint(x - s->r.left, std::clamp(y, s->r.top, s->r.bottom - 1) - s->r.top, &trailing, &inside, &m);
-    l->Release();
-    selCaret_ = m.textPosition + (trailing ? m.length : 0);
+    UINT32 pos = UINT32(-1);  // the end of the text
+    if (selRun_) {
+        // The line of the run at the pointer's height; above the first drawn, its start; below the last, its end.
+        const Selectable *top = nullptr, *bottom = nullptr;
+        s = nullptr;
+        for (const Selectable& t : selectables_) {
+            if (t.run != selRun_)
+                continue;
+            if (!top || t.r.top < top->r.top)
+                top = &t;
+            if (!bottom || t.r.bottom > bottom->r.bottom)
+                bottom = &t;
+            if (y >= t.r.top && y < t.r.bottom)
+                s = &t;
+        }
+        if (!s && top && y < top->r.top) {
+            s = top;
+            pos = 0;
+        } else if (!s && bottom) {
+            s = bottom;
+        }
+        if (!s)
+            return;
+    }
+    if (pos == UINT32(-1) || (y >= s->r.top && y < s->r.bottom)) {
+        IDWriteTextLayout* l = layout(s->s, s->f, s->r);
+        if (!l)
+            return;
+        BOOL trailing, inside;
+        DWRITE_HIT_TEST_METRICS m{};
+        l->HitTestPoint(x - s->r.left, std::clamp(y, s->r.top, s->r.bottom - 1) - s->r.top, &trailing, &inside, &m);
+        l->Release();
+        pos = (selRun_ && y >= s->r.bottom) ? UINT32(s->s.size()) : m.textPosition + (trailing ? m.length : 0);
+    }
+    caretId_ = s->id;
+    selCaret_ = pos;
 }
 
 // A word here is a run without spaces or commas, so a version or a path is selected whole.
@@ -163,27 +228,43 @@ void Ui::selectWord(int id, UINT32 pos)
         start--;
     while (end < s->s.size() && !boundary(s->s[end]))
         end++;
-    selId_ = id;
-    selAnchor_ = start;
-    selCaret_ = end;
+    select(id, start, end);
 }
 
 void Ui::selectAll(int id)
 {
-    if (const Selectable* s = findSelectable(id)) {
-        selId_ = id;
-        selAnchor_ = 0;
-        selCaret_ = s->s.size();
-    }
+    if (const Selectable* s = findSelectable(id))
+        select(id, 0, UINT32(s->s.size()));
 }
 
 std::wstring Ui::selectedText() const
 {
-    const Selectable* s = findSelectable(selId_);
-    if (!s || selAnchor_ == selCaret_)
+    if (selId_ == kNoId)
         return {};
-    UINT32 start = std::min(selAnchor_, selCaret_), end = std::min<UINT32>(std::max(selAnchor_, selCaret_), s->s.size());
-    return start < end ? s->s.substr(start, end - start) : std::wstring();
+    int firstId, lastId;
+    UINT32 firstPos, lastPos;
+    ends(&firstId, &firstPos, &lastId, &lastPos);
+    auto text = [&](int id, std::wstring* s) {
+        if (const Selectable* t = findSelectable(id)) {
+            *s = t->s;
+            return true;
+        }
+        auto run = runs_.find(selRun_);
+        return selRun_ && run != runs_.end() && run->second(id, s);
+    };
+    std::wstring out, s;
+    bool firstLine = true;
+    for (int id = firstId; id <= lastId; id++) {
+        if (!text(id, &s))
+            continue;
+        UINT32 start = id == firstId ? std::min<UINT32>(firstPos, s.size()) : 0;
+        UINT32 end = id == lastId ? std::min<UINT32>(lastPos, s.size()) : s.size();
+        if (!firstLine)
+            out += L"\r\n";
+        out += s.substr(start, end > start ? end - start : 0);
+        firstLine = false;
+    }
+    return out;
 }
 
 void setClipboard(HWND owner, const std::wstring& text)
@@ -232,7 +313,31 @@ float Ui::measure(const std::wstring& s, Font f)
     return m.widthIncludingTrailingWhitespace;
 }
 
-void Ui::hot(D2D1_RECT_F r, int id) { hots_.push_back({{r.left, r.top - offset, r.right, r.bottom - offset}, id}); }
+void Ui::hot(D2D1_RECT_F r, int id)
+{
+    D2D1_RECT_F w = {std::max(r.left, clip_.left), std::max(r.top - offset, clip_.top), std::min(r.right, clip_.right),
+                     std::min(r.bottom - offset, clip_.bottom)};
+    if (w.left < w.right && w.top < w.bottom)
+        hots_.push_back({w, id});
+}
+
+void Ui::beginScroll(D2D1_RECT_F r, float height)
+{
+    clip_ = scrollArea = {r.left, r.top - offset, r.right, r.bottom - offset};
+    scrollHeight = height;
+    rt_->PushAxisAlignedClip(r, D2D1_ANTIALIAS_MODE_ALIASED);
+    rt_->GetTransform(&unscrolled_);
+    rt_->SetTransform(D2D1::Matrix3x2F::Translation(0, -scroll) * unscrolled_);
+    offset += scroll;
+}
+
+void Ui::endScroll()
+{
+    offset -= scroll;
+    rt_->SetTransform(unscrolled_);
+    rt_->PopAxisAlignedClip();
+    clip_ = kNoClip;
+}
 
 int Ui::hit(float x, float y) const
 {
