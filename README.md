@@ -1,4 +1,6 @@
-# Venera
+<p align="center"><img src="docs/venera.png" width="160" alt="Venera logo"></p>
+
+<h1 align="center">Venera</h1>
 
 Hardware-accelerated Direct3D 9/10/11/12, Vulkan and OpenGL for Windows guests in QEMU. Rendering runs on the host
 GPU through Venus.

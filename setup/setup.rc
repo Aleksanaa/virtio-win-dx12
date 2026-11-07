@@ -1,3 +1,4 @@
 // SPDX-License-Identifier: MIT
-// The manifest; the build adds payload.rc (the package, the version) next to it.
+// The manifest and the logo (docs/venera.svg); the build adds payload.rc (the package, the version) next to them.
 1 24 "setup.manifest"
+1 ICON "../docs/venera.ico"

@@ -12,6 +12,7 @@ target_link_libraries(venera-panel PRIVATE venera-vulkan-headers venera-directx-
     d2d1 dwrite dwmapi d3d12 d3d11 d3d9 dxgi dxguid opengl32 setupapi cfgmgr32 shcore ntdll psapi gdi32 user32 shell32
     advapi32 comdlg32)
 target_link_options(venera-panel PRIVATE -municode -static -static-libgcc -static-libstdc++)
+set_source_files_properties(panel.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/docs/venera.ico")
 
 add_executable(venera-panel-com shim.c)
 set_target_properties(venera-panel-com PROPERTIES OUTPUT_NAME venera-panel SUFFIX .com)

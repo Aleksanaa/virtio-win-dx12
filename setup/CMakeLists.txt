@@ -34,6 +34,7 @@ add_custom_command(
     VERBATIM)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/payload.rc" PROPERTIES
     OBJECT_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/payload.cab")
+set_source_files_properties(setup.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/docs/venera.ico")
 
 enable_language(RC)
 add_executable(venera-setup WIN32 main.cpp system.cpp install.cpp ui.cpp setup.rc
