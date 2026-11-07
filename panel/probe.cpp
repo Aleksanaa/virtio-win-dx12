@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// The graphics probe: `vgd-panel.exe /probe` tries each API on the VirtIO GPU as an application would (Vulkan through
-// the loader, D3D12 and D3D11 on the adapter, OpenGL on a window) and prints key=value lines. Each API first prints
-// "<api>.status=checking", so one that crashes the process is told apart from one that was never reached. The panel
-// runs it as a child process (startProbe) and reads its output.
+// The graphics probe: `venera-panel.exe /probe` tries each API on the VirtIO GPU as an application would (Vulkan
+// through the loader, D3D12 and D3D11 on the adapter, OpenGL on a window) and prints key=value lines. Each API first
+// prints "<api>.status=checking", so one that crashes the process is told apart from one that was never reached. The
+// panel runs it as a child process (startProbe) and reads its output.
 #include "panel.h"
 
 #define VK_NO_PROTOTYPES
@@ -60,7 +60,7 @@ void probeVulkan()
     auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(loader, "vkGetInstanceProcAddr"));
     auto createInstance = reinterpret_cast<PFN_vkCreateInstance>(gipa(nullptr, "vkCreateInstance"));
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.pApplicationName = "vgd-panel";
+    app.pApplicationName = "venera-panel";
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ci = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
@@ -192,7 +192,7 @@ void probeOpenGL()
     WNDCLASSW wc = {};
     wc.lpfnWndProc = DefWindowProcW;
     wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"vgd-panel-probe";
+    wc.lpszClassName = L"venera-panel-probe";
     RegisterClassW(&wc);
     HWND window = CreateWindowW(wc.lpszClassName, L"", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr,
                                 wc.hInstance, nullptr);

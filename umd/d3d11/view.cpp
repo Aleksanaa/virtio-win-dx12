@@ -5,7 +5,7 @@
 
 #include <algorithm>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 ViewObject::~ViewObject()
 {
@@ -41,8 +41,8 @@ void finish(D3D10DDI_HDEVICE h, ViewObject* v, ResourceObject* r, const char* wh
     v->resource = r;
     HRESULT hr = v->create(d->d3d.get());
     if (FAILED(hr)) {
-        VGD_WARN("Create%s: format %d on resource dimension %d (%u layers, %u samples) failed: 0x%08lx", what,
-                 r->format, r->dimension, r->array_size, r->samples, hr);
+        VENERA_WARN("Create%s: format %d on resource dimension %d (%u layers, %u samples) failed: 0x%08lx", what,
+                    r->format, r->dimension, r->array_size, r->samples, hr);
         d->set_error(E_OUTOFMEMORY);
     }
     if (r->bind & D3D10_DDI_BIND_PRESENT)
@@ -320,7 +320,7 @@ void APIENTRY clear_view(D3D10DDI_HDEVICE h, D3D11DDI_HANDLETYPE type, void* vie
         if (v->resource->image)
             d->pending_clear = v->resource->resource;
     } else
-        VGD_WARN("ClearView: view type %d not supported", static_cast<int>(type));
+        VENERA_WARN("ClearView: view type %d not supported", static_cast<int>(type));
 }
 
 } // namespace
@@ -348,4 +348,4 @@ void fill_view_ddi(D3D11_1DDI_DEVICEFUNCS& t)
     t.pfnClearView = clear_view;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

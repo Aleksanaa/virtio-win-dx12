@@ -4,7 +4,7 @@
 
 #include <algorithm>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 struct LinearImage::Plan {
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -93,15 +93,15 @@ HRESULT LinearImage::plan(const VulkanDevice& d, const LinearImageDesc& desc, bo
     query.flags = ci.flags;
     VkResult r = d.vk.vkGetPhysicalDeviceImageFormatProperties2(d.physical, &query, &props);
     if (r != VK_SUCCESS) {
-        VGD_WARN("%s: format %d, usage 0x%x, flags 0x%x has no linear image (%d)", what, ci.format, ci.usage, ci.flags,
-                 r);
+        VENERA_WARN("%s: format %d, usage 0x%x, flags 0x%x has no linear image (%d)", what, ci.format, ci.usage,
+                    ci.flags, r);
         return E_NOTIMPL;
     }
     {
         VkImage probe = VK_NULL_HANDLE;
         r = d.vk.vkCreateImage(d.device, &ci, nullptr, &probe);
         if (r != VK_SUCCESS) {
-            VGD_WARN("%s: vkCreateImage failed: %d", what, r);
+            VENERA_WARN("%s: vkCreateImage failed: %d", what, r);
             return E_OUTOFMEMORY;
         }
         const VkImageSubresource sub{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
@@ -140,8 +140,8 @@ HRESULT LinearImage::plan(const VulkanDevice& d, const LinearImageDesc& desc, bo
         p->declared_external = r == VK_SUCCESS && (features & needed);
         p->dedicated = features & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
         if (!p->declared_external)
-            VGD_TRACE("%s: format %d has no %s LINEAR modifier image (%d, 0x%x); using a plain linear image", what,
-                      ci.format, import ? "importable" : "exportable", r, features);
+            VENERA_TRACE("%s: format %d has no %s LINEAR modifier image (%d, 0x%x); using a plain linear image", what,
+                         ci.format, import ? "importable" : "exportable", r, features);
     }
     if (p->declared_external) {
         ci.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
@@ -162,9 +162,9 @@ HRESULT LinearImage::bind(bool declared_external, uint64_t linear_pitch)
     VkSubresourceLayout layout{};
     d.vk.vkGetImageSubresourceLayout(d.device, image_, &sub, &layout);
     if (layout.offset != 0 || layout.rowPitch != linear_pitch || layout.rowPitch > UINT32_MAX) {
-        VGD_WARN("shared image: unexpected layout (offset %llu, pitch %llu, linear pitch %llu)",
-                 static_cast<unsigned long long>(layout.offset), static_cast<unsigned long long>(layout.rowPitch),
-                 static_cast<unsigned long long>(linear_pitch));
+        VENERA_WARN("shared image: unexpected layout (offset %llu, pitch %llu, linear pitch %llu)",
+                    static_cast<unsigned long long>(layout.offset), static_cast<unsigned long long>(layout.rowPitch),
+                    static_cast<unsigned long long>(linear_pitch));
         return E_NOTIMPL;
     }
     row_pitch_ = static_cast<uint32_t>(layout.rowPitch);
@@ -205,8 +205,8 @@ HRESULT LinearImage::create_exported(const VulkanDevice& d, const LinearImageDes
     if (mai.memoryTypeIndex == UINT32_MAX && desc.host_visible)
         mai.memoryTypeIndex = memory_type(d, req.memoryRequirements.memoryTypeBits, host);
     if (mai.memoryTypeIndex == UINT32_MAX) {
-        VGD_WARN("exported image: no %smemory type in image bits 0x%x", desc.host_visible ? "host-visible " : "",
-                 req.memoryRequirements.memoryTypeBits);
+        VENERA_WARN("exported image: no %smemory type in image bits 0x%x", desc.host_visible ? "host-visible " : "",
+                    req.memoryRequirements.memoryTypeBits);
         return E_OUTOFMEMORY;
     }
     if (d.vk.vkAllocateMemory(d.device, &mai, nullptr, &s->memory_) != VK_SUCCESS)
@@ -221,7 +221,7 @@ HRESULT LinearImage::create_exported(const VulkanDevice& d, const LinearImageDes
     get.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
     VkResult r = d.vk.vkGetMemoryFdKHR(d.device, &get, fd);
     if (r != VK_SUCCESS || *fd < 0) {
-        VGD_WARN("shared image: vkGetMemoryFdKHR failed: %d", r);
+        VENERA_WARN("shared image: vkGetMemoryFdKHR failed: %d", r);
         *fd = -1;
         return E_FAIL;
     }
@@ -247,9 +247,9 @@ HRESULT LinearImage::create_imported(const VulkanDevice& d, const LinearImageDes
                                                   s->image_};
     d.vk.vkGetImageMemoryRequirements2(d.device, &req_info, &req);
     if (req.memoryRequirements.size > size) {
-        VGD_WARN("imported image: needs %llu bytes, the memory has %llu (row pitch %llu)",
-                 static_cast<unsigned long long>(req.memoryRequirements.size), static_cast<unsigned long long>(size),
-                 static_cast<unsigned long long>(p.linear_pitch));
+        VENERA_WARN("imported image: needs %llu bytes, the memory has %llu (row pitch %llu)",
+                    static_cast<unsigned long long>(req.memoryRequirements.size), static_cast<unsigned long long>(size),
+                    static_cast<unsigned long long>(p.linear_pitch));
         return E_INVALIDARG;
     }
     VkMemoryDedicatedAllocateInfo dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
@@ -266,13 +266,13 @@ HRESULT LinearImage::create_imported(const VulkanDevice& d, const LinearImageDes
     // can land after the import below has attached it: the host then fails the import and kills the context.
     mai.memoryTypeIndex = memory_type(d, req.memoryRequirements.memoryTypeBits);
     if (mai.memoryTypeIndex == UINT32_MAX) {
-        VGD_WARN("imported image: no memory type in image bits 0x%x", req.memoryRequirements.memoryTypeBits);
+        VENERA_WARN("imported image: no memory type in image bits 0x%x", req.memoryRequirements.memoryTypeBits);
         return E_INVALIDARG;
     }
     VkResult r = d.vk.vkAllocateMemory(d.device, &mai, nullptr, &s->memory_);
     if (r != VK_SUCCESS) {
-        VGD_WARN("imported image: vkAllocateMemory (import of %llu bytes) failed: %d",
-                 static_cast<unsigned long long>(size), r);
+        VENERA_WARN("imported image: vkAllocateMemory (import of %llu bytes) failed: %d",
+                    static_cast<unsigned long long>(size), r);
         return E_INVALIDARG;
     }
     *consumed = true;
@@ -284,4 +284,4 @@ HRESULT LinearImage::create_imported(const VulkanDevice& d, const LinearImageDes
     return S_OK;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

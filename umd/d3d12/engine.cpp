@@ -5,7 +5,7 @@
 #include "vulkan_icd.h"
 
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -19,23 +19,23 @@ HRESULT create(std::shared_ptr<Engine>* out)
         return DXGI_ERROR_UNSUPPORTED;
     auto e = std::make_shared<Engine>();
     char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = {};
-    HRESULT hr = vgd_vkd3d_create_device(gipa, kSharingExtensions, ARRAYSIZE(kSharingExtensions), e->device.put_void(),
-                                         name, sizeof(name));
+    HRESULT hr = venera_vkd3d_create_device(gipa, kSharingExtensions, ARRAYSIZE(kSharingExtensions),
+                                            e->device.put_void(), name, sizeof(name));
     if (FAILED(hr)) {
-        VGD_WARN("engine: vkd3d-proton device on the Venus ICD failed: 0x%08lx", hr);
+        VENERA_WARN("engine: vkd3d-proton device on the Venus ICD failed: 0x%08lx", hr);
         return hr;
     }
     e->name = name;
     VkInstance instance;
     VkPhysicalDevice physical;
     VkDevice device;
-    hr = vgd_vkd3d_vulkan_handles(e->device.get(), &instance, &physical, &device);
+    hr = venera_vkd3d_vulkan_handles(e->device.get(), &instance, &physical, &device);
     if (SUCCEEDED(hr))
         hr = e->vulkan.init(gipa, instance, physical, device);
     if (FAILED(hr))
         return hr;
-    VGD_TRACE("engine: vkd3d-proton on %s (external memory %d, drm modifiers %d)", name, e->vulkan.external_memory,
-              e->vulkan.drm_modifier);
+    VENERA_TRACE("engine: vkd3d-proton on %s (external memory %d, drm modifiers %d)", name, e->vulkan.external_memory,
+                 e->vulkan.drm_modifier);
     *out = std::move(e);
     return S_OK;
 }
@@ -75,7 +75,7 @@ HRESULT Engine::run(const std::function<void(VkCommandBuffer)>& record)
     }
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t family = 0;
-    HRESULT hr = vgd_vkd3d_lock_queue(device.get(), queue_.get(), &queue, &family);
+    HRESULT hr = venera_vkd3d_lock_queue(device.get(), queue_.get(), &queue, &family);
     if (FAILED(hr))
         return hr;
     VkResult r = VK_SUCCESS;
@@ -110,16 +110,16 @@ HRESULT Engine::run(const std::function<void(VkCommandBuffer)>& record)
     }
     if (r == VK_SUCCESS)
         r = vk.vkWaitForFences(vk_device, 1, &fence_, VK_TRUE, UINT64_MAX);
-    vgd_vkd3d_unlock_queue(device.get(), queue_.get());
+    venera_vkd3d_unlock_queue(device.get(), queue_.get());
     if (fence_)
         vk.vkResetFences(vk_device, 1, &fence_);
     if (pool_)
         vk.vkResetCommandPool(vk_device, pool_, 0);
     if (r != VK_SUCCESS) {
-        VGD_WARN("engine: one-off submission failed: %d", r);
+        VENERA_WARN("engine: one-off submission failed: %d", r);
         return E_FAIL;
     }
     return S_OK;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

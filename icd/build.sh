@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Builds yttrium's Mesa drivers for the guest from the pinned Mesa fork (third_party/virtio-win-mesa) with
 # icd/patches/*.patch applied, cross-compiled with the dev shell's MinGW GCC: the Venus Vulkan driver
-# (vgd_vulkan_virtio.dll) and the OpenGL driver (viogpu_wgl.dll: WGL on zink, so OpenGL runs on Venus too).
+# (venera_vulkan_virtio.dll) and the OpenGL driver (viogpu_wgl.dll: WGL on zink, so OpenGL runs on Venus too).
 #
 #   icd/build.sh [build-dir]      (default build/icd; run inside nix develop)
 #
@@ -52,10 +52,10 @@ strip = 'x86_64-w64-mingw32-strip'
 windres = 'x86_64-w64-mingw32-windres'
 
 [built-in options]
-c_args = ['-isystem', '${VGD_MINGW_MCFG_INCLUDE}', '-idirafter', '$sdk_shared']
-cpp_args = ['-isystem', '${VGD_MINGW_MCFG_INCLUDE}']
-c_link_args = ['-L${VGD_MINGW_MCFG_LIB}', '-static', '-static-libgcc']
-cpp_link_args = ['-L${VGD_MINGW_MCFG_LIB}', '-static', '-static-libgcc', '-static-libstdc++']
+c_args = ['-isystem', '${VENERA_MINGW_MCFG_INCLUDE}', '-idirafter', '$sdk_shared']
+cpp_args = ['-isystem', '${VENERA_MINGW_MCFG_INCLUDE}']
+c_link_args = ['-L${VENERA_MINGW_MCFG_LIB}', '-static', '-static-libgcc']
+cpp_link_args = ['-L${VENERA_MINGW_MCFG_LIB}', '-static', '-static-libgcc', '-static-libstdc++']
 
 [host_machine]
 system = 'windows'
@@ -69,7 +69,7 @@ if [ ! -f "$out/meson/build.ninja" ]; then
     meson setup "$out/meson" "$src" --cross-file "$out/cross.ini" $options
 fi
 ninja -C "$out/meson" src/virtio/vulkan/libvulkan_virtio.dll src/gallium/targets/wgl/viogpu_wgl.dll
-# Installed next to vgd3d12.dll under the name the UMD looks for.
-cp "$out/meson/src/virtio/vulkan/libvulkan_virtio.dll" "$out/vgd_vulkan_virtio.dll"
+# Installed next to venera_d3d12.dll under the name the UMD looks for.
+cp "$out/meson/src/virtio/vulkan/libvulkan_virtio.dll" "$out/venera_vulkan_virtio.dll"
 cp "$out/meson/src/gallium/targets/wgl/viogpu_wgl.dll" "$out/viogpu_wgl.dll"
-echo "icd: $out/vgd_vulkan_virtio.dll $out/viogpu_wgl.dll"
+echo "icd: $out/venera_vulkan_virtio.dll $out/viogpu_wgl.dll"

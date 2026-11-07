@@ -1,4 +1,4 @@
-From: vgd3d12
+From: venera_d3d12
 Subject: venus: expose external memory fd export on Windows
 
 The d3dkmt renderer already exports a shareable bo as an fd wrapping the NT handle of its

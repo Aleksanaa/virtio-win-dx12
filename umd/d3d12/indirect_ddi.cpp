@@ -6,7 +6,7 @@
 
 #include <new>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -29,8 +29,8 @@ HRESULT APIENTRY create_command_signature(D3D12DDI_HDEVICE h, const D3D12DDIARG_
     HRESULT hr = Device::from(h)->d3d->CreateCommandSignature(&desc, root, __uuidof(ID3D12CommandSignature),
                                                               obj->signature.put_void());
     if (FAILED(hr)) {
-        VGD_WARN("CreateCommandSignature: %u arguments, stride %u failed: 0x%08lx", args->NumArgumentDescs,
-                 args->ByteStride, hr);
+        VENERA_WARN("CreateCommandSignature: %u arguments, stride %u failed: 0x%08lx", args->NumArgumentDescs,
+                    args->ByteStride, hr);
         obj->~CommandSignatureObject();
         return E_OUTOFMEMORY;
     }
@@ -64,4 +64,4 @@ void fill_indirect_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& t)
     t.pfnExecuteIndirect = execute_indirect;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Installs and uninstalls the driver package.
 //
-// Install: unpack the package (the cabinet in our resources) into %ProgramData%\vgd\staging; catalog it and sign the
+// Install: unpack the package (the cabinet in our resources) into %ProgramData%\Venera\staging; catalog it and sign the
 // catalog with a certificate made on this computer and trusted there (so PnP installs it without asking); install it
 // on the VirtIO GPU from the next boot, in place of whatever drives it now (install_on_devices); and register in Apps &
 // features with a copy of this executable as the uninstaller. At that boot, the copy (`/cleanup`, a one-shot task)
@@ -35,17 +35,17 @@ extern "C" BOOL WINAPI SetupGetInfDriverStoreLocationW(PCWSTR FileName, PSP_ALTP
 
 namespace {
 
-constexpr wchar_t kKeyName[] = L"vgd-test-signing";
-constexpr wchar_t kSetupName[] = L"vgd-setup.exe";
+constexpr wchar_t kKeyName[] = L"venera-test-signing";
+constexpr wchar_t kSetupName[] = L"venera-setup.exe";
 
 std::wstring staging_dir()
 {
-    return known_folder(FOLDERID_ProgramData) + L"\\vgd\\staging";
+    return known_folder(FOLDERID_ProgramData) + L"\\Venera\\staging";
 }
 
 std::wstring install_dir()
 {
-    return known_folder(FOLDERID_ProgramFiles) + L"\\vgd";
+    return known_folder(FOLDERID_ProgramFiles) + L"\\Venera";
 }
 
 // --- The payload
@@ -251,15 +251,15 @@ std::string narrow(const std::wstring& s)
     return out;
 }
 
-// vgd.cat in `dir`, listing `files` by their SHA-256 hashes, as MakeCat would make it from a catalog definition.
+// venera.cat in `dir`, listing `files` by their SHA-256 hashes, as MakeCat would make it from a catalog definition.
 void make_catalog(const std::wstring& dir, const std::vector<std::wstring>& files)
 {
-    std::string cdf = "[CatalogHeader]\r\nName=vgd.cat\r\nResultDir=" + narrow(dir) +
+    std::string cdf = "[CatalogHeader]\r\nName=venera.cat\r\nResultDir=" + narrow(dir) +
                       "\r\nPublicVersion=0x00000001\r\nCatalogVersion=2\r\nHashAlgorithms=SHA256\r\n"
                       "EncodingType=0x00010001\r\nCATATTR1=0x10010001:OSAttr:2:10.0\r\n\r\n[CatalogFiles]\r\n";
     for (const auto& f : files)
         cdf += "<hash>" + narrow(f) + "=" + narrow(dir + L"\\" + f) + "\r\n";
-    std::wstring path = dir + L"\\vgd.cdf";
+    std::wstring path = dir + L"\\venera.cdf";
     {
         std::ofstream out(fs::path(path), std::ios::binary);
         out << cdf;
@@ -361,7 +361,7 @@ void remove_yttrium_leftovers()
     }
 }
 
-// Stops and deletes a service that runs from one of our packages (its binary in a vgd.inf_* DriverStore folder).
+// Stops and deletes a service that runs from one of our packages (its binary in a venera.inf_* DriverStore folder).
 void delete_our_service(const wchar_t* name)
 {
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
@@ -371,7 +371,7 @@ void delete_our_service(const wchar_t* name)
         DWORD size = 0;
         auto config = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(buf.data());
         if (QueryServiceConfigW(service, config, buf.size(), &size) && config->lpBinaryPathName &&
-            StrStrIW(config->lpBinaryPathName, L"\\vgd.inf_")) {
+            StrStrIW(config->lpBinaryPathName, L"\\venera.inf_")) {
             SERVICE_STATUS status;
             ControlService(service, SERVICE_CONTROL_STOP, &status);
             if (DeleteService(service))
@@ -413,7 +413,7 @@ void register_product(const std::wstring& version, DWORD size_kb)
         fail(L"Registering in Apps & features failed");
     SYSTEMTIME now;
     GetLocalTime(&now);
-    set_string(key, L"DisplayName", L"vgd: Direct3D, Vulkan and OpenGL for the VirtIO GPU");
+    set_string(key, L"DisplayName", L"venera: Direct3D, Vulkan and OpenGL for the VirtIO GPU");
     set_string(key, L"DisplayVersion", version);
     set_string(key, L"Publisher", kProvider);
     set_string(key, L"URLInfoAbout", kProjectUrl);
@@ -433,9 +433,9 @@ void unregister_product()
 {
     RegDeleteTreeW(HKEY_LOCAL_MACHINE, kUninstallKey);
     RegDeleteKeyW(HKEY_LOCAL_MACHINE, kUninstallKey);
-    // The UMDs' log settings (tests/win/vgd-test.ps1 Install sets them).
-    RegDeleteTreeW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\vgd3d12");
-    RegDeleteKeyW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\vgd3d12");
+    // The UMDs' log settings (tests/win/venera-test.ps1 Install sets them).
+    RegDeleteTreeW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Venera");
+    RegDeleteKeyW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Venera");
 }
 
 void remove_install_dir()
@@ -453,7 +453,7 @@ void remove_install_dir()
 
 // --- The device and the boot after
 
-constexpr wchar_t kCleanupTask[] = L"vgd cleanup";
+constexpr wchar_t kCleanupTask[] = L"Venera cleanup";
 
 bool runs_ours(HDEVINFO set, SP_DEVINFO_DATA* dev)
 {
@@ -469,7 +469,7 @@ bool runs_ours(HDEVINFO set, SP_DEVINFO_DATA* dev)
 }
 
 // Installs the driver from `inf` (in the driver store) on each present VirtIO GPU (with `only_ours`, those running on
-// vgd) as its driver from the next boot: the class installer writes the device's configuration but does not restart
+// Venera) as its driver from the next boot: the class installer writes the device's configuration but does not restart
 // the device (DI_DONOTCALLCONFIGMG). Restarting a display device under the running desktop crashes the processes
 // that have the old user-mode drivers loaded (DWM in the old Venus ICD), and the display did not always come back.
 // Selecting the driver from that one INF also makes it win over a better-signed one (Red Hat's WHQL-signed viogpudo).
@@ -503,7 +503,7 @@ int install_on_devices(const std::wstring& inf, bool only_ours)
     return installed;
 }
 
-// Runs `vgd-setup.exe /cleanup` once at the next boot, as SYSTEM: the packages an install replaces, or an uninstall
+// Runs `venera-setup.exe /cleanup` once at the next boot, as SYSTEM: the packages an install replaces, or an uninstall
 // removes, are in use until then.
 void schedule_cleanup()
 {
@@ -529,11 +529,11 @@ bool install(const SystemState& state, const std::wstring& version, const Progre
     PCCERT_CONTEXT cert = signing_cert();
     progress(35, L"Signing the driver package");
     make_catalog(dir, files);
-    sign(dir + L"\\vgd.cat", cert);
+    sign(dir + L"\\venera.cat", cert);
     CertFreeCertificateContext(cert);
 
     progress(45, L"Adding the driver package to the driver store");
-    std::wstring inf = dir + L"\\vgd.inf";
+    std::wstring inf = dir + L"\\venera.inf";
     wchar_t published[MAX_PATH];
     PWSTR published_name = nullptr;
     if (!SetupCopyOEMInfW(inf.c_str(), nullptr, SPOST_PATH, 0, published, ARRAYSIZE(published), nullptr,
@@ -580,7 +580,7 @@ void cleanup()
                 remove_package(p);
         remove_install_dir();
     } else {
-        log(L"The VirtIO GPU does not run on vgd: nothing to clean up");
+        log(L"The VirtIO GPU does not run on venera: nothing to clean up");
     }
     run(L"schtasks.exe", format(L"/delete /f /tn \"%ls\"", kCleanupTask));
 }

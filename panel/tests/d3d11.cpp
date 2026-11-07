@@ -938,8 +938,8 @@ bool on_device(bool (*test)(ID3D11Device*, ID3D11DeviceContext*, IDXGIAdapter*))
     D3D_FEATURE_LEVEL level{};
     HRESULT hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
                                    dev.put(), &level, ctx.put());
-    std::printf("D3D11CreateDevice: 0x%08lx, feature level 0x%x, vgd3d11.dll %s: %s\n", hr, level,
-                GetModuleHandleW(L"vgd3d11.dll") ? "loaded" : "NOT loaded", SUCCEEDED(hr) ? "ok" : "FAIL");
+    std::printf("D3D11CreateDevice: 0x%08lx, feature level 0x%x, venera_d3d11.dll %s: %s\n", hr, level,
+                GetModuleHandleW(L"venera_d3d11.dll") ? "loaded" : "NOT loaded", SUCCEEDED(hr) ? "ok" : "FAIL");
     return SUCCEEDED(hr) && test(dev, ctx, adapter);
 }
 
@@ -971,8 +971,8 @@ bool present()
 
 TestGroup d3d11Tests()
 {
-    return {"d3d11", L"Direct3D 11", L"vgd's D3D11 driver on DXVK", {
-        {"device", L"Device", L"Creates a device; vgd3d11.dll must load", run<device_test>},
+    return {"d3d11", L"Direct3D 11", L"Venera's D3D11 driver on DXVK", {
+        {"device", L"Device", L"Creates a device; venera_d3d11.dll must load", run<device_test>},
         {"clear", L"Clear", L"Clears a render target and reads it back", run<clear_test>},
         {"triangle", L"Triangle", L"Shaders, a constant buffer and a vertex buffer", run<triangle_test>},
         {"textured", L"Textures", L"Sampling a texture through a shader resource view", run<textured_test>},

@@ -10,7 +10,7 @@
 
 namespace {
 
-constexpr wchar_t kClass[] = L"vgd-setup";
+constexpr wchar_t kClass[] = L"venera-setup";
 constexpr UINT kLogLine = WM_APP, kStep = WM_APP + 1, kWorkDone = WM_APP + 2;
 constexpr int kStatus = 1001, kBar = 1002, kLog = 1003, kTitle = 1004, kSubtitle = 1005, kVersion = 1006;
 constexpr int kWidth = 640, kHeight = 500, kBanner = 64, kMargin = 16, kButtonW = 100, kButtonH = 28;
@@ -227,7 +227,7 @@ Wizard::Wizard(const std::wstring& version) : impl(new Impl)
     RegisterClassExW(&wc);
 
     Impl& d = *impl;
-    d.hwnd = CreateWindowExW(kExStyle, kClass, L"vgd Setup", kStyle, CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr,
+    d.hwnd = CreateWindowExW(kExStyle, kClass, L"Venera Setup", kStyle, CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, nullptr,
                              nullptr, wc.hInstance, nullptr);
     d.title = d.child(L"STATIC", WS_VISIBLE | SS_NOPREFIX, 0, kTitle);
     d.subtitle = d.child(L"STATIC", WS_VISIBLE | SS_NOPREFIX, 0, kSubtitle);
@@ -239,7 +239,7 @@ Wizard::Wizard(const std::wstring& version) : impl(new Impl)
                          WS_EX_CLIENTEDGE, kLog);
     SendMessageW(d.log_view, EM_SETLIMITTEXT, 0, 0);
     d.version_label = d.child(L"STATIC", WS_VISIBLE | SS_NOPREFIX, 0, kVersion);
-    SetWindowTextW(d.version_label, (L"vgd " + version).c_str());
+    SetWindowTextW(d.version_label, (L"Venera " + version).c_str());
 
     // Sized and centred for the DPI of the monitor it opened on.
     d.dpi = GetDpiForWindow(d.hwnd);

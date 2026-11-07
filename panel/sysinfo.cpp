@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // What the panel reads in its own process: the VirtIO GPU and its driver (SetupAPI, the driver's registry key, the
-// device's problem code), vgd as Apps & features lists it, test signing, the displays on the adapter, and the guest:
+// device's problem code), Venera as Apps & features lists it, test signing, the displays on the adapter, and the guest:
 // the virtual machine from the firmware's SMBIOS tables, Windows, the processors, memory, page files, mice and keyboards.
 #include "panel.h"
 
@@ -18,10 +18,10 @@ namespace panel {
 
 namespace {
 
-// As pkg/vgd.inf names the device and its provider.
+// As pkg/venera.inf names the device and its provider.
 constexpr wchar_t kHardwareId[] = L"PCI\\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01";
-constexpr wchar_t kProvider[] = L"vgd project";
-constexpr wchar_t kUninstallKey[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\vgd";
+constexpr wchar_t kProvider[] = L"Venera project";
+constexpr wchar_t kUninstallKey[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Venera";
 
 std::wstring regString(HKEY root, const wchar_t* key, const wchar_t* value)
 {

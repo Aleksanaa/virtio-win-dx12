@@ -3,7 +3,7 @@
 #include "device.h"
 #include "log.h"
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -25,7 +25,7 @@ HRESULT QueueBridge::init()
     cc.EngineAffinity = 1;
     HRESULT hr = device_.um_callbacks->pfnCreateContextCb(rt_, &cc);
     if (FAILED(hr) || !cc.hContext) {
-        VGD_WARN("CreateCommandQueue: CreateContextCb failed: 0x%08lx", hr);
+        VENERA_WARN("CreateCommandQueue: CreateContextCb failed: 0x%08lx", hr);
         return E_OUTOFMEMORY;
     }
     context_ = cc.hContext;
@@ -33,12 +33,12 @@ HRESULT QueueBridge::init()
     for (Com<ID3D12Fence>* f : {&open_, &finished_}) {
         hr = device_.d3d->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), f->put_void());
         if (FAILED(hr)) {
-            VGD_WARN("CreateCommandQueue: fence failed: 0x%08lx", hr);
+            VENERA_WARN("CreateCommandQueue: fence failed: 0x%08lx", hr);
             return E_OUTOFMEMORY;
         }
     }
     if (!create_kernel_fence(&gate_) || !create_kernel_fence(&done_)) {
-        VGD_WARN("CreateCommandQueue: no kernel monitored fences; ExecuteCommandLists will wait for the GPU");
+        VENERA_WARN("CreateCommandQueue: no kernel monitored fences; ExecuteCommandLists will wait for the GPU");
         blocking_ = true;
         return S_OK;
     }
@@ -67,12 +67,12 @@ QueueBridge::~QueueBridge()
         if (f) {
             D3DDDICB_DESTROYSYNCHRONIZATIONOBJECT d{f};
             if (FAILED(device_.kt_callbacks->pfnDestroySynchronizationObjectCb(dev, &d)))
-                VGD_WARN("DestroyCommandQueue: DestroySynchronizationObjectCb(0x%x) failed", f);
+                VENERA_WARN("DestroyCommandQueue: DestroySynchronizationObjectCb(0x%x) failed", f);
         }
     if (context_) {
         D3DDDICB_DESTROYCONTEXT dc{context_};
         if (FAILED(device_.um_callbacks->pfnDestroyContextCb(rt_, &dc)))
-            VGD_WARN("DestroyCommandQueue: DestroyContextCb failed");
+            VENERA_WARN("DestroyCommandQueue: DestroyContextCb failed");
     }
 }
 
@@ -84,7 +84,7 @@ bool QueueBridge::create_kernel_fence(D3DKMT_HANDLE* out)
     c.Info.MonitoredFence.EngineAffinity = 1;
     HRESULT hr = device_.kt_callbacks->pfnCreateSynchronizationObject2Cb(device_.rt_device.handle, &c);
     if (FAILED(hr) || !c.hSyncObject) {
-        VGD_WARN("CreateSynchronizationObject2Cb (monitored fence) failed: 0x%08lx", hr);
+        VENERA_WARN("CreateSynchronizationObject2Cb (monitored fence) failed: 0x%08lx", hr);
         return false;
     }
     *out = c.hSyncObject;
@@ -95,7 +95,7 @@ void QueueBridge::execute(UINT count, ID3D12CommandList* const* lists)
 {
     const uint64_t value = ++next_;
     if (verbose())
-        VGD_TRACE("queue: execute %llu: %u lists", static_cast<unsigned long long>(value), count);
+        VENERA_TRACE("queue: execute %llu: %u lists", static_cast<unsigned long long>(value), count);
     if (blocking_) {
         queue_->ExecuteCommandLists(count, lists);
         queue_->Signal(finished_.get(), value);
@@ -114,7 +114,8 @@ void QueueBridge::execute(UINT count, ID3D12CommandList* const* lists)
     s.MonitoredFenceValueArray = &value;
     HRESULT hr = device_.kt_callbacks->pfnSignalSynchronizationObjectFromGpuCb(dev, &s);
     if (FAILED(hr))
-        VGD_WARN("ExecuteCommandLists: gate signal %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
+        VENERA_WARN("ExecuteCommandLists: gate signal %llu failed: 0x%08lx", static_cast<unsigned long long>(value),
+                    hr);
 
     queue_->Wait(open_.get(), value);
     queue_->ExecuteCommandLists(count, lists);
@@ -133,7 +134,7 @@ void QueueBridge::execute(UINT count, ID3D12CommandList* const* lists)
     w.MonitoredFenceValueArray = &value;
     hr = device_.kt_callbacks->pfnWaitForSynchronizationObjectFromGpuCb(dev, &w);
     if (FAILED(hr))
-        VGD_WARN("ExecuteCommandLists: done wait %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
+        VENERA_WARN("ExecuteCommandLists: done wait %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
 }
 
 bool QueueBridge::wait_from_cpu(D3DKMT_HANDLE fence, uint64_t value)
@@ -148,11 +149,11 @@ bool QueueBridge::wait_from_cpu(D3DKMT_HANDLE fence, uint64_t value)
     HRESULT hr = device_.kt_callbacks->pfnWaitForSynchronizationObjectFromCpuCb(device_.rt_device.handle, &w);
     bool ok = SUCCEEDED(hr);
     if (!ok)
-        VGD_WARN("queue: CPU wait for gate %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
+        VENERA_WARN("queue: CPU wait for gate %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
     while (ok && WaitForSingleObject(event, kPollMs) == WAIT_TIMEOUT) {
         std::lock_guard g(lock_);
         if (stop_) {
-            VGD_WARN("queue: destroyed while waiting for gate %llu", static_cast<unsigned long long>(value));
+            VENERA_WARN("queue: destroyed while waiting for gate %llu", static_cast<unsigned long long>(value));
             ok = false;
         }
     }
@@ -207,14 +208,14 @@ void QueueBridge::completion_loop()
         s.ObjectHandleArray = &done_;
         s.FenceValueArray = &value;
         if (verbose())
-            VGD_TRACE("queue: done %llu: signalling", static_cast<unsigned long long>(value));
+            VENERA_TRACE("queue: done %llu: signalling", static_cast<unsigned long long>(value));
         HRESULT hr = device_.kt_callbacks->pfnSignalSynchronizationObjectFromCpuCb(device_.rt_device.handle, &s);
         if (verbose())
-            VGD_TRACE("queue: done %llu: signalled (0x%08lx)", static_cast<unsigned long long>(value), hr);
+            VENERA_TRACE("queue: done %llu: signalled (0x%08lx)", static_cast<unsigned long long>(value), hr);
         if (FAILED(hr))
-            VGD_WARN("queue: done signal %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
+            VENERA_WARN("queue: done signal %llu failed: 0x%08lx", static_cast<unsigned long long>(value), hr);
     }
     CloseHandle(event);
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

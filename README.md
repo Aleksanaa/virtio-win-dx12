@@ -1,4 +1,4 @@
-# virgl-win
+# Venera
 
 Hardware-accelerated Direct3D 9/10/11/12, Vulkan and OpenGL for Windows guests in QEMU. Rendering runs on the host
 GPU through Venus.
@@ -12,9 +12,9 @@ Discuss in: [![Telegram group](https://img.shields.io/badge/Telegram-group-26A5E
 
 ![Layers from applications down to the host GPU](docs/architecture.svg)
 
-- **DXVK and vkd3d-proton translate Direct3D to Vulkan.** `vgd3d11.dll` implements the D3D10/11 user-mode driver
-  interface (DDI) on top of DXVK. `vgd3d12.dll` implements the D3D12 DDI on top of vkd3d-proton. D3D9 runs on Windows' own
-  D3D9On12 adapter over `vgd3d12.dll`.
+- **DXVK and vkd3d-proton translate Direct3D to Vulkan.** `venera_d3d11.dll` implements the D3D10/11 user-mode driver
+  interface (DDI) on top of DXVK. `venera_d3d12.dll` implements the D3D12 DDI on top of vkd3d-proton. D3D9 runs on Windows' own
+  D3D9On12 adapter over `venera_d3d12.dll`.
 - **Venus takes the Vulkan calls to the host.** Mesa's Venus driver on guest's side encodes Vulkan calls into a command stream and submits to virtio-gpu. Vulkan applications reach it through the Vulkan loader, and OpenGL goes through Mesa's zink. virglrenderer on the host decodes the stream and replays it on the host's Vulkan driver.
 
 - **yttrium's kernel driver makes virtio-gpu a WDDM device.** `viogpu3d.sys` is the Windows display miniport for
@@ -49,7 +49,7 @@ We aim for no host patches. However, each way of displaying the guest has a draw
 
 ## Installing
 
-Run `vgd-setup.exe` in the guest. Download builds from the [Actions](https://github.com/Aleksanaa/virtio-win-dx12/actions)
+Run `venera-setup.exe` in the guest. Download builds from the [Actions](https://github.com/Aleksanaa/venera/actions)
 page and tagged releases.
 
 Do take a VM snapshot first.
@@ -69,14 +69,14 @@ cmake -S . -B build/win -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake &&
 
 `cmake/fetch-winkits.sh` extracts the WDK and SDK headers from Microsoft's NuGet packages (Microsoft.Windows.WDK.x64
 and Microsoft.Windows.SDK.CPP, 10.0.26100) into `refs/winkits/{wdk,sdk}`. The KMD build test-signs `viogpu3d.sys`
-with the PFX in `VGD_KMD_SIGN_PFX`; any code signing certificate does, as the kernel accepts any signature in test
-mode. The installer is `build/win/setup/vgd-setup.exe` (`.github/workflows/build.yml` does the same).
+with the PFX in `VENERA_KMD_SIGN_PFX`; any code signing certificate does, as the kernel accepts any signature in test
+mode. The installer is `build/win/setup/venera-setup.exe` (`.github/workflows/build.yml` does the same).
 
 For testing, make `build/` visible in the guest and run this from an elevated PowerShell in `build\win\tests\win`; it
 runs the installer silently and sets the drivers' logging up. Its top comment covers the other actions.
 
 ```
-powershell -ExecutionPolicy Bypass -File .\vgd-test.ps1 Install
+powershell -ExecutionPolicy Bypass -File .\venera-test.ps1 Install
 ```
 
 ## Status

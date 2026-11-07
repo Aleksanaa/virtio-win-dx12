@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // The panel's tests: groups of tests (one per API) that each run on the VirtIO GPU as an application would. A test is
 // a function that prints what it does and returns whether it passed; the panel runs each one in a child process
-// (`vgd-panel.exe /run-test <group>.<test>`, runner.cpp), so one that crashes or hangs takes only itself down.
+// (`venera-panel.exe /run-test <group>.<test>`, runner.cpp), so one that crashes or hangs takes only itself down.
 #pragma once
 
 #include <windows.h>
@@ -39,7 +39,7 @@ extern bool testDebugLayer;
 // The VirtIO GPU among the DXGI adapters, or null (probe.cpp).
 IDXGIAdapter1* findAdapter();
 
-// The process d3d11's shared-resource tests start to open their texture: `vgd-panel.exe /shared-child <handle>`.
+// The process d3d11's shared-resource tests start to open their texture: `venera-panel.exe /shared-child <handle>`.
 int runD3D11SharedChild(const wchar_t* handle);
 
 }  // namespace panel

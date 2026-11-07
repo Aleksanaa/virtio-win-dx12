@@ -2,7 +2,7 @@
 // Swapchain buffers, Present and the DXGI table.
 //
 // DXGI creates swapchain buffers as committed resources on PRIMARY heaps, and the compositor (DWM, through
-// vgd3d11) opens their runtime allocation and imports its host resource into its own Venus context.
+// venera_d3d11) opens their runtime allocation and imports its host resource into its own Venus context.
 // That resource must be a dma-buf exported from Vulkan memory, and the stock KMD creates a blob only in the context
 // of the device that first opens the allocation, here the D3D12 runtime's device, which has no Venus context. So the
 // buffer is a linear texture on exported memory (shared_image.h) under a runtime allocation aliasing it
@@ -28,7 +28,7 @@
 #include <utility>
 #include <vector>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -52,12 +52,12 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
                            UINT castable_count, D3D12DDI_HRTRESOURCE rt_resource, HeapObject& out)
 {
     if (!d.allocation_alias) {
-        VGD_WARN("present: the KMD cannot alias allocations (yttrium's unpatched viogpu3d?): no swapchains");
+        VENERA_WARN("present: the KMD cannot alias allocations (yttrium's unpatched viogpu3d?): no swapchains");
         return E_OUTOFMEMORY;
     }
     const ULONG format = virgl_format(desc.Format);
     if (!format) {
-        VGD_WARN("present: swapchain format %d is not supported yet", static_cast<int>(desc.Format));
+        VENERA_WARN("present: swapchain format %d is not supported yet", static_cast<int>(desc.Format));
         return E_OUTOFMEMORY;
     }
 
@@ -67,7 +67,7 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
     HRESULT hr = SharedImage::create_exported(d.engine, desc, castable, castable_count, !rt_resource.handle,
                                               &out.shared, &fd);
     if (FAILED(hr)) {
-        VGD_WARN("present: presentable texture failed: 0x%08lx", hr);
+        VENERA_WARN("present: presentable texture failed: 0x%08lx", hr);
         return E_OUTOFMEMORY;
     }
     SurfaceAlias alias(kmt_device(d));
@@ -97,7 +97,7 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
     cb.pAllocationInfo = &info;
     hr = d.um_callbacks->pfnAllocateCb(d.rt_device, &cb);
     if (FAILED(hr)) {
-        VGD_WARN("present: AllocateCb (primary) failed: 0x%08lx; retrying as a plain allocation", hr);
+        VENERA_WARN("present: AllocateCb (primary) failed: 0x%08lx; retrying as a plain allocation", hr);
         info = {};
         info.pPrivateDriverData = &alias.data;
         info.PrivateDriverDataSize = sizeof(alias.data);
@@ -105,17 +105,17 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
         hr = d.um_callbacks->pfnAllocateCb(d.rt_device, &cb);
     }
     if (FAILED(hr) || !info.hAllocation) {
-        VGD_WARN("present: AllocateCb failed: 0x%08lx", hr);
+        VENERA_WARN("present: AllocateCb failed: 0x%08lx", hr);
         out.shared.reset();
         return E_OUTOFMEMORY;
     }
     out.allocation = info.hAllocation;
     out.rt_resource = rt_resource;
-    VGD_TRACE("present: presentable allocation 0x%x (km resource 0x%x) aliases 0x%x: %llu bytes, pitch %u, "
-              "virgl format %lu",
-              info.hAllocation, cb.hKMResource, alias.data.SourceAllocation,
-              static_cast<unsigned long long>(out.shared->size()),
-              out.shared->row_pitch(), format);
+    VENERA_TRACE("present: presentable allocation 0x%x (km resource 0x%x) aliases 0x%x: %llu bytes, pitch %u, "
+                 "virgl format %lu",
+                 info.hAllocation, cb.hKMResource, alias.data.SourceAllocation,
+                 static_cast<unsigned long long>(out.shared->size()),
+                 out.shared->row_pitch(), format);
     return S_OK;
 }
 
@@ -124,10 +124,10 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
 HRESULT create_primary(Device& d, const D3D12DDIARG_CREATEHEAP_0001& heap, const D3D12DDIARG_CREATERESOURCE_0088& args,
                        const D3D12_RESOURCE_DESC& desc, D3D12DDI_HRTRESOURCE rt_resource, HeapObject& out)
 {
-    VGD_TRACE("CreateHeapAndResource: swapchain buffer %llux%u format %d, heap flags 0x%x, resource flags 0x%x, "
-              "%u castable formats",
-              static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<int>(desc.Format),
-              static_cast<unsigned>(heap.Flags), static_cast<unsigned>(args.Flags), args.NumCastableFormats);
+    VENERA_TRACE("CreateHeapAndResource: swapchain buffer %llux%u format %d, heap flags 0x%x, resource flags 0x%x, "
+                 "%u castable formats",
+                 static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<int>(desc.Format),
+                 static_cast<unsigned>(heap.Flags), static_cast<unsigned>(args.Flags), args.NumCastableFormats);
     return create_presentable(d, desc, args.pCastableFormats, args.NumCastableFormats, rt_resource, out);
 }
 
@@ -146,7 +146,7 @@ void destroy_primary(Device& d, HeapObject& heap)
     cb.Flags |= D3D12DDI_DEALLOCATE_FLAGS_0022_SYNCHRONOUS_DESTROY;
     HRESULT hr = d.um_callbacks->pfnDeallocateCb(d.rt_device, &cb);
     if (FAILED(hr))
-        VGD_WARN("present: DeallocateCb(0x%x) failed: 0x%08lx", heap.allocation, hr);
+        VENERA_WARN("present: DeallocateCb(0x%x) failed: 0x%08lx", heap.allocation, hr);
     heap.allocation = 0;
 }
 
@@ -158,14 +158,15 @@ PresentCopies::~PresentCopies()
     if (paging_queue && device) {
         D3DDDI_DESTROYPAGINGQUEUE d{paging_queue};
         if (FAILED(device->kt_callbacks->pfnDestroyPagingQueueCb(device->rt_device.handle, &d)))
-            VGD_WARN("present: DestroyPagingQueueCb(0x%x) failed", paging_queue);
+            VENERA_WARN("present: DestroyPagingQueueCb(0x%x) failed", paging_queue);
     }
 }
 
-// --- Textures vgd3d11 shares ---------------------------------------------------------------------------------
-// ID3D12Device::OpenSharedHandle on a texture vgd3d11 created shared (a browser compositor's canvas, for WebGPU): the
-// runtime has opened its allocation, a shared surface (shared_surface.h) imported under a linear image of the same
-// size and format (shared_image.h). Its format is the virgl one: the resource private data vgd3d11 adds is not read.
+// --- Textures venera_d3d11 shares ------------------------------------------------------------------------------
+// ID3D12Device::OpenSharedHandle on a texture venera_d3d11 created shared (a browser compositor's canvas, for WebGPU):
+// the runtime has opened its allocation, a shared surface (shared_surface.h) imported under a linear image of the same
+// size and format (shared_image.h). Its format is the virgl one: the resource private data venera_d3d11 adds is not
+// read.
 
 HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject& out)
 {
@@ -180,7 +181,7 @@ HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject
     DXGI_FORMAT srgb;
     const DXGI_FORMAT format = dxgi_format(o.format, &srgb);
     if (format == DXGI_FORMAT_UNKNOWN) {
-        VGD_WARN("OpenHeapAndResource: only surfaces of swapchain formats so far");
+        VENERA_WARN("OpenHeapAndResource: only surfaces of swapchain formats so far");
         return E_OUTOFMEMORY;
     }
     D3D12_RESOURCE_DESC desc{};
@@ -207,8 +208,8 @@ HRESULT open_shared(Device& d, const D3D12DDIARG_OPENHEAP_0003& args, HeapObject
     if (!consumed)
         CloseHandle(handle_of_fd(fd));
     if (FAILED(hr)) {
-        VGD_WARN("OpenHeapAndResource: import of %lux%lu format %d failed: 0x%08lx", o.width, o.height,
-                 static_cast<int>(format), hr);
+        VENERA_WARN("OpenHeapAndResource: import of %lux%lu format %d failed: 0x%08lx", o.width, o.height,
+                    static_cast<int>(format), hr);
         return E_OUTOFMEMORY;
     }
     return S_OK;
@@ -237,7 +238,7 @@ bool make_resident(Device& d, PresentCopies& pc, D3DKMT_HANDLE allocation)
         c.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL;
         const HRESULT hr = d.kt_callbacks->pfnCreatePagingQueueCb(dev, &c);
         if (FAILED(hr)) {
-            VGD_WARN("Present: CreatePagingQueueCb failed: 0x%08lx", hr);
+            VENERA_WARN("Present: CreatePagingQueueCb failed: 0x%08lx", hr);
             return false;
         }
         pc.paging_queue = c.hPagingQueue;
@@ -258,7 +259,7 @@ bool make_resident(Device& d, PresentCopies& pc, D3DKMT_HANDLE allocation)
         hr = d.kt_callbacks->pfnWaitForSynchronizationObjectFromCpuCb(dev, &w);
     }
     if (FAILED(hr)) {
-        VGD_WARN("Present: MakeResidentCb(0x%x) failed: 0x%08lx", allocation, hr);
+        VENERA_WARN("Present: MakeResidentCb(0x%x) failed: 0x%08lx", allocation, hr);
         return false;
     }
     return true;
@@ -273,7 +274,7 @@ D3DKMT_HANDLE copy_for_present(Device& d, CommandQueueObject& q, const D3D12DDI_
         return 0;
     const D3D12_RESOURCE_DESC sd = desc_of(src);
     if (sd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || sd.SampleDesc.Count != 1) {
-        VGD_WARN("Present: cannot copy a %s resource for present", sd.SampleDesc.Count != 1 ? "multisampled" : "non-2D");
+        VENERA_WARN("Present: cannot copy a %s resource for present", sd.SampleDesc.Count != 1 ? "multisampled" : "non-2D");
         return 0;
     }
     D3D12_RESOURCE_DESC desc = sd;
@@ -296,7 +297,7 @@ D3DKMT_HANDLE copy_for_present(Device& d, CommandQueueObject& q, const D3D12DDI_
         if (SUCCEEDED(hr))
             hr = d.d3d->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), pc.fence.put_void());
         if (FAILED(hr)) {
-            VGD_WARN("Present: no command list for present copies: 0x%08lx", hr);
+            VENERA_WARN("Present: no command list for present copies: 0x%08lx", hr);
             pc.list = nullptr;
             return 0;
         }
@@ -317,15 +318,15 @@ D3DKMT_HANDLE copy_for_present(Device& d, CommandQueueObject& q, const D3D12DDI_
             destroy_primary(d, *heap);
             return 0;
         }
-        VGD_TRACE("Present: copying %llux%u format %d into allocation 0x%x for present",
-                  static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<int>(desc.Format),
-                  heap->allocation);
+        VENERA_TRACE("Present: copying %llux%u format %d into allocation 0x%x for present",
+                     static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<int>(desc.Format),
+                     heap->allocation);
         slot = std::move(heap);
     }
     ID3D12Resource* dst = slot->owned();
     ID3D12GraphicsCommandList* list = pc.list.get();
     if (FAILED(pc.allocator->Reset()) || FAILED(list->Reset(pc.allocator.get(), nullptr))) {
-        VGD_WARN("Present: could not reset the present copy list");
+        VENERA_WARN("Present: could not reset the present copy list");
         return 0;
     }
 
@@ -348,7 +349,7 @@ D3DKMT_HANDLE copy_for_present(Device& d, CommandQueueObject& q, const D3D12DDI_
         std::swap(x.Transition.StateBefore, x.Transition.StateAfter);
     list->ResourceBarrier(2, b);
     if (FAILED(list->Close())) {
-        VGD_WARN("Present: could not close the present copy list");
+        VENERA_WARN("Present: could not close the present copy list");
         return 0;
     }
     ID3D12CommandList* lists[] = {list};
@@ -356,7 +357,7 @@ D3DKMT_HANDLE copy_for_present(Device& d, CommandQueueObject& q, const D3D12DDI_
     const uint64_t value = ++pc.fence_value;
     q.queue->Signal(pc.fence.get(), value);
     if (FAILED(pc.fence->SetEventOnCompletion(value, nullptr))) {   // a null event blocks until it completes
-        VGD_WARN("Present: waiting for the present copy failed");
+        VENERA_WARN("Present: waiting for the present copy failed");
         return 0;
     }
     q.bridge->wait_idle();
@@ -374,7 +375,7 @@ void APIENTRY present(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HCOMMANDQUEUE hq, const
     if (hw_queues)
         *hw_queues = {};
     if (!args || !out || !contexts || !hq.pDrvPrivate || !args->SurfacesToPresent || !args->phSurfacesToPresent) {
-        VGD_WARN("Present: bad arguments");
+        VENERA_WARN("Present: bad arguments");
         return;
     }
     // Set even if this present fails: the runtime submits on it regardless, and dereferences a null one.
@@ -392,8 +393,8 @@ void APIENTRY present(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HCOMMANDQUEUE hq, const
         copied = src != 0;
     }
     if (!src) {
-        VGD_WARN("Present: surface %p has no allocation and could not be copied into one",
-                 args->phSurfacesToPresent[0].hSurface.pDrvPrivate);
+        VENERA_WARN("Present: surface %p has no allocation and could not be copied into one",
+                    args->phSurfacesToPresent[0].hSurface.pDrvPrivate);
         return;
     }
     out->BroadcastSrcAllocation[0] = src;
@@ -401,10 +402,10 @@ void APIENTRY present(D3D12DDI_HCOMMANDLIST hl, D3D12DDI_HCOMMANDQUEUE hq, const
     out->AddedGpuWork = FALSE;   // a copy is complete already
     out->BackBufferMultiplicity = 1;
     if (n < 4 || verbose())
-        VGD_TRACE("Present #%u: surfaces %u, src 0x%x%s, dst 0x%x, flags 0x%x, interval %d, source %u, dirty %u, "
-                  "context %p",
-                  n, args->SurfacesToPresent, src, copied ? " (copy)" : "", dst, args->Flags.Value,
-                  static_cast<int>(args->FlipInterval), args->VidPnSourceID, args->DirtyRects, contexts->hContext);
+        VENERA_TRACE("Present #%u: surfaces %u, src 0x%x%s, dst 0x%x, flags 0x%x, interval %d, source %u, dirty %u, "
+                     "context %p",
+                     n, args->SurfacesToPresent, src, copied ? " (copy)" : "", dst, args->Flags.Value,
+                     static_cast<int>(args->FlipInterval), args->VidPnSourceID, args->DirtyRects, contexts->hContext);
 }
 
 UINT APIENTRY get_present_private_driver_data_size(D3D12DDI_HDEVICE, const D3D12DDIARG_PRESENT_0001*) { return 0; }
@@ -470,4 +471,4 @@ void fill_dxgi_ddi(DXGI1_4_DDI_BASE_FUNCTIONS& t)
     t.pfnTrimResidencySet = trim_residency_set;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// vgd-panel.exe, the control panel: a Win32 window painted with Direct2D on the CPU (a software render target, so it
+// venera-panel.exe, the control panel: a Win32 window painted with Direct2D on the CPU (a software render target, so it
 // never needs our driver) and DirectWrite text, in WinUI 3's dark theme: its colour tokens, a left NavigationView and
 // Settings-style cards. Everything is laid out in 96-DPI units and scaled to the window's DPI.
 #pragma once
@@ -200,9 +200,9 @@ struct SystemInfo {
     // The VirtIO GPU and the driver Windows runs it with.
     bool deviceFound = false;
     std::wstring driverDesc, provider, driverVersion, driverDate;
-    bool ours = false;            // the driver is vgd's package
+    bool ours = false;            // the driver is Venera's package
     ULONG problem = 0;            // Device Manager's problem code, 0 for none
-    // vgd as Apps & features lists it.
+    // Venera as Apps & features lists it.
     std::wstring productVersion, installDate;
     bool testSigning = false;
     // The guest. SMBIOS names the virtual machine (manufacturer and product) and its machine type, e.g. QEMU's
@@ -217,11 +217,11 @@ struct SystemInfo {
 };
 SystemInfo readSystemInfo();
 std::vector<Display> readDisplays(const std::wstring& adapterName);
-// The VirtIO GPU's driver key (where pkg/vgd.inf puts the KMD's settings) when it runs vgd's driver, else null.
+// The VirtIO GPU's driver key (where pkg/venera.inf puts the KMD's settings) when it runs Venera's driver, else null.
 HKEY openDriverKey(REGSAM access);
 
 // ---- the graphics probe (probe.cpp) -------------------------------------------------------------------------------
-// `vgd-panel.exe /probe` creates a Vulkan instance and D3D12, D3D11 and OpenGL devices on the VirtIO GPU and prints
+// `venera-panel.exe /probe` creates a Vulkan instance and D3D12, D3D11 and OpenGL devices on the VirtIO GPU and prints
 // what it found as key=value lines. It runs as a child process, so a driver that crashes or hangs takes only the
 // probe down. Each API's lines are written before the next is tried.
 int runProbe();
@@ -265,7 +265,7 @@ struct LogLine {
     SYSTEMTIME time;  // local
     DWORD pid = 0;
     std::wstring process;    // the program without .exe, or "kernel"
-    std::wstring component;  // what logged it, for the drivers' lines: a UMD (vgd3d12), "mesa" or "kernel"
+    std::wstring component;  // what logged it, for the drivers' lines: a UMD (venera_d3d12), "mesa" or "kernel"
     int level = 0;           // 0 information, 1 warning, 2 error
     std::wstring text;
 };

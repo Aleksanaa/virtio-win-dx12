@@ -230,7 +230,7 @@ void Logs::exportLog()
     SYSTEMTIME t;
     GetLocalTime(&t);
     wchar_t file[MAX_PATH];
-    swprintf(file, MAX_PATH, L"vgd-log-%04u%02u%02u-%02u%02u%02u.txt", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute,
+    swprintf(file, MAX_PATH, L"venera-log-%04u%02u%02u-%02u%02u%02u.txt", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute,
              t.wSecond);
     wchar_t docs[MAX_PATH] = L"";
     SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr, 0, docs);

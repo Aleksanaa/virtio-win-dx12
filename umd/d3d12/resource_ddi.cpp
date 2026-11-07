@@ -9,7 +9,7 @@
 #include <atomic>
 #include <new>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 D3D12_RESOURCE_DESC1 resource_desc(const D3D12DDIARG_CREATERESOURCE_0088& r)
 {
@@ -83,9 +83,10 @@ constexpr D3D12_RESOURCE_STATES kInitialState = D3D12_RESOURCE_STATE_COMMON;
 
 void log_failure(const char* what, const D3D12_RESOURCE_DESC1& desc, HRESULT hr)
 {
-    VGD_WARN("CreateHeapAndResource: %s dimension %d, %llux%ux%u, mips %u, format %d, flags 0x%x failed: 0x%08lx", what,
-             static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
-             desc.DepthOrArraySize, desc.MipLevels, static_cast<int>(desc.Format), static_cast<unsigned>(desc.Flags), hr);
+    VENERA_WARN("CreateHeapAndResource: %s dimension %d, %llux%ux%u, mips %u, format %d, flags 0x%x failed: 0x%08lx",
+                what, static_cast<int>(desc.Dimension), static_cast<unsigned long long>(desc.Width), desc.Height,
+                desc.DepthOrArraySize, desc.MipLevels, static_cast<int>(desc.Format), static_cast<unsigned>(desc.Flags),
+                hr);
 }
 
 // --- Heaps and resources -------------------------------------------------------------------------------------
@@ -107,9 +108,9 @@ HRESULT create_heap(Device& d, const D3D12DDIARG_CREATEHEAP_0001& h, uint64_t mi
     desc.Flags = heap_flags(h);
     HRESULT hr = d.d3d->CreateHeap(&desc, __uuidof(ID3D12Heap), out.heap.put_void());
     if (FAILED(hr))
-        VGD_WARN("CreateHeap: %llu bytes, alignment %llu, type %d, flags 0x%x failed: 0x%08lx",
-                 static_cast<unsigned long long>(desc.SizeInBytes), static_cast<unsigned long long>(desc.Alignment),
-                 static_cast<int>(desc.Properties.Type), static_cast<unsigned>(desc.Flags), hr);
+        VENERA_WARN("CreateHeap: %llu bytes, alignment %llu, type %d, flags 0x%x failed: 0x%08lx",
+                    static_cast<unsigned long long>(desc.SizeInBytes), static_cast<unsigned long long>(desc.Alignment),
+                    static_cast<int>(desc.Properties.Type), static_cast<unsigned>(desc.Flags), hr);
     return hr;
 }
 
@@ -168,7 +169,7 @@ HRESULT APIENTRY create_heap_and_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_
     if (!heap && resource)
         return create_unowned(d, *resource, hr_);
     if (!heap) {
-        VGD_WARN("CreateHeapAndResource: neither a heap nor a resource description");
+        VENERA_WARN("CreateHeapAndResource: neither a heap nor a resource description");
         return E_OUTOFMEMORY;
     }
     auto* ho = new (hh.pDrvPrivate) HeapObject;
@@ -255,7 +256,7 @@ HRESULT APIENTRY map_heap(D3D12DDI_HDEVICE h, D3D12DDI_HHEAP hh, void** data)
             ho->mapped = nullptr;
     }
     if (!ho->mapped) {
-        VGD_WARN("MapHeap: heap has no CPU mapping");
+        VENERA_WARN("MapHeap: heap has no CPU mapping");
         return E_INVALIDARG;
     }
     *data = ho->mapped;
@@ -294,8 +295,8 @@ void APIENTRY check_resource_allocation_info(D3D12DDI_HDEVICE h, const D3D12DDIA
     const D3D12_RESOURCE_DESC1 desc = resource_desc(*resource);
     D3D12_RESOURCE_ALLOCATION_INFO a = allocation_info(Device::from(h)->d3d8.get(), desc);
     if (a.SizeInBytes == UINT64_MAX)
-        VGD_WARN("CheckResourceAllocationInfo: dimension %d, format %d not supported", static_cast<int>(desc.Dimension),
-                 static_cast<int>(desc.Format));
+        VENERA_WARN("CheckResourceAllocationInfo: dimension %d, format %d not supported",
+                    static_cast<int>(desc.Dimension), static_cast<int>(desc.Format));
     fill_allocation_info(a, desc.Dimension, info);
 }
 
@@ -323,7 +324,7 @@ void APIENTRY check_subresource_info(D3D12DDI_HDEVICE, D3D12DDI_HRESOURCE hr_, U
     info->RowStride = desc.Width;
     info->DepthStride = desc.Width;
     if (subresource != 0 || desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
-        VGD_WARN("CheckSubresourceInfo: subresource %u of a texture (textures have no CPU mapping)", subresource);
+        VENERA_WARN("CheckSubresourceInfo: subresource %u of a texture (textures have no CPU mapping)", subresource);
 }
 
 // --- Fences --------------------------------------------------------------------------------------------------
@@ -336,7 +337,7 @@ SIZE_T APIENTRY calc_private_fence_size(D3D12DDI_HDEVICE, const D3D12DDIARG_CREA
 HRESULT APIENTRY create_fence(D3D12DDI_HDEVICE, D3D12DDI_HFENCE hf, const D3D12DDIARG_CREATE_FENCE* args)
 {
     if (!args || args->FenceCount != 1 || !args->Fences) {
-        VGD_WARN("CreateFence: %u fences (only single-adapter fences are supported)", args ? args->FenceCount : 0);
+        VENERA_WARN("CreateFence: %u fences (only single-adapter fences are supported)", args ? args->FenceCount : 0);
         return E_OUTOFMEMORY;
     }
     new (hf.pDrvPrivate) FenceObject{args->Fences[0]};
@@ -362,7 +363,7 @@ HRESULT APIENTRY open_heap_and_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_OP
                                         D3D12DDI_HPROTECTEDRESOURCESESSION_0030, D3D12DDI_HRESOURCE hr_)
 {
     if (!args) {
-        VGD_WARN("OpenHeapAndResource: no arguments");
+        VENERA_WARN("OpenHeapAndResource: no arguments");
         return E_OUTOFMEMORY;
     }
     auto* ho = new (hh.pDrvPrivate) HeapObject;
@@ -446,4 +447,4 @@ void fill_resource_queue_ddi(D3D12DDI_COMMAND_QUEUE_FUNCS_CORE_0001& t)
     t.pfnCopyTileMappings = copy_tile_mappings;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

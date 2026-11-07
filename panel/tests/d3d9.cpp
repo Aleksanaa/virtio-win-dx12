@@ -45,7 +45,7 @@ void modules(const char* when)
         for (; path[n] && n + 1 < sizeof(lower); n++)
             lower[n] = static_cast<char>(std::tolower(static_cast<unsigned char>(path[n])));
         lower[n] = 0;
-        for (const char* key : {"d3d9", "d3d1", "vgd", "viogpu", "vulkan", "dxgi", "warp"}) {
+        for (const char* key : {"d3d9", "d3d1", "venera", "viogpu", "vulkan", "dxgi", "warp"}) {
             if (std::strstr(lower, key)) {
                 std::fprintf(out, " %s", path);
                 break;
@@ -204,7 +204,7 @@ namespace panel {
 
 TestGroup d3d9Tests()
 {
-    return {"d3d9", L"Direct3D 9", L"Through D3D9On12 on vgd's D3D12 driver", {
+    return {"d3d9", L"Direct3D 9", L"Through D3D9On12 on Venera's D3D12 driver", {
         {"hal", L"Device", L"A clear and a triangle on the adapter's D3D9 device", [] { return run(false, false); }},
         {"9on12", L"D3D9On12", L"The same with D3D9On12 asked for, as an application can",
          [] { return run(true, false); }},

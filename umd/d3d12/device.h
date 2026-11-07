@@ -8,7 +8,7 @@
 
 #include <memory>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 // Runtime handles of the command-list tables FillDDITable filled, by table number. Every new command list must be bound
 // to one with SetCommandListDDITableCb, or the runtime calls through an empty table (first seen as a null call in Close).
@@ -49,4 +49,4 @@ void destroy_device(D3D12DDI_HDEVICE device);
 HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT index, D3D12DDI_HRTTABLE rt_table,
                        CommandListTables& tables);
 
-} // namespace vgd::umd
+} // namespace venera::umd

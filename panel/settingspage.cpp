@@ -2,7 +2,7 @@
 // Settings, which need administrator rights to change:
 //   Pointer: the KMD's hardware cursor settings in the VirtIO GPU's driver key, which it reads before each pointer
 //   shape (viogpu_adapter.cpp); reloading the system cursors sends one, so a change shows at once.
-//   Logging: the drivers' settings in HKLM\SOFTWARE\vgd3d12 (umd/common/log.h), which a program reads when it loads a
+//   Logging: the drivers' settings in HKLM\SOFTWARE\Venera (umd/common/log.h), which a program reads when it loads a
 //   driver, so they apply to programs started afterwards.
 // The command line's /set changes them too (cli.cpp), through listSettings and changeSetting.
 #include "panel.h"
@@ -18,8 +18,8 @@ using namespace theme;
 namespace {
 
 constexpr float kCardH = 68, kGap = 4;
-constexpr wchar_t kKey[] = L"SOFTWARE\\vgd3d12";
-constexpr wchar_t kLogFile[] = L"C:\\vgd\\vgd.log";
+constexpr wchar_t kKey[] = L"SOFTWARE\\Venera";
+constexpr wchar_t kLogFile[] = L"C:\\venera\\venera.log";
 
 std::wstring readSetting(const wchar_t* name)
 {
@@ -43,7 +43,7 @@ void writeSetting(const wchar_t* name, const std::wstring& value)
         RegSetKeyValueW(HKEY_LOCAL_MACHINE, kKey, name, REG_SZ, value.c_str(), DWORD((value.size() + 1) * 2));
 }
 
-// The hardware cursor's settings, as pkg/vgd.inf sets them by default; `cli` is the name /set knows.
+// The hardware cursor's settings, as pkg/venera.inf sets them by default; `cli` is the name /set knows.
 struct PointerSetting {
     const wchar_t *cli, *name, *icon, *title, *desc;
     DWORD fallback;
@@ -73,7 +73,8 @@ const Level kLevels[] = {
 };
 constexpr int kLevelCount = int(std::size(kLevels));
 
-// The pointer settings into `values`; false when the VirtIO GPU does not run vgd's driver (they keep their defaults).
+// The pointer settings into `values`; false when the VirtIO GPU does not run Venera's driver (they keep their
+// defaults).
 bool readPointer(DWORD* values)
 {
     HKEY key = openDriverKey(KEY_READ);
@@ -115,9 +116,9 @@ int readLevel(int i)
 void writeLogFile(bool on)
 {
     if (on)
-        CreateDirectoryW(L"C:\\vgd", nullptr);
-    writeSetting(L"VGD_LOG", on ? kLogFile : L"");
-    writeSetting(L"DXVK_LOG_PATH", on ? L"C:\\vgd\\" : L"");
+        CreateDirectoryW(L"C:\\venera", nullptr);
+    writeSetting(L"VENERA_LOG", on ? kLogFile : L"");
+    writeSetting(L"DXVK_LOG_PATH", on ? L"C:\\venera\\" : L"");
 }
 
 class Settings : public Page {
@@ -137,10 +138,10 @@ private:
 
     HWND window_;
     bool admin_ = elevated();
-    bool driver_ = false;  // the VirtIO GPU runs vgd's driver: the Pointer settings are there
+    bool driver_ = false;  // the VirtIO GPU runs Venera's driver: the Pointer settings are there
     DWORD pointer_[kPointerCount] = {};
     bool changed_ = false;  // logging, since this panel started: running programs still have the old settings
-    std::wstring logFile_;  // VGD_LOG, empty when off
+    std::wstring logFile_;  // VENERA_LOG, empty when off
     bool verbose_ = false;
     int levels_[kLevelCount] = {};
 };
@@ -148,8 +149,8 @@ private:
 void Settings::load()
 {
     driver_ = readPointer(pointer_);
-    logFile_ = readSetting(L"VGD_LOG");
-    verbose_ = readSetting(L"VGD_VERBOSE") == L"1";
+    logFile_ = readSetting(L"VENERA_LOG");
+    verbose_ = readSetting(L"VENERA_VERBOSE") == L"1";
     for (int i = 0; i < kLevelCount; i++)
         levels_[i] = readLevel(i);
 }
@@ -230,7 +231,7 @@ void Settings::click(int id)
         changed_ = true;
     } else if (id == kVerboseId) {
         verbose_ = !verbose_;
-        writeSetting(L"VGD_VERBOSE", verbose_ ? L"1" : L"");
+        writeSetting(L"VENERA_VERBOSE", verbose_ ? L"1" : L"");
         changed_ = true;
     } else if (id >= kLevelId && id < kLevelId + kLevelCount) {
         // The choices in a menu, as a ComboBox's dropdown, at the pointer.
@@ -261,10 +262,10 @@ std::vector<SettingLine> listSettings()
     if (readPointer(pointer))
         for (int i = 0; i < kPointerCount; i++)
             out.push_back({kPointer[i].cli, pointer[i] ? L"on" : L"off", L"on, off", kPointer[i].title});
-    std::wstring logFile = readSetting(L"VGD_LOG");
+    std::wstring logFile = readSetting(L"VENERA_LOG");
     out.push_back({L"log-file", logFile.empty() ? L"off" : L"on", L"on, off",
                    L"Log file" + (logFile.empty() ? std::wstring() : L", " + logFile)});
-    out.push_back({L"verbose", readSetting(L"VGD_VERBOSE") == L"1" ? L"on" : L"off", L"on, off", L"Verbose"});
+    out.push_back({L"verbose", readSetting(L"VENERA_VERBOSE") == L"1" ? L"on" : L"off", L"on, off", L"Verbose"});
     for (int i = 0; i < kLevelCount; i++) {
         std::wstring values;
         for (const auto& c : kLevels[i].choices)
@@ -294,7 +295,7 @@ std::wstring changeSetting(const std::wstring& name, const std::wstring& value, 
     if (name == L"log-file")
         writeLogFile(on);
     else if (name == L"verbose")
-        writeSetting(L"VGD_VERBOSE", on ? L"1" : L"");
+        writeSetting(L"VENERA_VERBOSE", on ? L"1" : L"");
     for (int i = 0; i < kLevelCount; i++)
         if (name == kLevels[i].cli)
             writeSetting(kLevels[i].name, value == L"default" ? L"" : value);

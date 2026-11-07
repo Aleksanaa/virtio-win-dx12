@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // The one source that sees DXVK's internal headers (dxvk_bridge.h). DXVK's D3D11 device is created as its own
-// d3d11.dll would create one (D3D11InternalCreateDevice, d3d11_main.cpp, which vgd3d11 does not link), on an
+// d3d11.dll would create one (D3D11InternalCreateDevice, d3d11_main.cpp, which venera_d3d11 does not link), on an
 // instance whose Vulkan entry point is the Venus ICD's.
 // DXVK's headers first: they enable the Win32 parts of the Vulkan headers before including them.
 #include "d3d11/d3d11_device.h"
@@ -23,18 +23,18 @@ util::md5::Digest hashDxbcBinary(const void* data, size_t size);
 namespace {
 
 // Before DXVK's logger below (initialization follows definition order in a source): the logger reads its level
-// when constructed. Without a configured log path DXVK would write <exe>_vgd3d11.log into the working directory of
+// when constructed. Without a configured log path DXVK would write <exe>_venera_d3d11.log into the working directory of
 // every process that loads us, DWM included; it logs only where one is configured.
-const bool g_settings = (vgd::umd::dxvk::init_settings(), true);
+const bool g_settings = (venera::umd::dxvk::init_settings(), true);
 
 } // namespace
 
 namespace dxvk {
 // What DXVK's d3d11.dll defines in d3d11_main.cpp.
-Logger Logger::s_instance("vgd3d11.log");
+Logger Logger::s_instance("venera_d3d11.log");
 } // namespace dxvk
 
-namespace vgd::umd::dxvk {
+namespace venera::umd::dxvk {
 
 using namespace ::dxvk;
 
@@ -84,7 +84,7 @@ HRESULT create_device(PFN_vkGetInstanceProcAddr gipa, D3D_FEATURE_LEVEL level, c
         Rc<DxvkInstance> inst = instance(gipa);
         Rc<DxvkAdapter> adapter = gpu(inst);
         if (adapter == nullptr) {
-            VGD_WARN("dxvk: no GPU adapter on the Venus ICD");
+            VENERA_WARN("dxvk: no GPU adapter on the Venus ICD");
             return DXGI_ERROR_UNSUPPORTED;
         }
         // Only those the GPU has: DXVK fails device creation over any extension it asks for in vain.
@@ -108,7 +108,7 @@ HRESULT create_device(PFN_vkGetInstanceProcAddr gipa, D3D_FEATURE_LEVEL level, c
         if (!level)
             level = max;
         if (level > max) {
-            VGD_WARN("dxvk: feature level 0x%x asked, the device has 0x%x", level, max);
+            VENERA_WARN("dxvk: feature level 0x%x asked, the device has 0x%x", level, max);
             return E_INVALIDARG;
         }
         // No DXGI adapter: this device is never handed to an application, and only its DXGI parent queries use it.
@@ -122,7 +122,7 @@ HRESULT create_device(PFN_vkGetInstanceProcAddr gipa, D3D_FEATURE_LEVEL level, c
         std::strncpy(handles->name, adapter->info().deviceName, sizeof(handles->name) - 1);
         return S_OK;
     } catch (const DxvkError& e) {
-        VGD_WARN("dxvk: device creation failed: %s", e.message().c_str());
+        VENERA_WARN("dxvk: device creation failed: %s", e.message().c_str());
         return E_FAIL;
     }
 }
@@ -223,4 +223,4 @@ void dxbc_checksum(const void* dxbc, size_t size, uint32_t checksum[4])
     std::memcpy(checksum, digest.data.data(), 16);
 }
 
-} // namespace vgd::umd::dxvk
+} // namespace venera::umd::dxvk

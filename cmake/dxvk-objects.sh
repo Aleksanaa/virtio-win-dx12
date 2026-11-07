@@ -1,8 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 # Builds what DXVK's d3d11.dll is linked from, without linking it: its static libraries and its object files, which
-# go into one archive for vgd3d11.dll. d3d11_main.cpp's object is left out: it holds the exported D3D11CreateDevice
-# family (and DXVK's logger instance, which vgd3d11 defines itself).
+# go into one archive for venera_d3d11.dll. d3d11_main.cpp's object is left out: it holds the exported D3D11CreateDevice
+# family (and DXVK's logger instance, which venera_d3d11 defines itself).
 #   dxvk-objects.sh <ninja> <ar> <meson build dir> <output archive> <static libraries...>
 set -eu
 ninja=$1 ar=$2 build=$3 out=$4

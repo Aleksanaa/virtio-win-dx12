@@ -6,8 +6,8 @@
 set(VKD3D_SRC "${CMAKE_SOURCE_DIR}/third_party/vkd3d-proton")
 set(VKD3D_BUILD "${CMAKE_BINARY_DIR}/vkd3d-proton")
 
-vgd_meson_cross_file("${VKD3D_BUILD}/cross.ini")
-vgd_meson_setup(vkd3d-proton "${VKD3D_SRC}" "${VKD3D_BUILD}/meson" "${VKD3D_BUILD}/cross.ini")
+venera_meson_cross_file("${VKD3D_BUILD}/cross.ini")
+venera_meson_setup(vkd3d-proton "${VKD3D_SRC}" "${VKD3D_BUILD}/meson" "${VKD3D_BUILD}/cross.ini")
 
 # Link order: users before what they use.
 set(VKD3D_LIBS
@@ -24,23 +24,23 @@ foreach(lib ${VKD3D_LIBS})
 endforeach()
 
 add_custom_target(vkd3d-proton-build
-  COMMAND "${VGD_NINJA}" -C "${VKD3D_BUILD}/meson" ${VKD3D_TARGETS}
+  COMMAND "${VENERA_NINJA}" -C "${VKD3D_BUILD}/meson" ${VKD3D_TARGETS}
   BYPRODUCTS ${VKD3D_LIBS}
   COMMENT "Building vkd3d-proton (meson)"
   USES_TERMINAL)
 
 # Two targets: the libraries (with the Windows libraries they need), and the headers, which only the C bridge into
 # vkd3d-proton includes (umd/src/vkd3d_bridge.c): its IDL-generated D3D12 headers clash with Microsoft's.
-add_library(vgd-vkd3d-proton INTERFACE)
-add_dependencies(vgd-vkd3d-proton vkd3d-proton-build)
+add_library(venera-vkd3d-proton INTERFACE)
+add_dependencies(venera-vkd3d-proton vkd3d-proton-build)
 # The archives reference each other (dxil-spirv's C API and dxbc-spirv), so the group resolves them in any order.
-target_link_libraries(vgd-vkd3d-proton INTERFACE
+target_link_libraries(venera-vkd3d-proton INTERFACE
     -Wl,--start-group ${VKD3D_LIBS} -Wl,--end-group
     version pathcch psapi ntdll gdi32)
 
-add_library(vgd-vkd3d-proton-headers INTERFACE)
-add_dependencies(vgd-vkd3d-proton-headers vkd3d-proton-build)
-target_include_directories(vgd-vkd3d-proton-headers SYSTEM INTERFACE
+add_library(venera-vkd3d-proton-headers INTERFACE)
+add_dependencies(venera-vkd3d-proton-headers vkd3d-proton-build)
+target_include_directories(venera-vkd3d-proton-headers SYSTEM INTERFACE
     "${VKD3D_SRC}/include"
     # The IDL headers (vkd3d_d3d12.h, ...): meson generates them for each target, vkd3d-common's are complete.
     "${VKD3D_BUILD}/meson/libs/vkd3d-common/libvkd3d_common.a.p"

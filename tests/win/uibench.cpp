@@ -25,7 +25,7 @@
 namespace {
 
 FILE* out = stdout;
-const wchar_t kClass[] = L"vgd-uibench";
+const wchar_t kClass[] = L"venera-uibench";
 
 uint64_t now_filetime()
 {
@@ -73,7 +73,7 @@ LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DeleteObject(brush);
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, RGB(255, 255, 255));
-        DrawTextW(dc, L"vgd uibench", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(dc, L"Venera uibench", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -82,7 +82,7 @@ LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 HWND make_window(int x, int y)
 {
-    HWND hwnd = CreateWindowExW(0, kClass, L"vgd uibench", WS_OVERLAPPEDWINDOW, x, y, 800, 500, nullptr, nullptr,
+    HWND hwnd = CreateWindowExW(0, kClass, L"Venera uibench", WS_OVERLAPPEDWINDOW, x, y, 800, 500, nullptr, nullptr,
                                 GetModuleHandleW(nullptr), nullptr);
     ShowWindow(hwnd, SW_SHOWNORMAL);
     SetForegroundWindow(hwnd);

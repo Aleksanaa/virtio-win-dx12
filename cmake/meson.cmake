@@ -3,20 +3,20 @@
 # ninja come from the dev shell. Each meson build is configured once in the build tree; every build runs its ninja,
 # which does nothing when nothing changed.
 
-find_program(VGD_MESON meson REQUIRED)
-find_program(VGD_NINJA ninja REQUIRED)
+find_program(VENERA_MESON meson REQUIRED)
+find_program(VENERA_NINJA ninja REQUIRED)
 
 # Writes a meson cross file for this build's MinGW compilers to `path`. GCC from nixpkgs uses the mcfgthread model,
 # whose headers and library live outside the wrapper's paths. Written only when it changes: meson rebuilds
 # everything when its cross file is touched.
-function(vgd_meson_cross_file path)
+function(venera_meson_cross_file path)
   set(c_args "")
   set(link_args "")
-  if(DEFINED ENV{VGD_MINGW_MCFG_INCLUDE})
-    set(c_args "'-isystem', '$ENV{VGD_MINGW_MCFG_INCLUDE}'")
+  if(DEFINED ENV{VENERA_MINGW_MCFG_INCLUDE})
+    set(c_args "'-isystem', '$ENV{VENERA_MINGW_MCFG_INCLUDE}'")
   endif()
-  if(DEFINED ENV{VGD_MINGW_MCFG_LIB})
-    set(link_args "'-L$ENV{VGD_MINGW_MCFG_LIB}'")
+  if(DEFINED ENV{VENERA_MINGW_MCFG_LIB})
+    set(link_args "'-L$ENV{VENERA_MINGW_MCFG_LIB}'")
   endif()
   file(CONFIGURE OUTPUT "${path}" @ONLY CONTENT "\
 [binaries]
@@ -44,10 +44,10 @@ endian = 'little'
 endfunction()
 
 # Configures the meson build of `src` in `build` (once) with the cross file at `cross` and extra options.
-function(vgd_meson_setup name src build cross)
+function(venera_meson_setup name src build cross)
   if(NOT EXISTS "${build}/build.ninja")
     execute_process(
-      COMMAND "${VGD_MESON}" setup "${build}" "${src}" --cross-file "${cross}" --buildtype=release -Db_ndebug=true
+      COMMAND "${VENERA_MESON}" setup "${build}" "${src}" --cross-file "${cross}" --buildtype=release -Db_ndebug=true
               ${ARGN}
       RESULT_VARIABLE result)
     if(NOT result EQUAL 0)

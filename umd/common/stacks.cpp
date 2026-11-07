@@ -12,7 +12,7 @@
 #include <cstdio>
 #include <cstring>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -206,4 +206,4 @@ void log_thread_stacks(const char* why)
     }
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

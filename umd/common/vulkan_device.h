@@ -10,7 +10,7 @@
 
 #include <vector>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 // Device extensions the engines have no use for, which the UMDs ask them to enable (when available) for images
 // shared with other processes.
@@ -28,13 +28,13 @@ struct VulkanDevice {
     bool drm_modifier = false;
 
     struct Fns {
-#define VGD_VK_FN(name) PFN_##name name = nullptr;
+#define VENERA_VK_FN(name) PFN_##name name = nullptr;
 #include "vulkan_fns.inc"
-#undef VGD_VK_FN
+#undef VENERA_VK_FN
     } vk;
 
     // Loads the functions for the engine's device and finds what it supports for sharing.
     HRESULT init(PFN_vkGetInstanceProcAddr gipa, VkInstance instance, VkPhysicalDevice physical, VkDevice device);
 };
 
-} // namespace vgd::umd
+} // namespace venera::umd

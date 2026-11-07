@@ -14,7 +14,7 @@
 
 #include <dxgiformat.h>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 // The exported memory of a surface being created, opened on our kernel device, and the allocation private data of a
 // runtime allocation aliasing it. The memory stays open until this is destroyed, past the AllocateCb that creates the
@@ -51,13 +51,13 @@ int import_fd(const char* what, KmtDevice* kmt, D3DKMT_HANDLE allocation,
 // which openers get back: what the surface is in API terms. It must stay smaller than the allocation's private data,
 // which the KMD reads instead of the larger of the two.
 struct SharedSurfaceInfo {
-    static constexpr ULONG kMagic = 0x53444756;   // "VGDS"
+    static constexpr ULONG kMagic = 0x53444756;   // "VENERAS"
     ULONG magic = kMagic;
     UINT format = 0;   // DXGI_FORMAT
     UINT width = 0, height = 0;
     UINT bind = 0;     // D3D11_BIND_FLAG
 
-    // The D3D11_BIND_FLAG values both UMDs use (vgd3d12 does not see the D3D11 headers).
+    // The D3D11_BIND_FLAG values both UMDs use (venera_d3d12 does not see the D3D11 headers).
     static constexpr UINT kBindShaderResource = 0x8, kBindRenderTarget = 0x20;
 };
 static_assert(sizeof(SharedSurfaceInfo) < sizeof(viogpu::AllocationAlias));
@@ -105,4 +105,4 @@ inline DXGI_FORMAT dxgi_format(ULONG format, DXGI_FORMAT* srgb)
     }
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

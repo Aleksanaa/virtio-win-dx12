@@ -9,7 +9,7 @@
 
 #include <memory>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 class SharedImage {
 public:
@@ -40,4 +40,4 @@ private:
     Com<ID3D12Resource> resource_;   // borrows image_: declared after it, so released first
 };
 
-} // namespace vgd::umd
+} // namespace venera::umd

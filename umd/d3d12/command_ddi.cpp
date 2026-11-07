@@ -16,11 +16,11 @@
 #include <new>
 #include <vector>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 void CommandListObject::error(HRESULT hr) const
 {
-    VGD_WARN("command list error 0x%08lx", hr);
+    VENERA_WARN("command list error 0x%08lx", hr);
     device->um_callbacks->pfnSetCommandListErrorCb(rt, hr);
 }
 
@@ -122,7 +122,7 @@ HRESULT APIENTRY create_command_list(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREAT
 {
     D3D12_COMMAND_LIST_TYPE type = D3D12_COMMAND_LIST_TYPE_BUNDLE;
     if (args->Type != D3D12DDI_COMMAND_LIST_TYPE_BUNDLE && !queue_type(args->QueueFlags, &type)) {
-        VGD_WARN("CreateCommandList: unsupported queue flags 0x%x", static_cast<unsigned>(args->QueueFlags));
+        VENERA_WARN("CreateCommandList: unsupported queue flags 0x%x", static_cast<unsigned>(args->QueueFlags));
         return E_OUTOFMEMORY;
     }
     Device* d = Device::from(h);
@@ -131,7 +131,7 @@ HRESULT APIENTRY create_command_list(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREAT
     const CommandListTables& tables = *d->command_list_tables;
     const UINT index = type == D3D12_COMMAND_LIST_TYPE_DIRECT && tables.count > 1 ? 1 : 0;
     if (!tables.count || !tables.rt[index].handle) {
-        VGD_WARN("CreateCommandList: the runtime filled no command list table");
+        VENERA_WARN("CreateCommandList: the runtime filled no command list table");
         return E_OUTOFMEMORY;
     }
     d->um_callbacks->pfnSetCommandListDDITableCb(rt, tables.rt[index]);
@@ -141,7 +141,7 @@ HRESULT APIENTRY create_command_list(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREAT
                                                        __uuidof(ID3D12GraphicsCommandList), obj->list.put_void())
                          : E_NOINTERFACE;
     if (FAILED(hr)) {
-        VGD_WARN("CreateCommandList: type %d failed: 0x%08lx", static_cast<int>(type), hr);
+        VENERA_WARN("CreateCommandList: type %d failed: 0x%08lx", static_cast<int>(type), hr);
         obj->~CommandListObject();
         return E_OUTOFMEMORY;
     }
@@ -179,7 +179,7 @@ void APIENTRY reset_command_list(D3D12DDI_HCOMMANDLIST hl, const D3D12DDIARG_RES
     l.present_only = false;
     auto* rec = object<CommandRecorderObject>(args->hDrvCommandRecorder);
     if (!rec->pool) {
-        VGD_WARN("ResetCommandList: recorder has no target pool");
+        VENERA_WARN("ResetCommandList: recorder has no target pool");
         l.error(E_INVALIDARG);
         return;
     }
@@ -247,7 +247,7 @@ bool copy_location(const D3D12DDIARG_BUFFER_PLACEMENT& placement, const D3D12DDI
         return true;
     }
     default:
-        VGD_WARN("CopyTextureRegion: resource layout %d not supported", static_cast<int>(layout.Layout));
+        VENERA_WARN("CopyTextureRegion: resource layout %d not supported", static_cast<int>(layout.Layout));
         return false;
     }
 }
@@ -588,7 +588,7 @@ HRESULT APIENTRY create_command_queue(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREA
 {
     D3D12_COMMAND_QUEUE_DESC desc{};
     if (!queue_type(args->QueueFlags, &desc.Type)) {
-        VGD_WARN("CreateCommandQueue: unsupported queue flags 0x%x", static_cast<unsigned>(args->QueueFlags));
+        VENERA_WARN("CreateCommandQueue: unsupported queue flags 0x%x", static_cast<unsigned>(args->QueueFlags));
         return E_OUTOFMEMORY;
     }
     desc.NodeMask = args->NodeMask;
@@ -709,4 +709,4 @@ void fill_command_queue_ddi(D3D12DDI_COMMAND_QUEUE_FUNCS_CORE_0001& t)
     t.pfnExecuteCommandLists = execute_command_lists;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // The window: a NavigationView (pages on the left, the current page on a layer with a rounded top-left corner) with
 // WinUI's ScrollBar, a dark title bar, and per-monitor DPI. With a command it runs that instead (cli.cpp).
-//   vgd-panel.exe [/page N]
+//   venera-panel.exe [/page N]
 #include "panel.h"
 
 #include <windowsx.h>
@@ -586,12 +586,12 @@ int Window::run(HINSTANCE inst, int show, int page)
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-    wc.lpszClassName = L"vgd-panel";
+    wc.lpszClassName = L"venera-panel";
     RegisterClassExW(&wc);
     UINT dpi = GetDpiForSystem();
     RECT r = {0, 0, MulDiv(1180, dpi, 96), MulDiv(760, dpi, 96)};
     AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
-    hwnd_ = CreateWindowExW(0, wc.lpszClassName, L"vgd Control Panel", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+    hwnd_ = CreateWindowExW(0, wc.lpszClassName, L"Venera Control Panel", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                             CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
     if (!hwnd_)
         return 1;

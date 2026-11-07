@@ -177,7 +177,7 @@ std::vector<InfoSection> describe(const SystemInfo& info, const ProbeResult* pro
 
 std::wstring reportText(const std::vector<InfoSection>& sections)
 {
-    std::wstring text = L"vgd system information\r\n";
+    std::wstring text = L"Venera system information\r\n";
     for (const InfoSection& s : sections) {
         text += L"\r\n" + s.title + L"\r\n";
         for (const InfoRow& r : s.rows)

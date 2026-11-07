@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// The frame rate overlay (vgd-panel /fps): an always-on-top, click-through card in the screen's top-left corner with
+// The frame rate overlay (venera-panel /fps): an always-on-top, click-through card in the screen's top-left corner with
 // what the screen really shows: flips per second (frames that reached the display), VSyncs per second, the longest
 // gap between flips in the last second (which catches the hitches an average hides), and mouse reports per second (a
 // dragged window moves only as often as they arrive). Flips and VSyncs are dxgkrnl's MMIOFlip and VSyncDPC events
@@ -43,7 +43,7 @@ struct EventIdFilter {
     USHORT count;
     USHORT events[1];
 };
-constexpr wchar_t kSession[] = L"vgd-fps-overlay", kClass[] = L"vgd-fps-overlay";
+constexpr wchar_t kSession[] = L"venera-fps-overlay", kClass[] = L"venera-fps-overlay";
 constexpr int kHotkey = 1;
 // The card, in DIPs: columns of a value over its label, each as wide as the widest it shows, the same space between
 // them and at the sides; below a line, a row for each program that presents, the busiest first.

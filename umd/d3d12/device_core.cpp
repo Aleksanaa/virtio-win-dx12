@@ -10,7 +10,7 @@
 #include <cstddef>
 #include <new>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -71,7 +71,7 @@ UINT format_support(ID3D12Device* d, DXGI_FORMAT format)
 void APIENTRY check_format_support(D3D12DDI_HDEVICE h, DXGI_FORMAT format, UINT* support)
 {
     *support = format_support(Device::from(h)->d3d, format);
-    VGD_VERBOSE("CheckFormatSupport format=%d -> 0x%x", static_cast<int>(format), *support);
+    VENERA_VERBOSE("CheckFormatSupport format=%d -> 0x%x", static_cast<int>(format), *support);
 }
 
 // The plane views of depth/stencil formats: sampled, never attachments.
@@ -103,7 +103,7 @@ bool known_format(DXGI_FORMAT f)
     case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
     case DXGI_FORMAT_R16_TYPELESS:
     case DXGI_FORMAT_D16_UNORM: return true;
-    default: return vgd_vkd3d_vk_format(f) != VK_FORMAT_UNDEFINED;
+    default: return venera_vkd3d_vk_format(f) != VK_FORMAT_UNDEFINED;
     }
 }
 
@@ -120,8 +120,8 @@ void APIENTRY check_multisample_quality_levels(D3D12DDI_HDEVICE h, DXGI_FORMAT f
         (samples > 1 && depth_stencil_view(format)))
         q.NumQualityLevels = 0;
     *levels = q.NumQualityLevels;
-    VGD_VERBOSE("CheckMultisampleQualityLevels format=%d samples=%u flags=%d -> %u", static_cast<int>(format), samples,
-                static_cast<int>(flags), *levels);
+    VENERA_VERBOSE("CheckMultisampleQualityLevels format=%d samples=%u flags=%d -> %u", static_cast<int>(format),
+                   samples, static_cast<int>(flags), *levels);
 }
 
 // One physical adapter, one node: the mask is bit 0 and the node map names physical adapter 0.
@@ -134,7 +134,7 @@ void APIENTRY query_node_map(D3D12DDI_HDEVICE, UINT count, UINT* map)
 {
     for (UINT i = 0; i < count; i++)
         map[i] = i == 0 ? 0 : D3D12DDI_NODE_MAP_HIDE_NODE;
-    VGD_TRACE("QueryNodeMap count=%u", count);
+    VENERA_TRACE("QueryNodeMap count=%u", count);
 }
 
 UINT APIENTRY get_descriptor_size_in_bytes(D3D12DDI_HDEVICE h, D3D12DDI_DESCRIPTOR_HEAP_TYPE type)
@@ -164,18 +164,18 @@ void APIENTRY implicit_shader_cache_control(D3D12DDI_HDEVICE, D3D12DDI_IMPLICIT_
 // --- Root signatures ---------------------------------------------------------------------------------------
 // The DDI's root signature 1.1 structs are the API's D3D12_*1 structs field for field; vkd3d-proton takes the API
 // form, serialized.
-#define VGD_SAME_LAYOUT(ddi, api, ...)                                                                        \
+#define VENERA_SAME_LAYOUT(ddi, api, ...)                                                                        \
     static_assert(sizeof(ddi) == sizeof(api) && offsetof(ddi, __VA_ARGS__) == offsetof(api, __VA_ARGS__),   \
                   #ddi " must match " #api)
-VGD_SAME_LAYOUT(D3D12DDI_ROOT_SIGNATURE_0013, D3D12_ROOT_SIGNATURE_DESC1, pStaticSamplers);
-VGD_SAME_LAYOUT(D3D12DDI_ROOT_SIGNATURE_0013, D3D12_ROOT_SIGNATURE_DESC1, Flags);
-VGD_SAME_LAYOUT(D3D12DDI_ROOT_PARAMETER_0013, D3D12_ROOT_PARAMETER1, DescriptorTable);
-VGD_SAME_LAYOUT(D3D12DDI_ROOT_PARAMETER_0013, D3D12_ROOT_PARAMETER1, ShaderVisibility);
-VGD_SAME_LAYOUT(D3D12DDI_DESCRIPTOR_RANGE_0013, D3D12_DESCRIPTOR_RANGE1, OffsetInDescriptorsFromTableStart);
-VGD_SAME_LAYOUT(D3D12DDI_ROOT_DESCRIPTOR_0013, D3D12_ROOT_DESCRIPTOR1, Flags);
-VGD_SAME_LAYOUT(D3D12DDI_ROOT_CONSTANTS, D3D12_ROOT_CONSTANTS, Num32BitValues);
-VGD_SAME_LAYOUT(D3D12DDI_STATIC_SAMPLER, D3D12_STATIC_SAMPLER_DESC, ShaderVisibility);
-#undef VGD_SAME_LAYOUT
+VENERA_SAME_LAYOUT(D3D12DDI_ROOT_SIGNATURE_0013, D3D12_ROOT_SIGNATURE_DESC1, pStaticSamplers);
+VENERA_SAME_LAYOUT(D3D12DDI_ROOT_SIGNATURE_0013, D3D12_ROOT_SIGNATURE_DESC1, Flags);
+VENERA_SAME_LAYOUT(D3D12DDI_ROOT_PARAMETER_0013, D3D12_ROOT_PARAMETER1, DescriptorTable);
+VENERA_SAME_LAYOUT(D3D12DDI_ROOT_PARAMETER_0013, D3D12_ROOT_PARAMETER1, ShaderVisibility);
+VENERA_SAME_LAYOUT(D3D12DDI_DESCRIPTOR_RANGE_0013, D3D12_DESCRIPTOR_RANGE1, OffsetInDescriptorsFromTableStart);
+VENERA_SAME_LAYOUT(D3D12DDI_ROOT_DESCRIPTOR_0013, D3D12_ROOT_DESCRIPTOR1, Flags);
+VENERA_SAME_LAYOUT(D3D12DDI_ROOT_CONSTANTS, D3D12_ROOT_CONSTANTS, Num32BitValues);
+VENERA_SAME_LAYOUT(D3D12DDI_STATIC_SAMPLER, D3D12_STATIC_SAMPLER_DESC, ShaderVisibility);
+#undef VENERA_SAME_LAYOUT
 
 SIZE_T APIENTRY calc_private_root_signature_size(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATE_ROOT_SIGNATURE_0013*)
 {
@@ -191,13 +191,13 @@ HRESULT APIENTRY create_root_signature(D3D12DDI_HDEVICE h, const D3D12DDIARG_CRE
         D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc{D3D_ROOT_SIGNATURE_VERSION_1_1};
         desc.Desc_1_1 = *reinterpret_cast<const D3D12_ROOT_SIGNATURE_DESC1*>(args->pRootSignature_1_1);
         Com<ID3DBlob> blob;
-        hr = vgd_vkd3d_serialize_root_signature(&desc, blob.put_void());
+        hr = venera_vkd3d_serialize_root_signature(&desc, blob.put_void());
         if (SUCCEEDED(hr))
             hr = Device::from(h)->d3d->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(),
                                                            __uuidof(ID3D12RootSignature), obj->rs.put_void());
     }
     if (FAILED(hr)) {
-        VGD_WARN("CreateRootSignature version=%d failed: 0x%08lx", static_cast<int>(args->Version), hr);
+        VENERA_WARN("CreateRootSignature version=%d failed: 0x%08lx", static_cast<int>(args->Version), hr);
         obj->~RootSignatureObject();
         return E_OUTOFMEMORY;   // creation DDIs may only report E_OUTOFMEMORY (or device removed)
     }
@@ -248,4 +248,4 @@ void fill_device_core(D3D12DDI_DEVICE_FUNCS_CORE_0088& t)
     fill_indirect_ddi(t);
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

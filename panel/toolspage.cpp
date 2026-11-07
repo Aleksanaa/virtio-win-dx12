@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-// Tools. The frame rate overlay runs as vgd-panel /fps (fpsoverlay.cpp), a process of its own with administrator
+// Tools. The frame rate overlay runs as venera-panel /fps (fpsoverlay.cpp), a process of its own with administrator
 // rights, which outlives the panel; the toggle follows its window, also when Ctrl+Alt+F closed it. Troubleshooting:
-// opening an issue on GitHub, and restarting the Desktop Window Manager (through vgd-panel /restart-dwm and UAC when
+// opening an issue on GitHub, and restarting the Desktop Window Manager (through venera-panel /restart-dwm and UAC when
 // this panel runs without administrator rights).
 #include "panel.h"
 
@@ -16,7 +16,7 @@ namespace {
 constexpr float kCardH = 68, kGap = 4;
 constexpr UINT_PTR kWatchTimer = kPageTimer + 1;
 
-constexpr wchar_t kNewIssue[] = L"https://github.com/Aleksanaa/virtio-win-dx12/issues/new";
+constexpr wchar_t kNewIssue[] = L"https://github.com/Aleksanaa/venera/issues/new";
 
 class Tools : public Page {
 public:
@@ -80,7 +80,7 @@ void Tools::click(int id)
     }
 }
 
-// vgd-panel with `args`, through UAC when this panel runs without administrator rights; its process, or null.
+// venera-panel with `args`, through UAC when this panel runs without administrator rights; its process, or null.
 HANDLE Tools::runSelf(const wchar_t* args)
 {
     wchar_t self[MAX_PATH];

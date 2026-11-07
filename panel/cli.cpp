@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
-// The command line: vgd-panel.exe with a command prints instead of opening the window. Options start with /, - or --.
-// The exe is a GUI program, which consoles do not wait for; vgd-panel.com (shim.c) is the console program a shell
+// The command line: venera-panel.exe with a command prints instead of opening the window. Options start with /, -
+// or --.
+// The exe is a GUI program, which consoles do not wait for; venera-panel.com (shim.c) is the console program a shell
 // finds first, and runs the exe with its own console and handles.
 #include "panel.h"
 
@@ -14,9 +15,9 @@ namespace {
 constexpr DWORD kProbeTimeoutMs = 20000;
 
 const wchar_t kHelp[] =
-    L"vgd Control Panel\n"
+    L"Venera Control Panel\n"
     L"\n"
-    L"Usage: vgd-panel [command]\n"
+    L"Usage: venera-panel [command]\n"
     L"\n"
     L"  (none)     Open the control panel.\n"
     L"  /info      Print the system report: the driver, the host, the guest with its displays, and\n"
@@ -73,7 +74,7 @@ public:
         DWORD type = handle_ && handle_ != INVALID_HANDLE_VALUE ? GetFileType(handle_) : FILE_TYPE_UNKNOWN;
         if (type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE)
             return;
-        // A console: the one of the program that started this one (vgd-panel.com, or a shell when run as the .exe).
+        // A console: the one of the program that started this one (venera-panel.com, or a shell when run as the .exe).
         if (AttachConsole(ATTACH_PARENT_PROCESS) || GetLastError() == ERROR_ACCESS_DENIED /* already attached */)
             handle_ = CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                   0, nullptr);

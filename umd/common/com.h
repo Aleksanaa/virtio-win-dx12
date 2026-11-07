@@ -6,7 +6,7 @@
 
 #include <utility>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 template <class T>
 class Com {
@@ -62,4 +62,4 @@ private:
     T* p_ = nullptr;
 };
 
-} // namespace vgd::umd
+} // namespace venera::umd

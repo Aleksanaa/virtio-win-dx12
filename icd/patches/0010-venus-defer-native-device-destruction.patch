@@ -1,4 +1,4 @@
-From: vgd3d12
+From: venera_d3d12
 Subject: venus: keep blocking device destruction off the primary ring
 
 Keep native device destruction on a separate protocol ring.

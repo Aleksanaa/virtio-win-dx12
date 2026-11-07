@@ -2175,7 +2175,7 @@ bool run()
 
 TestGroup d3d12Tests()
 {
-    return {"d3d12", L"Direct3D 12", L"vgd's D3D12 driver on vkd3d-proton", {
+    return {"d3d12", L"Direct3D 12", L"Venera's D3D12 driver on vkd3d-proton", {
         {"device", L"Device", L"Creates a device and reads its shader model", run<device_test>},
         {"copy", L"Buffer copy", L"Upload, default and readback buffers through a fence", run<copy_test>},
         {"triangle", L"Triangle", L"Shaders, root constants and a vertex buffer, off screen", run<triangle_test>},

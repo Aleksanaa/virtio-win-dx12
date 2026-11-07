@@ -13,7 +13,7 @@
 // vkd3d-shader's container checksum (libs/vkd3d-shader/checksum.c), the MD5 variant fxc writes.
 extern "C" void vkd3d_compute_dxbc_checksum(const void* dxbc, size_t size, uint32_t checksum[4]);
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -49,7 +49,7 @@ void create(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_SHADER_0026& args, cons
     auto* obj = new (hs.pDrvPrivate) ShaderObject;
     if (FAILED(build_shader_container(args.pShaderCode, signatures, vkd3d_compute_dxbc_checksum, &obj->container))) {
         const UINT* c = args.pShaderCode;
-        VGD_WARN("CreateShader: unrecognized code, first words %08x %08x %08x %08x", c[0], c[1], c[2], c[3]);
+        VENERA_WARN("CreateShader: unrecognized code, first words %08x %08x %08x %08x", c[0], c[1], c[2], c[3]);
         Device::from(h)->set_error(E_OUTOFMEMORY);
     }
 }
@@ -366,7 +366,7 @@ HRESULT APIENTRY create_pipeline_state(D3D12DDI_HDEVICE h, const D3D12DDIARG_CRE
         hr = d->d3d2->CreatePipelineState(&desc, __uuidof(ID3D12PipelineState), obj->pso.put_void());
     }
     if (FAILED(hr)) {
-        VGD_WARN("CreatePipelineState (%s) failed: 0x%08lx", a->hComputeShader.pDrvPrivate ? "compute" : "graphics", hr);
+        VENERA_WARN("CreatePipelineState (%s) failed: 0x%08lx", a->hComputeShader.pDrvPrivate ? "compute" : "graphics", hr);
         obj->~PipelineStateObject();
         return E_OUTOFMEMORY;   // creation DDIs may only report E_OUTOFMEMORY (or device removed)
     }
@@ -386,7 +386,7 @@ void APIENTRY destroy_pipeline_state(D3D12DDI_HDEVICE, D3D12DDI_HPIPELINESTATE h
 
 struct PipelineLibraryObject {};
 
-constexpr char kLibraryHeader[16] = "vgd3d12 pplib 1";
+constexpr char kLibraryHeader[16] = "venera pplib 1";
 
 SIZE_T APIENTRY calc_private_pipeline_library_size(D3D12DDI_HDEVICE, const D3D12DDIARG_CREATE_PIPELINE_LIBRARY_0010*)
 {
@@ -463,4 +463,4 @@ void fill_pipeline_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& t)
     t.pfnDestroyPipelineState = destroy_pipeline_state;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
-# Run by the build (setup/CMakeLists.txt): stamps pkg/vgd.inf with the version and the build, packs it with the files
+# Run by the build (setup/CMakeLists.txt): stamps pkg/venera.inf with the version and the build, packs it with the files
 # it lists into payload.cab, and writes payload.rc, which puts the cabinet, the version and Windows' version
-# information into vgd-setup.exe.
+# information into venera-setup.exe.
 #   cmake -DSOURCE_DIR= -DOUT_DIR= -DVERSION=x.y.z -DGIT= -DGCAB= -DFILES=a;b -P payload.cmake
 #
 # The version is VERSION (the project's), the commit count, so each commit on main ranks above the one before it, and
@@ -28,16 +28,16 @@ string(TIMESTAMP now "%Y-%m-%dT%H:%M:%SZ" UTC)
 set(pkg "${OUT_DIR}/package")
 file(REMOVE_RECURSE "${pkg}")
 file(MAKE_DIRECTORY "${pkg}")
-file(READ "${SOURCE_DIR}/pkg/vgd.inf" inf)
+file(READ "${SOURCE_DIR}/pkg/venera.inf" inf)
 string(REPLACE "\r" "" inf "${inf}")
 string(REGEX REPLACE "\nDriverVer *=[^\n]*" "\n; Built from ${describe} at ${now}.\nDriverVer   = ${date},${number}"
        stamped "${inf}")
 if(stamped STREQUAL inf)
-  message(FATAL_ERROR "pkg/vgd.inf has no DriverVer line")
+  message(FATAL_ERROR "pkg/venera.inf has no DriverVer line")
 endif()
 string(REPLACE "\n" "\r\n" stamped "${stamped}")
-file(WRITE "${pkg}/vgd.inf" "${stamped}")
-set(names vgd.inf)
+file(WRITE "${pkg}/venera.inf" "${stamped}")
+set(names venera.inf)
 foreach(f IN LISTS FILES)
   get_filename_component(name "${f}" NAME)
   file(COPY_FILE "${f}" "${pkg}/${name}")
@@ -71,12 +71,12 @@ BEGIN
   BEGIN
     BLOCK \"040904B0\"
     BEGIN
-      VALUE \"CompanyName\", \"vgd project\"
-      VALUE \"FileDescription\", \"vgd Setup\"
+      VALUE \"CompanyName\", \"Venera project\"
+      VALUE \"FileDescription\", \"Venera Setup\"
       VALUE \"FileVersion\", \"${version}\"
-      VALUE \"ProductName\", \"vgd\"
+      VALUE \"ProductName\", \"Venera\"
       VALUE \"ProductVersion\", \"${version} (${describe})\"
-      VALUE \"OriginalFilename\", \"vgd-setup.exe\"
+      VALUE \"OriginalFilename\", \"venera-setup.exe\"
     END
   END
   BLOCK \"VarFileInfo\"

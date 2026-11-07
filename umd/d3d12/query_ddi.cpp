@@ -6,7 +6,7 @@
 
 #include <new>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -22,7 +22,8 @@ HRESULT APIENTRY create_query_heap(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_
     const D3D12_QUERY_HEAP_DESC desc{static_cast<D3D12_QUERY_HEAP_TYPE>(args->Type), args->Count, args->NodeMask};
     HRESULT hr = Device::from(h)->d3d->CreateQueryHeap(&desc, __uuidof(ID3D12QueryHeap), obj->heap.put_void());
     if (FAILED(hr)) {
-        VGD_WARN("CreateQueryHeap: type %d, %u queries failed: 0x%08lx", static_cast<int>(args->Type), args->Count, hr);
+        VENERA_WARN("CreateQueryHeap: type %d, %u queries failed: 0x%08lx", static_cast<int>(args->Type), args->Count,
+                    hr);
         obj->~QueryHeapObject();
         return E_OUTOFMEMORY;
     }
@@ -76,4 +77,4 @@ void fill_query_list_ddi(D3D12DDI_COMMAND_LIST_FUNCS_3D_0092& t)
     t.pfnResolveQueryData = resolve_query_data;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

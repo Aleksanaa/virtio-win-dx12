@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-// vgd-panel.com: the console face of vgd-panel.exe. A shell looks for .com before .exe, so `vgd-panel /info` runs this
-// console program, which runs the exe beside it with the same arguments, its console and handles, waits, and returns
-// its exit code; a GUI program alone would leave the shell's prompt back before its output. Without arguments (the
-// window) it starts the exe and returns at once.
+// venera-panel.com: the console face of venera-panel.exe. A shell looks for .com before .exe, so `venera-panel /info`
+// runs this console program, which runs the exe beside it with the same arguments, its console and handles, waits, and
+// returns its exit code; a GUI program alone would leave the shell's prompt back before its output. Without arguments
+// (the window) it starts the exe and returns at once.
 #include <windows.h>
 
 #include <wchar.h>

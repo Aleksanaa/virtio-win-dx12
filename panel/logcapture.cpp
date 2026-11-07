@@ -23,7 +23,7 @@ namespace {
 // wmiguid.h's DbgPrintGuid: the class of the kernel's DbgPrint events. Their data is ComponentId, Level (ULONGs),
 // then the message (ANSI).
 constexpr GUID kDbgPrintGuid = {0x13976d09, 0xa327, 0x438c, {0x95, 0x0b, 0x7f, 0x03, 0x19, 0x28, 0x15, 0xc7}};
-constexpr wchar_t kSessionName[] = L"vgd-panel kernel messages";
+constexpr wchar_t kSessionName[] = L"venera-panel kernel messages";
 
 std::wstring fromAnsi(const char* s, size_t n)
 {
@@ -32,7 +32,7 @@ std::wstring fromAnsi(const char* s, size_t n)
     return w;
 }
 
-// "vgd3d12[4120:4188] W body" after the UMDs' time stamp (umd/common/log.cpp), or Mesa's "MESA: warning: body":
+// "venera_d3d12[4120:4188] W body" after the UMDs' time stamp (umd/common/log.cpp), or Mesa's "MESA: warning: body":
 // the component and the level, and the body left in `text`.
 void parseDriverLine(LogLine& l)
 {

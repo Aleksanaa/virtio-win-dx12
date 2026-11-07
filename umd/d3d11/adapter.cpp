@@ -11,7 +11,7 @@
 #include <cstring>
 #include <iterator>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -41,7 +41,7 @@ struct Adapter {
         HRESULT hr = dxvk::create_device(gipa, D3D_FEATURE_LEVEL(0), kSharingExtensions, std::size(kSharingExtensions),
                                          probe.put(), &probe_handles);
         if (FAILED(hr)) {
-            VGD_WARN("OpenAdapter10_2: no DXVK device on the Venus ICD: 0x%08lx", hr);
+            VENERA_WARN("OpenAdapter10_2: no DXVK device on the Venus ICD: 0x%08lx", hr);
             return hr;
         }
         max_level = probe->GetFeatureLevel();
@@ -49,7 +49,7 @@ struct Adapter {
         probe->CheckFeatureSupport(D3D11_FEATURE_D3D10_X_HARDWARE_OPTIONS, &compute_4x, sizeof(compute_4x));
         probe->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof(options));
         probe->CheckFeatureSupport(D3D11_FEATURE_SHADER_MIN_PRECISION_SUPPORT, &min_precision, sizeof(min_precision));
-        VGD_TRACE("adapter: DXVK on %s, feature level 0x%x", probe_handles.name, max_level);
+        VENERA_TRACE("adapter: DXVK on %s, feature level 0x%x", probe_handles.name, max_level);
         return S_OK;
     }
 };
@@ -71,8 +71,8 @@ D3D_FEATURE_LEVEL feature_level(D3D11DDI_3DPIPELINELEVEL level)
 
 SIZE_T APIENTRY calc_private_device_size(D3D10DDI_HADAPTER, const D3D10DDIARG_CALCPRIVATEDEVICESIZE* args)
 {
-    VGD_TRACE("CalcPrivateDeviceSize interface=0x%x version=0x%x flags=0x%x", args->Interface, args->Version,
-              args->Flags);
+    VENERA_TRACE("CalcPrivateDeviceSize interface=0x%x version=0x%x flags=0x%x", args->Interface, args->Version,
+                 args->Flags);
     return sizeof(Device);
 }
 
@@ -83,10 +83,10 @@ HRESULT APIENTRY create_device_ddi(D3D10DDI_HADAPTER h, D3D10DDIARG_CREATEDEVICE
     if (FAILED(hr))
         return hr;
     const D3D_FEATURE_LEVEL level = feature_level(D3D11DDI_EXTRACT_3DPIPELINELEVEL_FROM_FLAGS(args->Flags));
-    VGD_TRACE("CreateDevice interface=0x%x version=0x%x flags=0x%x: feature level 0x%x", args->Interface,
-              args->Version, args->Flags, level);
+    VENERA_TRACE("CreateDevice interface=0x%x version=0x%x flags=0x%x: feature level 0x%x", args->Interface,
+                 args->Version, args->Flags, level);
     if (args->Interface != D3D11_1_DDI_INTERFACE_VERSION || !level || level > a->max_level) {
-        VGD_WARN("CreateDevice: interface 0x%x at feature level 0x%x not offered", args->Interface, level);
+        VENERA_WARN("CreateDevice: interface 0x%x at feature level 0x%x not offered", args->Interface, level);
         return E_INVALIDARG;
     }
     Com<ID3D11Device5> d3d;
@@ -105,7 +105,7 @@ HRESULT APIENTRY create_device_ddi(D3D10DDI_HADAPTER h, D3D10DDIARG_CREATEDEVICE
 
 HRESULT APIENTRY close_adapter(D3D10DDI_HADAPTER h)
 {
-    VGD_TRACE("CloseAdapter");
+    VENERA_TRACE("CloseAdapter");
     delete Adapter::from(h);
     // The Vulkan instance owns WSI state. Release it before DLL teardown.
     dxvk::release_instance_cache();
@@ -177,8 +177,8 @@ HRESULT APIENTRY get_caps(D3D10DDI_HADAPTER h, const D3D10_2DDIARG_GETCAPS* args
         }
         break;
     default:
-        VGD_TRACE("GetCaps type %d (%u bytes): not ours, answered with zeros", static_cast<int>(args->Type),
-                  args->DataSize);
+        VENERA_TRACE("GetCaps type %d (%u bytes): not ours, answered with zeros", static_cast<int>(args->Type),
+                     args->DataSize);
         break;
     }
     return S_OK;
@@ -186,15 +186,15 @@ HRESULT APIENTRY get_caps(D3D10DDI_HADAPTER h, const D3D10_2DDIARG_GETCAPS* args
 
 } // namespace
 
-} // namespace vgd::umd
+} // namespace venera::umd
 
 extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter10_2(D3D10DDIARG_OPENADAPTER* args)
 {
-    using namespace vgd::umd;
-    log_init("vgd3d11");
+    using namespace venera::umd;
+    log_init("venera_d3d11");
     if (!args || !args->pAdapterCallbacks || !args->pAdapterFuncs_2)
         return E_INVALIDARG;
-    VGD_TRACE("OpenAdapter10_2 interface=0x%x version=0x%x", args->Interface, args->Version);
+    VENERA_TRACE("OpenAdapter10_2 interface=0x%x version=0x%x", args->Interface, args->Version);
 
     auto* adapter = new (std::nothrow) Adapter;
     if (!adapter)
@@ -207,10 +207,10 @@ extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter10_2(D3D10DDIARG_OP
     query.pPrivateDriverData = &adapter->info;
     query.PrivateDriverDataSize = sizeof(adapter->info);
     HRESULT hr = adapter->callbacks.pfnQueryAdapterInfoCb(args->hRTAdapter.handle, &query);
-    if (FAILED(hr) || adapter->info.IamVioGPU != vgd::viogpu::kIam ||
-        !(adapter->info.SupportedCapsetIDs & (1ull << vgd::viogpu::kCapsetVenus))) {
-        VGD_WARN("OpenAdapter10_2: not a viogpu adapter with Venus (hr=0x%08lx iam=0x%llx capsets=0x%llx)", hr,
-                 adapter->info.IamVioGPU, adapter->info.SupportedCapsetIDs);
+    if (FAILED(hr) || adapter->info.IamVioGPU != venera::viogpu::kIam ||
+        !(adapter->info.SupportedCapsetIDs & (1ull << venera::viogpu::kCapsetVenus))) {
+        VENERA_WARN("OpenAdapter10_2: not a viogpu adapter with Venus (hr=0x%08lx iam=0x%llx capsets=0x%llx)", hr,
+                    adapter->info.IamVioGPU, adapter->info.SupportedCapsetIDs);
         delete adapter;
         return DXGI_ERROR_UNSUPPORTED;
     }
@@ -229,6 +229,6 @@ extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter10_2(D3D10DDIARG_OP
 BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
-        vgd::umd::pin_module(self);
+        venera::umd::pin_module(self);
     return TRUE;
 }

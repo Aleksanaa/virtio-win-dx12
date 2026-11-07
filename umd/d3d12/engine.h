@@ -13,7 +13,7 @@
 #include <mutex>
 #include <string>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 struct Engine {
     Com<ID3D12Device> device;
@@ -35,4 +35,4 @@ private:
     VkFence fence_ = VK_NULL_HANDLE;
 };
 
-} // namespace vgd::umd
+} // namespace venera::umd

@@ -439,7 +439,7 @@ void Tests::drawGroup(Ui& ui, int g, float x, float w, float& y)
 std::wstring Tests::results() const
 {
     int passed, failed;
-    std::wstring text = L"vgd tests: " + summary(&passed, &failed) + L"\r\n";
+    std::wstring text = L"Venera tests: " + summary(&passed, &failed) + L"\r\n";
     for (size_t g = 0; g < groups_.size(); g++) {
         const TestGroup& tg = testGroups()[g];
         text += L"\r\n" + std::wstring(tg.name) + L"\r\n";

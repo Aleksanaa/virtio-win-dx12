@@ -1,4 +1,4 @@
-From: vgd3d12
+From: venera_d3d12
 Subject: util/os_time: sleep with a high-resolution waitable timer on Windows
 
 os_time_sleep() used Sleep(), which rounds up to whole timer periods: Sleep(1) takes ~2 ms even with a 1 ms

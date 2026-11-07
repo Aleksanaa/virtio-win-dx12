@@ -6,13 +6,13 @@
 #include <string>
 
 // __FUNCTIONW__ is MSVC's wide __FUNCTION__ literal. GCC has none, so widen __func__ (ASCII) at run time.
-inline const wchar_t *vgd_widen_function(const char *name)
+inline const wchar_t *venera_widen_function(const char *name)
 {
     thread_local std::wstring wide;
     wide.assign(name, name + std::strlen(name));
     return wide.c_str();
 }
-#define __FUNCTIONW__ vgd_widen_function(__func__)
+#define __FUNCTIONW__ venera_widen_function(__func__)
 #endif
 
 // MSVC's old spelling of __cdecl, and the old SAL annotations the entry points carry. libstdc++ uses __in as a name,

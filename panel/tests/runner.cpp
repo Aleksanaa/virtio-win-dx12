@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Running the tests: each in a child process, `vgd-panel.exe /run-test <group>.<test>`, which prints what the test
+// Running the tests: each in a child process, `venera-panel.exe /run-test <group>.<test>`, which prints what the test
 // does and exits with 0 when it passed. A crash (the child reports where first) or a hang fails only that test, and
 // the panel and the command line carry on with the next.
 #include "../panel.h"

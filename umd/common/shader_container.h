@@ -16,7 +16,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 // A signature entry, as both DDIs describe one (D3D12DDIARG_SIGNATURE_ENTRY_0012, D3D11_1DDIARG_SIGNATURE_ENTRY):
 // the system value is a D3D10_SB_NAME, the component type a D3D10_SB_REGISTER_COMPONENT_TYPE and the minimum
@@ -55,4 +55,4 @@ inline UINT generic_semantic_index(UINT reg, UINT first) { return reg * 4 + firs
 bool output_semantic(const std::vector<SignatureEntry>& output, UINT stream, UINT reg, BYTE mask, const char** name,
                      UINT* index, UINT* first);
 
-} // namespace vgd::umd
+} // namespace venera::umd

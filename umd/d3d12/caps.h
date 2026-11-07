@@ -3,9 +3,9 @@
 
 #include "wdk.h"
 
-namespace vgd::umd {
+namespace venera::umd {
 
 // Answers from `device`, the engine's (engine.h).
 HRESULT get_caps(ID3D12Device* device, const D3D12DDIARG_GETCAPS& args);
 
-} // namespace vgd::umd
+} // namespace venera::umd

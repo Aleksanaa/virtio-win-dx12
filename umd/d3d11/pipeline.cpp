@@ -4,7 +4,7 @@
 #include "device.h"
 #include "shader_container.h"
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -93,8 +93,8 @@ void create_shader(D3D10DDI_HDEVICE h, Stage stage, const UINT* code, const Shad
         }
     }
     if (FAILED(hr)) {
-        VGD_WARN("Create shader (stage %d, version 0x%08x, %u words) failed: 0x%08lx", static_cast<int>(stage),
-                 code ? code[0] : 0, code ? code[1] : 0, hr);
+        VENERA_WARN("Create shader (stage %d, version 0x%08x, %u words) failed: 0x%08lx", static_cast<int>(stage),
+                    code ? code[0] : 0, code ? code[1] : 0, hr);
         d->set_error(E_OUTOFMEMORY);
     }
 }
@@ -143,7 +143,7 @@ void APIENTRY create_gs_with_so(D3D10DDI_HDEVICE h, const D3D11DDIARG_CREATEGEOM
     auto* obj = new (hs.pDrvPrivate) ShaderObject;
     if (!a->pShaderCode) {
         // Stream output of the vertex or domain program, with no geometry program to compile.
-        VGD_WARN("CreateGeometryShaderWithStreamOutput without a geometry program: not supported yet");
+        VENERA_WARN("CreateGeometryShaderWithStreamOutput without a geometry program: not supported yet");
         d->set_error(E_OUTOFMEMORY);
         return;
     }
@@ -179,7 +179,7 @@ void APIENTRY create_gs_with_so(D3D10DDI_HDEVICE h, const D3D11DDIARG_CREATEGEOM
             c.data(), c.size(), decl.data(), static_cast<UINT>(decl.size()), a->BufferStridesInBytes, a->NumStrides,
             a->RasterizedStream, nullptr, reinterpret_cast<ID3D11GeometryShader**>(obj->shader.put()));
     if (FAILED(hr)) {
-        VGD_WARN("CreateGeometryShaderWithStreamOutput (%u entries) failed: 0x%08lx", a->NumEntries, hr);
+        VENERA_WARN("CreateGeometryShaderWithStreamOutput (%u entries) failed: 0x%08lx", a->NumEntries, hr);
         d->set_error(E_OUTOFMEMORY);
     }
 }
@@ -226,7 +226,7 @@ void APIENTRY create_element_layout(D3D10DDI_HDEVICE h, const D3D10DDIARG_CREATE
     HRESULT hr = d->d3d->CreateInputLayout(elements.data(), static_cast<UINT>(elements.size()), c.data(), c.size(),
                                            obj->state.put());
     if (FAILED(hr)) {
-        VGD_WARN("CreateElementLayout (%u elements) failed: 0x%08lx", a->NumElements, hr);
+        VENERA_WARN("CreateElementLayout (%u elements) failed: 0x%08lx", a->NumElements, hr);
         d->set_error(E_OUTOFMEMORY);
     }
 }
@@ -266,7 +266,7 @@ void APIENTRY create_blend_state(D3D10DDI_HDEVICE h, const D3D11_1_DDI_BLEND_DES
     }
     HRESULT hr = d->d3d->CreateBlendState1(&desc, obj->state.put());
     if (FAILED(hr)) {
-        VGD_WARN("CreateBlendState failed: 0x%08lx", hr);
+        VENERA_WARN("CreateBlendState failed: 0x%08lx", hr);
         d->set_error(E_OUTOFMEMORY);
     }
 }
@@ -300,7 +300,7 @@ void APIENTRY create_depth_stencil_state(D3D10DDI_HDEVICE h, const D3D10_DDI_DEP
                                   stencil_face(a->BackEnable, a->BackFace)};
     HRESULT hr = d->d3d->CreateDepthStencilState(&desc, obj->state.put());
     if (FAILED(hr)) {
-        VGD_WARN("CreateDepthStencilState failed: 0x%08lx", hr);
+        VENERA_WARN("CreateDepthStencilState failed: 0x%08lx", hr);
         d->set_error(E_OUTOFMEMORY);
     }
 }
@@ -328,7 +328,7 @@ void APIENTRY create_rasterizer_state(D3D10DDI_HDEVICE h, const D3D11_1_DDI_RAST
                                 a->ForcedSampleCount};
     HRESULT hr = d->d3d->CreateRasterizerState1(&desc, obj->state.put());
     if (FAILED(hr)) {
-        VGD_WARN("CreateRasterizerState failed: 0x%08lx", hr);
+        VENERA_WARN("CreateRasterizerState failed: 0x%08lx", hr);
         d->set_error(E_OUTOFMEMORY);
     }
 }
@@ -355,7 +355,7 @@ void APIENTRY create_sampler(D3D10DDI_HDEVICE h, const D3D10_DDI_SAMPLER_DESC* a
                             a->MaxLOD};
     HRESULT hr = d->d3d->CreateSamplerState(&desc, obj->state.put());
     if (FAILED(hr)) {
-        VGD_WARN("CreateSampler (filter 0x%x) failed: 0x%08lx", a->Filter, hr);
+        VENERA_WARN("CreateSampler (filter 0x%x) failed: 0x%08lx", a->Filter, hr);
         d->set_error(E_OUTOFMEMORY);
     }
 }
@@ -392,4 +392,4 @@ void fill_pipeline_ddi(D3D11_1DDI_DEVICEFUNCS& t)
     t.pfnDestroySampler = destroy_state<ID3D11SamplerState, D3D10DDI_HSAMPLER>;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

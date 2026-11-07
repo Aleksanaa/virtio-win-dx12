@@ -14,7 +14,7 @@
 #include <new>
 #include <vector>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 struct ResourceObject;
 
@@ -44,7 +44,7 @@ struct Device {
         D3DKMT_HANDLE sync = 0;       // the runtime's
         uint32_t icd = 0;             // the same fence opened on our ICD's device
         uint64_t value = 0;           // last signalled
-        PFN_vkVoidFunction close = nullptr, signal = nullptr;   // vkCloseFenceVGD, vkQueueSignalFenceVGD
+        PFN_vkVoidFunction close = nullptr, signal = nullptr;   // vkCloseFenceVENERA, vkQueueSignalFenceVENERA
     } render_fence;
     // Output-merger bindings, rebound when RotateResourceIdentities swaps what they view.
     std::vector<ID3D11RenderTargetView*> om_rtvs;
@@ -56,7 +56,7 @@ struct Device {
     void set_error(HRESULT hr) const
     {
         if (hr != DXGI_DDI_ERR_WASSTILLDRAWING)
-            VGD_WARN("SetErrorCb(0x%08lx)", hr);
+            VENERA_WARN("SetErrorCb(0x%08lx)", hr);
         um.pfnSetErrorCb(rt_core_layer, hr);
     }
     KmtDevice* kernel()
@@ -192,4 +192,4 @@ void APIENTRY check_multisample_quality_levels(D3D10DDI_HDEVICE h, DXGI_FORMAT f
 UINT api_bind_flags(UINT ddi_bind);
 D3D11_BOX api_box(const D3D10_DDI_BOX& b);
 
-} // namespace vgd::umd
+} // namespace venera::umd

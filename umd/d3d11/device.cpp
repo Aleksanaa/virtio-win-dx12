@@ -4,13 +4,13 @@
 #include "ddi_slots.h"
 #include "stubs.h"
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
 void APIENTRY destroy_device(D3D10DDI_HDEVICE h)
 {
-    VGD_TRACE("DestroyDevice");
+    VENERA_TRACE("DestroyDevice");
     Device* d = Device::from(h);
     if (d->ctx) {
         d->ctx->ClearState();
@@ -20,12 +20,12 @@ void APIENTRY destroy_device(D3D10DDI_HDEVICE h)
     if (d->present_context) {
         D3DDDICB_DESTROYCONTEXT dc{d->present_context};
         if (FAILED(d->kt.pfnDestroyContextCb(d->rt_device.handle, &dc)))
-            VGD_WARN("DestroyDevice: DestroyContextCb failed");
+            VENERA_WARN("DestroyDevice: DestroyContextCb failed");
     }
     if (d->paging_queue) {
         D3DDDI_DESTROYPAGINGQUEUE dq{d->paging_queue};
         if (FAILED(d->kt.pfnDestroyPagingQueueCb(d->rt_device.handle, &dq)))
-            VGD_WARN("DestroyDevice: DestroyPagingQueueCb failed");
+            VENERA_WARN("DestroyDevice: DestroyPagingQueueCb failed");
     }
     if (d->idle_event)
         CloseHandle(d->idle_event);
@@ -74,7 +74,7 @@ void Device::flush_clears()
     // An interop transition ends DXVK's pass without suspending it, which runs all pending clears, not only this
     // surface's. A flush suspends the pass and keeps them.
     if (pending_clear && FAILED(dxvk::flush_shared_clears(d3d.get(), pending_clear.get())))
-        VGD_WARN("flush_clears: the interop transition failed");
+        VENERA_WARN("flush_clears: the interop transition failed");
     pending_clear = nullptr;
 }
 
@@ -92,7 +92,7 @@ HRESULT Device::wait_idle()
     // process, also where every thread is: DXVK's CS and submission threads show what holds the work back.
     static std::atomic<bool> stacks_logged{false};
     for (unsigned waited = 2; WaitForSingleObject(idle_event, 2000) == WAIT_TIMEOUT; waited += 2) {
-        VGD_WARN("wait_idle: rendering not finished after %us", waited);
+        VENERA_WARN("wait_idle: rendering not finished after %us", waited);
         if (waited == 6 && !stacks_logged.exchange(true))
             log_thread_stacks("wait_idle stalled");
     }
@@ -115,7 +115,7 @@ HRESULT create_device(D3D10DDIARG_CREATEDEVICE& args, const viogpu::AdapterInfo&
     d->ctx = ctx.as<ID3D11DeviceContext4>();
     HRESULT hr = d->ctx ? d->vulkan.init(gipa, handles.instance, handles.physical, handles.device) : E_NOINTERFACE;
     if (FAILED(hr)) {
-        VGD_WARN("CreateDevice: DXVK's device is not usable: 0x%08lx", hr);
+        VENERA_WARN("CreateDevice: DXVK's device is not usable: 0x%08lx", hr);
         d->~Device();
         return hr;
     }
@@ -127,14 +127,14 @@ HRESULT create_device(D3D10DDIARG_CREATEDEVICE& args, const viogpu::AdapterInfo&
     cc.EngineAffinity = 1;
     hr = d->kt.pfnCreateContextCb(d->rt_device.handle, &cc);
     if (FAILED(hr) || !cc.hContext) {
-        VGD_WARN("CreateDevice: CreateContextCb failed: 0x%08lx", hr);
+        VENERA_WARN("CreateDevice: CreateContextCb failed: 0x%08lx", hr);
         d->~Device();
         return FAILED(hr) ? hr : E_FAIL;
     }
     d->present_context = cc.hContext;
 
     auto& t = *args.p11_1DeviceFuncs;
-    VGD_FILL_STUBS(t, "device", VGD_SLOTS_D3D11_1_DEVICE);
+    VENERA_FILL_STUBS(t, "device", VENERA_SLOTS_D3D11_1_DEVICE);
     t.pfnDestroyDevice = destroy_device;
     t.pfnRelocateDeviceFuncs = relocate_device_funcs;
     t.pfnFlush = flush;
@@ -151,13 +151,13 @@ HRESULT create_device(D3D10DDIARG_CREATEDEVICE& args, const viogpu::AdapterInfo&
     fill_query_ddi(t);
 
     auto& dxgi = *args.DXGIBaseDDI.pDXGIDDIBaseFunctions3;
-    VGD_FILL_STUBS(dxgi, "dxgi", VGD_SLOTS_DXGI_1_2);
+    VENERA_FILL_STUBS(dxgi, "dxgi", VENERA_SLOTS_DXGI_1_2);
     fill_dxgi_ddi(dxgi);
 
-    VGD_TRACE("CreateDevice: ok on %s, feature level 0x%x (external memory %d, drm modifiers %d, alias %d)",
-              handles.name, d->d3d->GetFeatureLevel(), d->vulkan.external_memory, d->vulkan.drm_modifier,
-              d->allocation_alias);
+    VENERA_TRACE("CreateDevice: ok on %s, feature level 0x%x (external memory %d, drm modifiers %d, alias %d)",
+                 handles.name, d->d3d->GetFeatureLevel(), d->vulkan.external_memory, d->vulkan.drm_modifier,
+                 d->allocation_alias);
     return S_OK;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

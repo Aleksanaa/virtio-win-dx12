@@ -7,17 +7,17 @@
 #include <mutex>
 #include <string>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
-constexpr const wchar_t* kBundledIcd = L"vgd_vulkan_virtio.dll";
+constexpr const wchar_t* kBundledIcd = L"venera_vulkan_virtio.dll";
 
 PFN_vkGetInstanceProcAddr try_load(const std::wstring& path)
 {
     HMODULE mod = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!mod) {
-        VGD_WARN("icd: LoadLibrary(%ls) failed: %lu", path.c_str(), GetLastError());
+        VENERA_WARN("icd: LoadLibrary(%ls) failed: %lu", path.c_str(), GetLastError());
         return nullptr;
     }
     using Negotiate = VkResult(VKAPI_PTR*)(uint32_t*);
@@ -26,7 +26,7 @@ PFN_vkGetInstanceProcAddr try_load(const std::wstring& path)
     auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
         reinterpret_cast<void*>(GetProcAddress(mod, "vk_icdGetInstanceProcAddr")));
     if (!gipa) {
-        VGD_WARN("icd: %ls exports no vk_icdGetInstanceProcAddr", path.c_str());
+        VENERA_WARN("icd: %ls exports no vk_icdGetInstanceProcAddr", path.c_str());
         FreeLibrary(mod);
         return nullptr;
     }
@@ -38,8 +38,8 @@ PFN_vkGetInstanceProcAddr try_load(const std::wstring& path)
     SYSTEMTIME t{};
     if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attrs))
         FileTimeToSystemTime(&attrs.ftLastWriteTime, &t);
-    VGD_TRACE("icd: loaded %ls (loader interface %u, %lu bytes, written %04u-%02u-%02u %02u:%02u:%02u UTC)",
-              path.c_str(), version, attrs.nFileSizeLow, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    VENERA_TRACE("icd: loaded %ls (loader interface %u, %lu bytes, written %04u-%02u-%02u %02u:%02u:%02u UTC)",
+                 path.c_str(), version, attrs.nFileSizeLow, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
     return gipa;
 }
 
@@ -62,7 +62,7 @@ PFN_vkGetInstanceProcAddr load()
 {
     const std::wstring path = bundled_icd_path();
     if (path.empty()) {
-        VGD_WARN("icd: cannot locate this DLL");
+        VENERA_WARN("icd: cannot locate this DLL");
         return nullptr;
     }
     return try_load(path);
@@ -78,4 +78,4 @@ PFN_vkGetInstanceProcAddr load_venus_icd()
     return gipa;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

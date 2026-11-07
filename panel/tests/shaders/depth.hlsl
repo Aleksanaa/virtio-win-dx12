@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Shaders for the depth/stencil and MSAA tests (vgd-panel /test d3d12.depth). Rebuild with build.sh.
+// Shaders for the depth/stencil and MSAA tests (venera-panel /test d3d12.depth). Rebuild with build.sh.
 
 cbuffer Depth : register(b0)   // root constant, vertex shader
 {

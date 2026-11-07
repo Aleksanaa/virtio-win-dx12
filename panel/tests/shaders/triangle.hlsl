@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Shaders for the triangle tests (vgd-panel /test d3d12.triangle). Rebuild with build.sh.
+// Shaders for the triangle tests (venera-panel /test d3d12.triangle). Rebuild with build.sh.
 
 cbuffer Color : register(b0)   // root constants
 {

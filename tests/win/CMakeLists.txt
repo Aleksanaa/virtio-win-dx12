@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
 add_executable(vkprobe vkprobe.cpp)
-target_link_libraries(vkprobe PRIVATE vgd-vulkan-headers)
+target_link_libraries(vkprobe PRIVATE venera-vulkan-headers)
 target_link_options(vkprobe PRIVATE -static -static-libgcc -static-libstdc++)
 
 add_executable(vkdeviceprobe vkdeviceprobe.cpp)
-target_link_libraries(vkdeviceprobe PRIVATE vgd-vulkan-headers)
+target_link_libraries(vkdeviceprobe PRIVATE venera-vulkan-headers)
 target_link_options(vkdeviceprobe PRIVATE -static -static-libgcc -static-libstdc++)
 
 # The guest scripts next to the probes, so a copy of build/ is all the guest needs (they find the rest from there).
-foreach(script vgd-test.ps1 kmt-trace.wds)
+foreach(script venera-test.ps1 kmt-trace.wds)
   configure_file(${script} ${script} COPYONLY)
 endforeach()
 

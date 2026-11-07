@@ -10,7 +10,7 @@
 #include <cstring>
 #include <string>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -408,12 +408,12 @@ void assemble(const std::vector<Part>& parts, DxbcChecksum checksum, std::vector
     std::memcpy(c.data() + 4, sum, sizeof(sum));
 }
 
-// With VGD_SHADER_DUMP naming a folder: each container goes there as <checksum>.dxbc, for offline compiles
+// With VENERA_SHADER_DUMP naming a folder: each container goes there as <checksum>.dxbc, for offline compiles
 // (dxbc-spirv's dxbc_disasm and dxbc_compiler).
 void dump(const std::vector<uint8_t>& container)
 {
     static char dir[MAX_PATH];
-    static const bool enabled = setting("VGD_SHADER_DUMP", dir, sizeof(dir));
+    static const bool enabled = setting("VENERA_SHADER_DUMP", dir, sizeof(dir));
     if (!enabled || container.size() < 20)
         return;
     char path[MAX_PATH + 48];
@@ -434,7 +434,7 @@ void dump(const std::vector<uint8_t>& container)
 const char* generic_semantic(UINT stream)
 {
     // Stream-output entries are matched by name alone, so geometry shader streams 1 to 3 keep names of their own.
-    static const char* const names[] = {"VGD_R", "VGD_S1R", "VGD_S2R", "VGD_S3R"};
+    static const char* const names[] = {"VENERA_R", "VENERA_S1R", "VENERA_S2R", "VENERA_S3R"};
     return names[stream < 4 ? stream : 0];
 }
 
@@ -473,7 +473,7 @@ HRESULT build_shader_container(const UINT* code, const ShaderSignatures& s, Dxbc
     const uint32_t type = code[0] >> 16;
     const uint32_t major = dxil ? 6 : (code[0] >> 4) & 0xf;
     if (type > kCompute) {
-        VGD_WARN("shader: program type %u not supported (version 0x%08x)", type, code[0]);
+        VENERA_WARN("shader: program type %u not supported (version 0x%08x)", type, code[0]);
         return E_INVALIDARG;
     }
 
@@ -499,4 +499,4 @@ HRESULT build_shader_container(const UINT* code, const ShaderSignatures& s, Dxbc
     return S_OK;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

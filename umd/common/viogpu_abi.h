@@ -5,7 +5,7 @@
 
 #include <windows.h>
 
-namespace vgd::viogpu {
+namespace venera::viogpu {
 
 constexpr ULONGLONG kIam = 0x56696f475055;   // "VioGPU": set by the KMD in its QueryAdapterInfo private data
 
@@ -97,4 +97,4 @@ constexpr ULONG kVirglFormatB8G8R8A8Unorm = 1, kVirglFormatB8G8R8X8Unorm = 2, kV
 // the Mesa of third_party/virtio-win-mesa (its generated u_format_gen.h). The KMD does not scan it out.
 constexpr ULONG kPipeFormatR16G16B16A16Float = 56;
 
-} // namespace vgd::viogpu
+} // namespace venera::viogpu

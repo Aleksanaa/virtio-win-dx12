@@ -1,13 +1,13 @@
-From: vgd3d12
+From: venera_d3d12
 Subject: venus: signal D3DKMT fences in order with a queue
 
 A D3D driver over Venus presents allocations whose rendering is on a host queue that Windows' scheduler
 cannot see, so it had to wait on the CPU for the GPU before every present. Give it a monitored fence
 the GPU signals instead, through private entry points of vkGetDeviceProcAddr:
 
-  vkOpenFenceVGD(device, nt_handle, &fence)   opens a shared monitored fence on our device
-  vkCloseFenceVGD(device, fence)
-  vkQueueSignalFenceVGD(queue, fence, value)  signals it once the queue's work so far completes
+  vkOpenFenceVENERA(device, nt_handle, &fence)   opens a shared monitored fence on our device
+  vkCloseFenceVENERA(device, fence)
+  vkQueueSignalFenceVENERA(queue, fence, value)  signals it once the queue's work so far completes
 
 The signal is a timeline packet (VIOGPU_CMD_SUBMIT_TIMELINE, yttrium's kernel driver) on the queue's
 ring_idx, whose host fence retires after the queue's earlier work, carrying a vkWaitRingSeqnoMESA for
@@ -22,12 +22,12 @@ context cannot overtake it.
  {
     struct vn_device *dev = vn_device_from_handle(device);
 +#ifdef VK_USE_PLATFORM_WIN32_KHR
-+   if (!strcmp(pName, "vkOpenFenceVGD"))
-+      return (PFN_vkVoidFunction)vn_OpenFenceVGD;
-+   if (!strcmp(pName, "vkCloseFenceVGD"))
-+      return (PFN_vkVoidFunction)vn_CloseFenceVGD;
-+   if (!strcmp(pName, "vkQueueSignalFenceVGD"))
-+      return (PFN_vkVoidFunction)vn_QueueSignalFenceVGD;
++   if (!strcmp(pName, "vkOpenFenceVENERA"))
++      return (PFN_vkVoidFunction)vn_OpenFenceVENERA;
++   if (!strcmp(pName, "vkCloseFenceVENERA"))
++      return (PFN_vkVoidFunction)vn_CloseFenceVENERA;
++   if (!strcmp(pName, "vkQueueSignalFenceVENERA"))
++      return (PFN_vkVoidFunction)vn_QueueSignalFenceVENERA;
 +#endif
     return vk_device_get_proc_addr(&dev->base.vk, pName);
  }
@@ -65,14 +65,14 @@ context cannot overtake it.
 + * which the host queue's completion is otherwise invisible to.
 + */
 +VKAPI_ATTR VkResult VKAPI_CALL
-+vn_OpenFenceVGD(VkDevice device, HANDLE nt_handle, uint32_t *pFence)
++vn_OpenFenceVENERA(VkDevice device, HANDLE nt_handle, uint32_t *pFence)
 +{
 +   struct vn_device *dev = vn_device_from_handle(device);
 +   return vn_renderer_d3dkmt_open_fence(dev->renderer, nt_handle, pFence);
 +}
 +
 +VKAPI_ATTR void VKAPI_CALL
-+vn_CloseFenceVGD(VkDevice device, uint32_t fence)
++vn_CloseFenceVENERA(VkDevice device, uint32_t fence)
 +{
 +   struct vn_device *dev = vn_device_from_handle(device);
 +   vn_renderer_d3dkmt_close_fence(dev->renderer, fence);
@@ -80,7 +80,7 @@ context cannot overtake it.
 +
 +/* VK_NOT_READY if nothing was submitted to the queue yet. */
 +VKAPI_ATTR VkResult VKAPI_CALL
-+vn_QueueSignalFenceVGD(VkQueue _queue, uint32_t fence, uint64_t value)
++vn_QueueSignalFenceVENERA(VkQueue _queue, uint32_t fence, uint64_t value)
 +{
 +   struct vn_queue *queue = vn_queue_from_handle(_queue);
 +   struct vn_device *dev = vn_device_from_vk(queue->base.vk.base.device);
@@ -110,7 +110,7 @@ context cannot overtake it.
     /* only used if renderer supports multiple timelines */
     uint32_t ring_idx;
  
-+   /* the ring seqno of the last submission, for vkQueueSignalFenceVGD */
++   /* the ring seqno of the last submission, for vkQueueSignalFenceVENERA */
 +   bool last_ring_seqno_valid;
 +   uint32_t last_ring_seqno;
 +
@@ -123,11 +123,11 @@ context cannot overtake it.
  
 +#ifdef VK_USE_PLATFORM_WIN32_KHR
 +VKAPI_ATTR VkResult VKAPI_CALL
-+vn_OpenFenceVGD(VkDevice device, HANDLE nt_handle, uint32_t *pFence);
++vn_OpenFenceVENERA(VkDevice device, HANDLE nt_handle, uint32_t *pFence);
 +VKAPI_ATTR void VKAPI_CALL
-+vn_CloseFenceVGD(VkDevice device, uint32_t fence);
++vn_CloseFenceVENERA(VkDevice device, uint32_t fence);
 +VKAPI_ATTR VkResult VKAPI_CALL
-+vn_QueueSignalFenceVGD(VkQueue queue, uint32_t fence, uint64_t value);
++vn_QueueSignalFenceVENERA(VkQueue queue, uint32_t fence, uint64_t value);
 +#endif
 +
  #endif /* VN_QUEUE_H */
@@ -195,7 +195,7 @@ context cannot overtake it.
  }
 +
 +/* GPU-ordered signals of D3DKMT monitored fences (vn_queue.c's
-+ * vkQueueSignalFenceVGD).
++ * vkQueueSignalFenceVENERA).
 + *
 + * A timeline packet on ring_idx completes when the work submitted to the host
 + * queue bound to it before the packet does; the Windows scheduler signals the

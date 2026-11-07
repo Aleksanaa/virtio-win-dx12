@@ -12,7 +12,7 @@
 #include <cstring>
 #include <new>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -36,8 +36,8 @@ struct Adapter {
 
 SIZE_T APIENTRY ddi_calc_private_device_size(D3D12DDI_HADAPTER, const D3D12DDIARG_CALCPRIVATEDEVICESIZE* args)
 {
-    VGD_TRACE("CalcPrivateDeviceSize interface=0x%x version=0x%x flags=0x%x", args->Interface, args->Version,
-              args->Flags);
+    VENERA_TRACE("CalcPrivateDeviceSize interface=0x%x version=0x%x flags=0x%x", args->Interface, args->Version,
+                 args->Flags);
     return device_private_size();
 }
 
@@ -45,7 +45,7 @@ HRESULT APIENTRY ddi_create_device(D3D12DDI_HADAPTER h, const D3D12DDIARG_CREATE
 {
     if (!args || !args->hDrvDevice.pDrvPrivate)
         return E_INVALIDARG;
-    VGD_TRACE("CreateDevice interface=0x%x version=0x%x", args->Interface, args->Version);
+    VENERA_TRACE("CreateDevice interface=0x%x version=0x%x", args->Interface, args->Version);
     Adapter* a = Adapter::from(h);
     HRESULT hr = a->bring_up();
     if (FAILED(hr))
@@ -55,7 +55,7 @@ HRESULT APIENTRY ddi_create_device(D3D12DDI_HADAPTER h, const D3D12DDIARG_CREATE
 
 HRESULT APIENTRY close_adapter(D3D12DDI_HADAPTER h)
 {
-    VGD_TRACE("CloseAdapter");
+    VENERA_TRACE("CloseAdapter");
     delete Adapter::from(h);
     return S_OK;
 }
@@ -81,13 +81,13 @@ HRESULT APIENTRY ddi_get_caps(D3D12DDI_HADAPTER h, const D3D12DDIARG_GETCAPS* ar
     HRESULT hr = a->bring_up();
     if (SUCCEEDED(hr))
         hr = get_caps(a->engine->device.get(), *args);
-    VGD_TRACE("GetCaps type=%d size=%u -> 0x%08lx", static_cast<int>(args->Type), args->DataSize, hr);
+    VENERA_TRACE("GetCaps type=%d size=%u -> 0x%08lx", static_cast<int>(args->Type), args->DataSize, hr);
     return hr;
 }
 
 HRESULT APIENTRY get_optional_ddi_tables(D3D12DDI_HADAPTER, UINT32* entries, D3D12DDI_TABLE_REQUEST*)
 {
-    VGD_TRACE("GetOptionalDDITables");
+    VENERA_TRACE("GetOptionalDDITables");
     *entries = 0;
     return S_OK;
 }
@@ -102,18 +102,18 @@ HRESULT APIENTRY ddi_fill_ddi_table(D3D12DDI_HADAPTER h, D3D12DDI_TABLE_TYPE typ
 
 void APIENTRY ddi_destroy_device(D3D12DDI_HDEVICE device)
 {
-    VGD_TRACE("DestroyDevice");
+    VENERA_TRACE("DestroyDevice");
     destroy_device(device);
 }
 
 } // namespace
 
-} // namespace vgd::umd
+} // namespace venera::umd
 
 extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter12(D3D12DDIARG_OPENADAPTER* args)
 {
-    using namespace vgd::umd;
-    log_init("vgd3d12");
+    using namespace venera::umd;
+    log_init("venera_d3d12");
     forward_settings({"VKD3D_DEBUG", "VKD3D_SHADER_DEBUG", "VKD3D_LOG_FILE", "VKD3D_CONFIG", "VKD3D_FEATURE_LEVEL",
                       "VN_DEBUG", "VN_PERF", "MESA_LOG_LEVEL"});
     if (!args || !args->pAdapterCallbacks || !args->pAdapterFuncs)
@@ -130,17 +130,17 @@ extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter12(D3D12DDIARG_OPEN
     query.pPrivateDriverData = &adapter->info;
     query.PrivateDriverDataSize = sizeof(adapter->info);
     HRESULT hr = adapter->callbacks->pfnQueryAdapterInfoCb(args->hRTAdapter.handle, &query);
-    if (FAILED(hr) || adapter->info.IamVioGPU != vgd::viogpu::kIam) {
-        VGD_WARN("OpenAdapter12: not a viogpu adapter (hr=0x%08lx iam=0x%llx)", hr, adapter->info.IamVioGPU);
+    if (FAILED(hr) || adapter->info.IamVioGPU != venera::viogpu::kIam) {
+        VENERA_WARN("OpenAdapter12: not a viogpu adapter (hr=0x%08lx iam=0x%llx)", hr, adapter->info.IamVioGPU);
         delete adapter;
         return DXGI_ERROR_UNSUPPORTED;
     }
-    const bool venus = adapter->info.SupportedCapsetIDs & (1ull << vgd::viogpu::kCapsetVenus);
-    VGD_TRACE("OpenAdapter12: viogpu flags 3d=%u blob=%u hostvisible=%u ctxinit=%u alias=%u capsets=0x%llx venus=%d",
-              adapter->info.Flags.Supports3d, adapter->info.Flags.has_resource_blob,
-              adapter->info.Flags.has_host_visible, adapter->info.Flags.has_context_init,
-              adapter->info.Flags.supports_allocation_alias,
-              adapter->info.SupportedCapsetIDs, venus);
+    const bool venus = adapter->info.SupportedCapsetIDs & (1ull << venera::viogpu::kCapsetVenus);
+    VENERA_TRACE("OpenAdapter12: viogpu flags 3d=%u blob=%u hostvisible=%u ctxinit=%u alias=%u capsets=0x%llx venus=%d",
+                 adapter->info.Flags.Supports3d, adapter->info.Flags.has_resource_blob,
+                 adapter->info.Flags.has_host_visible, adapter->info.Flags.has_context_init,
+                 adapter->info.Flags.supports_allocation_alias,
+                 adapter->info.SupportedCapsetIDs, venus);
     if (!venus) {
         delete adapter;
         return DXGI_ERROR_UNSUPPORTED;
@@ -157,6 +157,6 @@ extern "C" __declspec(dllexport) HRESULT APIENTRY OpenAdapter12(D3D12DDIARG_OPEN
 BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
-        vgd::umd::pin_module(self);
+        venera::umd::pin_module(self);
     return TRUE;
 }
