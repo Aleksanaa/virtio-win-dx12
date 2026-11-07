@@ -304,6 +304,8 @@ class VioGpuAdapter : IVioGpuPCI, public IVioGpuQueueSync
     NTSTATUS ReadRegistryDWORD(_In_ HANDLE DevInstRegKeyHandle, _In_ PCWSTR pszwValueName, _Inout_ PDWORD pdwValue);
     NTSTATUS SetRegisterInfo(_In_ ULONG Id, _In_ DWORD MemSize);
     NTSTATUS GetRegisterInfo(void);
+    void ReadCursorSettings(_In_ HANDLE DevInstRegKeyHandle);
+    void RereadCursorSettings(void);
 
     NTSTATUS HWInit(PCM_RESOURCE_LIST pResList);
     NTSTATUS HWClose(void);

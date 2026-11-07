@@ -813,17 +813,16 @@ NTSTATUS VioGpuAdapter::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQ
                 pDriverCaps->SupportSmoothRotation = FALSE;
                 pDriverCaps->SupportNonVGA = IsVgaDevice();
 
-                // The hardware cursor (HWCursor). Monochrome and masked color shapes are converted to color, so
-                // that the default text I-beam (monochrome) is not left for Windows to draw.
-                if (IsPointerEnabled())
-                {
-                    pDriverCaps->MaxPointerWidth = POINTER_SIZE;
-                    pDriverCaps->MaxPointerHeight = POINTER_SIZE;
-                    pDriverCaps->PointerCaps.Value = 0;
-                    pDriverCaps->PointerCaps.Monochrome = 1;
-                    pDriverCaps->PointerCaps.Color = 1;
-                    pDriverCaps->PointerCaps.MaskedColor = 1;
-                }
+                // The hardware cursor. Monochrome and masked color shapes are converted to color, so that the
+                // default text I-beam (monochrome) is not left for Windows to draw. Offered also with HWCursor off,
+                // which can change while the adapter runs: SetPointerShape then refuses each shape, and Windows draws
+                // the pointer itself.
+                pDriverCaps->MaxPointerWidth = POINTER_SIZE;
+                pDriverCaps->MaxPointerHeight = POINTER_SIZE;
+                pDriverCaps->PointerCaps.Value = 0;
+                pDriverCaps->PointerCaps.Monochrome = 1;
+                pDriverCaps->PointerCaps.Color = 1;
+                pDriverCaps->PointerCaps.MaskedColor = 1;
 
                 DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s Driver caps return\n", __FUNCTION__));
                 return STATUS_SUCCESS;
@@ -1516,6 +1515,7 @@ NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSet
               pSetPointerShape->YHot,
               pSetPointerShape->VidPnSourceId));
 
+    RereadCursorSettings();
     // Shapes of the kinds the caps offer, that fit the resource; the converted kinds only on an unrotated display.
     // Anything else fails, and Windows then draws that pointer itself: ours must not show meanwhile.
     DXGK_POINTERFLAGS flags = pSetPointerShape->Flags;
@@ -2737,6 +2737,37 @@ NTSTATUS VioGpuAdapter::SetRegisterInfo(_In_ ULONG Id, _In_ DWORD MemSize)
     return Status;
 }
 
+// The hardware cursor's settings: HWCursor and HWCursorSwapRB. Read when the adapter starts and again before each
+// pointer shape, so a change (the control panel's Settings) applies from the next shape, without restarting the
+// adapter.
+void VioGpuAdapter::ReadCursorSettings(_In_ HANDLE DevInstRegKeyHandle)
+{
+    PAGED_CODE();
+
+    DWORD value = 0;
+    if (NT_SUCCESS(ReadRegistryDWORD(DevInstRegKeyHandle, L"HWCursor", &value)))
+    {
+        SetPointerEnabled(!!value);
+    }
+    value = 0;
+    if (NT_SUCCESS(ReadRegistryDWORD(DevInstRegKeyHandle, L"HWCursorSwapRB", &value)))
+    {
+        SetCursorSwapRB(!!value);
+    }
+}
+
+void VioGpuAdapter::RereadCursorSettings(void)
+{
+    PAGED_CODE();
+
+    HANDLE DevInstRegKeyHandle;
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_READ, &DevInstRegKeyHandle)))
+    {
+        ReadCursorSettings(DevInstRegKeyHandle);
+        ZwClose(DevInstRegKeyHandle);
+    }
+}
+
 NTSTATUS VioGpuAdapter::GetRegisterInfo(void)
 {
     PAGED_CODE();
@@ -2752,14 +2783,9 @@ NTSTATUS VioGpuAdapter::GetRegisterInfo(void)
         return Status;
     }
 
-    DWORD value = 0;
-    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"HWCursor", &value);
-    if (NT_SUCCESS(Status))
-    {
-        SetPointerEnabled(!!value);
-    }
+    ReadCursorSettings(DevInstRegKeyHandle);
 
-    value = 0;
+    DWORD value = 0;
     Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"FlexResolution", &value);
     if (NT_SUCCESS(Status))
     {
@@ -2771,13 +2797,6 @@ NTSTATUS VioGpuAdapter::GetRegisterInfo(void)
     if (NT_SUCCESS(Status))
     {
         SetUsePhysicalMemory(!!value);
-    }
-
-    value = 0;
-    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"HWCursorSwapRB", &value);
-    if (NT_SUCCESS(Status))
-    {
-        SetCursorSwapRB(!!value);
     }
 
     ZwClose(DevInstRegKeyHandle);
