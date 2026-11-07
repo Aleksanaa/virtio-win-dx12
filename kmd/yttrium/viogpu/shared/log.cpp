@@ -48,7 +48,7 @@ void PrintMessage(LPCWSTR pFormat, ...)
     FILE *pLog;
     if (fopen_s(&pLog, "vgpusvp.log", "a") == 0 && pLog)
     {
-        fwprintf(pLog, debugOutputBuffer);
+        fwprintf(pLog, L"%ls", debugOutputBuffer);
         fclose(pLog);
     }
 }
