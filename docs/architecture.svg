@@ -28,14 +28,14 @@
   <text x="529" y="88" text-anchor="middle">opengl32.dll</text>
 
   <rect class="ours" x="20" y="102" width="142" height="28"/>
-  <text x="91" y="120" text-anchor="middle">vgd3d11.dll (DXVK)</text>
+  <text x="91" y="120" text-anchor="middle">venera_d3d11.dll (DXVK)</text>
   <rect class="ours" x="166" y="102" width="288" height="28"/>
-  <text x="310" y="120" text-anchor="middle">vgd3d12.dll (vkd3d-proton)</text>
+  <text x="310" y="120" text-anchor="middle">venera_d3d12.dll (vkd3d-proton)</text>
   <rect x="458" y="102" width="142" height="28"/>
   <text x="529" y="120" text-anchor="middle">viogpu_wgl.dll (zink)</text>
 
   <rect class="ours" x="20" y="134" width="580" height="28"/>
-  <text x="310" y="152" text-anchor="middle">vgd_vulkan_virtio.dll (Mesa Venus driver)</text>
+  <text x="310" y="152" text-anchor="middle">venera_vulkan_virtio.dll (Mesa Venus driver)</text>
 
   <line x1="10" y1="168" x2="710" y2="168"/>
   <text class="side" x="612" y="163">user mode</text>

@@ -38,7 +38,7 @@ static VkPhysicalDevice pick_physical_device(PFN_vkGetInstanceProcAddr gipa, VkI
     return chosen;
 }
 
-HRESULT vgd_vkd3d_create_device(PFN_vkGetInstanceProcAddr gipa, const char *const *optional_extensions,
+HRESULT venera_vkd3d_create_device(PFN_vkGetInstanceProcAddr gipa, const char *const *optional_extensions,
         uint32_t optional_extension_count, void **device, char *name, size_t name_size)
 {
     struct vkd3d_instance_create_info instance_info;
@@ -71,7 +71,7 @@ HRESULT vgd_vkd3d_create_device(PFN_vkGetInstanceProcAddr gipa, const char *cons
     return hr;
 }
 
-HRESULT vgd_vkd3d_vulkan_handles(void *device, VkInstance *instance, VkPhysicalDevice *physical, VkDevice *vk_device)
+HRESULT venera_vkd3d_vulkan_handles(void *device, VkInstance *instance, VkPhysicalDevice *physical, VkDevice *vk_device)
 {
     ID3D12DeviceExt *ext;
     HRESULT hr;
@@ -83,7 +83,7 @@ HRESULT vgd_vkd3d_vulkan_handles(void *device, VkInstance *instance, VkPhysicalD
     return hr;
 }
 
-HRESULT vgd_vkd3d_borrow_image(void *device, const void *desc1, VkImage image, void **resource)
+HRESULT venera_vkd3d_borrow_image(void *device, const void *desc1, VkImage image, void **resource)
 {
     ID3D12DeviceExt1 *ext;
     HRESULT hr;
@@ -102,7 +102,7 @@ static HRESULT interop(void *device, ID3D12DXVKInteropDevice **out)
     return ID3D12Device_QueryInterface((ID3D12Device *)device, &IID_ID3D12DXVKInteropDevice, (void **)out);
 }
 
-HRESULT vgd_vkd3d_image_layout(void *device, void *resource, uint32_t state, VkImageLayout *layout)
+HRESULT venera_vkd3d_image_layout(void *device, void *resource, uint32_t state, VkImageLayout *layout)
 {
     ID3D12DXVKInteropDevice *i;
     HRESULT hr;
@@ -114,7 +114,7 @@ HRESULT vgd_vkd3d_image_layout(void *device, void *resource, uint32_t state, VkI
     return S_OK;
 }
 
-HRESULT vgd_vkd3d_lock_queue(void *device, void *queue, VkQueue *vk_queue, uint32_t *family)
+HRESULT venera_vkd3d_lock_queue(void *device, void *queue, VkQueue *vk_queue, uint32_t *family)
 {
     ID3D12DXVKInteropDevice *i;
     HRESULT hr;
@@ -127,7 +127,7 @@ HRESULT vgd_vkd3d_lock_queue(void *device, void *queue, VkQueue *vk_queue, uint3
     return hr;
 }
 
-void vgd_vkd3d_unlock_queue(void *device, void *queue)
+void venera_vkd3d_unlock_queue(void *device, void *queue)
 {
     ID3D12DXVKInteropDevice *i;
 
@@ -137,7 +137,7 @@ void vgd_vkd3d_unlock_queue(void *device, void *queue)
     ID3D12DXVKInteropDevice_Release(i);
 }
 
-HRESULT vgd_vkd3d_serialize_root_signature(const void *versioned_desc, void **blob)
+HRESULT venera_vkd3d_serialize_root_signature(const void *versioned_desc, void **blob)
 {
     ID3DBlob *error = NULL;
     HRESULT hr;
@@ -150,7 +150,7 @@ HRESULT vgd_vkd3d_serialize_root_signature(const void *versioned_desc, void **bl
     return hr;
 }
 
-VkFormat vgd_vkd3d_vk_format(uint32_t dxgi_format)
+VkFormat venera_vkd3d_vk_format(uint32_t dxgi_format)
 {
     return vkd3d_get_vk_format((DXGI_FORMAT)dxgi_format);
 }

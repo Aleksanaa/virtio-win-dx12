@@ -3,7 +3,7 @@
 #include "log.h"
 #include "vkd3d_bridge.h"
 
-namespace vgd::umd {
+namespace venera::umd {
 
 SharedImage::~SharedImage() = default;
 
@@ -15,9 +15,9 @@ HRESULT SharedImage::describe(const D3D12_RESOURCE_DESC& desc, const DXGI_FORMAT
         return E_NOTIMPL;
     if (!desc.Width || desc.Width > UINT32_MAX)
         return E_INVALIDARG;
-    out->format = vgd_vkd3d_vk_format(desc.Format);
+    out->format = venera_vkd3d_vk_format(desc.Format);
     for (UINT i = 0; i < castable_count; i++)
-        out->view_formats.push_back(vgd_vkd3d_vk_format(castable[i]));
+        out->view_formats.push_back(venera_vkd3d_vk_format(castable[i]));
     out->width = static_cast<uint32_t>(desc.Width);
     out->height = desc.Height ? desc.Height : 1;
     out->usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -44,13 +44,13 @@ HRESULT SharedImage::lend(const D3D12_RESOURCE_DESC& desc)
     desc1.SampleDesc = {1, 0};
     desc1.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     desc1.Flags = desc.Flags;
-    HRESULT hr = vgd_vkd3d_borrow_image(e.device.get(), &desc1, image_->image(), resource_.put_void());
+    HRESULT hr = venera_vkd3d_borrow_image(e.device.get(), &desc1, image_->image(), resource_.put_void());
     if (FAILED(hr)) {
-        VGD_WARN("shared image: vkd3d-proton did not take the image: 0x%08lx", hr);
+        VENERA_WARN("shared image: vkd3d-proton did not take the image: 0x%08lx", hr);
         return hr;
     }
     VkImageLayout target = VK_IMAGE_LAYOUT_GENERAL;
-    vgd_vkd3d_image_layout(e.device.get(), resource_.get(), D3D12_RESOURCE_STATE_COMMON, &target);
+    venera_vkd3d_image_layout(e.device.get(), resource_.get(), D3D12_RESOURCE_STATE_COMMON, &target);
     // An imported image keeps what the exporter wrote only in practice: external images must start UNDEFINED, and
     // the spec's way to keep contents (an acquire from VK_QUEUE_FAMILY_EXTERNAL in the layout the exporter
     // released) needs a release the exporters do not make. Drivers leave linear memory alone in this transition.
@@ -114,4 +114,4 @@ HRESULT SharedImage::create_imported(const std::shared_ptr<Engine>& engine, cons
     return S_OK;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

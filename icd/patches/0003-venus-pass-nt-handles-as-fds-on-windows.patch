@@ -1,4 +1,4 @@
-From: vgd3d12
+From: venera_d3d12
 Subject: venus: pass NT handles as fds on Windows
 
 The CRT cannot wrap the NT handle of a shared graphics resource in a file descriptor:

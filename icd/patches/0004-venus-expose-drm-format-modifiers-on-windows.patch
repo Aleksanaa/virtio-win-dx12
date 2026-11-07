@@ -1,4 +1,4 @@
-From: vgd3d12
+From: venera_d3d12
 Subject: venus: expose VK_EXT_image_drm_format_modifier on Windows
 
 The extension is passed through to the renderer, and the image create path already forwards the

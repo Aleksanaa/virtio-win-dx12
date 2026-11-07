@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
-// Shows which driver D3D9 runs on and whether it renders: the adapter identifier and caps, the graphics modules the
-// process loaded (a D3D9 UMD, or d3d9on12.dll on the D3D12 UMD), then a clear and a fixed-function triangle on a
-// HAL device, read back and checked.
-//   d3d9probe [--9on12] [--present] [output file]
-// --9on12 opts in to D3D9On12 through Direct3DCreate9On12Ex, as an app can, whatever the adapter's D3D9 UMD is.
-// --present shows the window and presents the frame for a second (60 presents), which must all succeed.
-#include <windows.h>
+// Direct3D 9 tests: which driver D3D9 runs on and whether it renders. Each prints the adapter identifier and caps and
+// the graphics modules the process loaded (a D3D9 UMD, or d3d9on12.dll on the D3D12 UMD), then clears and draws a
+// fixed-function triangle on a HAL device, reads it back and checks it.
+//   hal      through the adapter's own D3D9 driver
+//   9on12    through D3D9On12, opted in with Direct3DCreate9On12Ex as an app can, whatever the adapter's D3D9 UMD is
+//   present  the window shown and the frame presented for a second (60 presents), which must all succeed
+#include "tests.h"
+
 #include <d3d9.h>
 #include <psapi.h>
 
@@ -44,7 +45,7 @@ void modules(const char* when)
         for (; path[n] && n + 1 < sizeof(lower); n++)
             lower[n] = static_cast<char>(std::tolower(static_cast<unsigned char>(path[n])));
         lower[n] = 0;
-        for (const char* key : {"d3d9", "d3d1", "vgd", "viogpu", "vulkan", "dxgi", "warp"}) {
+        for (const char* key : {"d3d9", "d3d1", "venera", "viogpu", "vulkan", "dxgi", "warp"}) {
             if (std::strstr(lower, key)) {
                 std::fprintf(out, " %s", path);
                 break;
@@ -87,23 +88,8 @@ bool pixel(IDirect3DDevice9Ex* dev, UINT x, UINT y, D3DCOLOR* value)
     return SUCCEEDED(hr);
 }
 
-} // namespace
-
-int main(int argc, char** argv)
+bool run(bool on12, bool show)
 {
-    bool on12 = false, show = false;
-    for (int i = 1; i < argc; i++) {
-        if (!std::strcmp(argv[i], "--9on12")) {
-            on12 = true;
-        } else if (!std::strcmp(argv[i], "--present")) {
-            show = true;
-        } else if (!(out = std::fopen(argv[i], "w"))) {
-            std::fprintf(stderr, "cannot write %s\n", argv[i]);
-            return 1;
-        }
-    }
-    // Unbuffered, so a crash keeps everything written up to it.
-    std::setvbuf(out, nullptr, _IONBF, 0);
     modules("at start");
 
     IDirect3D9Ex* d3d = nullptr;
@@ -120,7 +106,7 @@ int main(int argc, char** argv)
         std::fprintf(out, "Direct3DCreate9Ex: 0x%08lx\n", hr);
     }
     if (FAILED(hr))
-        return 1;
+        return false;
     D3DADAPTER_IDENTIFIER9 id{};
     hr = d3d->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &id);
     std::fprintf(out, "adapter: 0x%08lx driver '%s' description '%s' version %u.%u.%u.%u vendor %04lx device %04lx\n",
@@ -158,7 +144,7 @@ int main(int argc, char** argv)
     modules("after CreateDeviceEx");
     if (FAILED(hr)) {
         std::fprintf(out, "result: FAIL (no HAL device)\n");
-        return 1;
+        return false;
     }
 
     // Clear to blue, then a red triangle over the middle: the middle turns red, the corner stays blue.
@@ -209,5 +195,21 @@ int main(int argc, char** argv)
     dev->Release();
     d3d->Release();
     DestroyWindow(wnd);
-    return pass ? 0 : 1;
+    return pass;
 }
+
+} // namespace
+
+namespace panel {
+
+TestGroup d3d9Tests()
+{
+    return {"d3d9", L"Direct3D 9", L"Through D3D9On12 on Venera's D3D12 driver", {
+        {"hal", L"Device", L"A clear and a triangle on the adapter's D3D9 device", [] { return run(false, false); }},
+        {"9on12", L"D3D9On12", L"The same with D3D9On12 asked for, as an application can",
+         [] { return run(true, false); }},
+        {"present", L"Presents", L"Shows a small window and presents 60 frames", [] { return run(false, true); }},
+    }};
+}
+
+}  // namespace panel

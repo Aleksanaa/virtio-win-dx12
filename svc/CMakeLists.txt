@@ -4,7 +4,7 @@
 # unchanged: compat/ covers what they take from MSVC, and the WDK headers MinGW lacks (d3dkmthk.h) come after
 # MinGW's own, as for the UMDs.
 set(viogpu ${CMAKE_SOURCE_DIR}/kmd/yttrium/viogpu)
-set(sdk_inc "${VGD_WINKITS_DIR}/sdk/c/Include/10.0.26100.0")
+set(sdk_inc "${VENERA_WINKITS_DIR}/sdk/c/Include/10.0.26100.0")
 set(svc_options -include ${CMAKE_CURRENT_SOURCE_DIR}/compat/msvc_compat.h
     "SHELL:-idirafter ${sdk_inc}/shared" "SHELL:-idirafter ${sdk_inc}/um")
 set(svc_definitions UNICODE _UNICODE NDEBUG _CONSOLE)

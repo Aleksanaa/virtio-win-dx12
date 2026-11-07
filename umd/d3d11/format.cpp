@@ -11,7 +11,7 @@
 //     quality levels, and the depth storage formats and their typed view siblings must agree.
 #include "device.h"
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -164,7 +164,7 @@ void APIENTRY check_format_support(D3D10DDI_HDEVICE h, DXGI_FORMAT format, UINT*
     UINT api = 0;
     if (FAILED(d->d3d->CheckFormatSupport(format, &api))) {
         *caps = D3D10_DDI_FORMAT_SUPPORT_NOT_SUPPORTED;
-        VGD_VERBOSE("CheckFormatSupport(%d): not supported", format);
+        VENERA_VERBOSE("CheckFormatSupport(%d): not supported", format);
         return;
     }
     D3D11_FEATURE_DATA_FORMAT_SUPPORT2 s2{format, 0};
@@ -204,14 +204,14 @@ void APIENTRY check_format_support(D3D10DDI_HDEVICE h, DXGI_FORMAT format, UINT*
         if (depth_load_only(format) && (api & D3D11_FORMAT_SUPPORT_MULTISAMPLE_LOAD))
             *caps |= D3D10_DDI_FORMAT_SUPPORT_MULTISAMPLE_LOAD;
     }
-    VGD_VERBOSE("CheckFormatSupport(%d): api 0x%x/0x%x -> 0x%x", format, api, s2.OutFormatSupport2, *caps);
+    VENERA_VERBOSE("CheckFormatSupport(%d): api 0x%x/0x%x -> 0x%x", format, api, s2.OutFormatSupport2, *caps);
 }
 
 void APIENTRY check_multisample_quality_levels(D3D10DDI_HDEVICE h, DXGI_FORMAT format, UINT samples, UINT* levels)
 {
     Device* d = Device::from(h);
     *levels = msaa_levels(*d, format, samples);
-    VGD_VERBOSE("CheckMultisampleQualityLevels(%d, %u) -> %u", format, samples, *levels);
+    VENERA_VERBOSE("CheckMultisampleQualityLevels(%d, %u) -> %u", format, samples, *levels);
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

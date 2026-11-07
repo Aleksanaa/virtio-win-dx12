@@ -8,16 +8,16 @@
 #include <cstring>
 #include <mutex>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
 std::mutex g_lock;
 HANDLE g_file = INVALID_HANDLE_VALUE;
 bool g_verbose = false;
-const char* g_component = "vgd";
+const char* g_component = "venera";
 
-constexpr const char* kKey = "SOFTWARE\\vgd3d12";
+constexpr const char* kKey = "SOFTWARE\\Venera";
 
 } // namespace
 
@@ -56,13 +56,13 @@ void log_init(const char* component)
     // Append-only access makes each line one atomic append, so processes sharing the file do not cut into each
     // other's lines (the CRT's append mode seeks, then writes). Write-through keeps the log when the VM is killed
     // because the desktop never came up.
-    if (setting("VGD_LOG", path, sizeof(path)))
+    if (setting("VENERA_LOG", path, sizeof(path)))
         g_file = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (g_file != INVALID_HANDLE_VALUE)
         log_exceptions();
     char v[8];
-    g_verbose = setting("VGD_VERBOSE", v, sizeof(v)) && v[0] == '1';
+    g_verbose = setting("VENERA_VERBOSE", v, sizeof(v)) && v[0] == '1';
 }
 
 bool verbose() { return g_verbose; }
@@ -91,4 +91,4 @@ void logf(LogLevel level, const char* fmt, ...)
     }
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

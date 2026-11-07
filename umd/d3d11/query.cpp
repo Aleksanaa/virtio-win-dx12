@@ -5,7 +5,7 @@
 
 #include <cstring>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -52,7 +52,7 @@ void APIENTRY create_query(D3D10DDI_HDEVICE h, const D3D10DDIARG_CREATEQUERY* a,
     q->type = a->Query;
     D3D11_QUERY type;
     if (!api_query(a->Query, &type)) {
-        VGD_WARN("CreateQuery: query type %d (a counter?) not supported", a->Query);
+        VENERA_WARN("CreateQuery: query type %d (a counter?) not supported", a->Query);
         d->set_error(DXGI_DDI_ERR_UNSUPPORTED);
         return;
     }
@@ -62,7 +62,7 @@ void APIENTRY create_query(D3D10DDI_HDEVICE h, const D3D10DDIARG_CREATEQUERY* a,
                      ? d->d3d->CreatePredicate(&desc, reinterpret_cast<ID3D11Predicate**>(q->query.put()))
                      : d->d3d->CreateQuery(&desc, q->query.put());
     if (FAILED(hr)) {
-        VGD_WARN("CreateQuery: type %d failed: 0x%08lx", type, hr);
+        VENERA_WARN("CreateQuery: type %d failed: 0x%08lx", type, hr);
         d->set_error(E_OUTOFMEMORY);
     }
 }
@@ -130,4 +130,4 @@ void fill_query_ddi(D3D11_1DDI_DEVICEFUNCS& t)
     t.pfnSetPredication = set_predication;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

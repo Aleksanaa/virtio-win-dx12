@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
-// vgd-setup.exe: the installer, a wizard window (ui.cpp) with the log in view while it works. It checks the system (Windows 11 x64, a VirtIO GPU, Secure Boot off, test signing
+// venera-setup.exe: the installer, a wizard window (ui.cpp) with the log in view while it works. It checks the system (Windows 11 x64, a VirtIO GPU, Secure Boot off, test signing
 // on; it offers to turn test signing on), says what it will replace, and installs, updates or reinstalls the driver
 // package (install.cpp). The copy it leaves in Program Files uninstalls.
-//   vgd-setup.exe [/S] [/testsigning]     install or update; /S: silently; /testsigning: with /S, turn test signing
+//   venera-setup.exe [/S] [/testsigning]     install or update; /S: silently; /testsigning: with /S, turn test signing
 //                                         on if it is off (then restart and run it again)
-//   vgd-setup.exe /uninstall [/S]
-//   vgd-setup.exe /cleanup              run by a one-shot task at the boot after an install (install.cpp)
+//   venera-setup.exe /uninstall [/S]
+//   venera-setup.exe /cleanup              run by a one-shot task at the boot after an install (install.cpp)
 // Exit codes as MSI's: 0 done, 3010 done but restart, 1602 cancelled, 1603 failed, 1633 this system cannot take it
-// (yet), 1618 another instance is running. The log is %ProgramData%\vgd\setup.log.
+// (yet), 1618 another instance is running. The log is %ProgramData%\Venera\setup.log.
 #include "setup.h"
 
 #include <shellapi.h>
@@ -22,7 +22,7 @@ namespace {
 constexpr int kDone = 0, kRestart = ERROR_SUCCESS_REBOOT_REQUIRED, kCancelled = ERROR_INSTALL_USEREXIT,
               kFailed = ERROR_INSTALL_FAILURE, kUnsupported = ERROR_INSTALL_PLATFORM_UNSUPPORTED,
               kRunning = ERROR_INSTALL_ALREADY_RUNNING;
-constexpr wchar_t kTitle[] = L"vgd Setup";
+constexpr wchar_t kTitle[] = L"Venera Setup";
 constexpr int kButtonPrimary = 100, kButtonReboot = 102;
 
 struct Options {
@@ -97,7 +97,7 @@ int run_work(const std::wstring& heading, const std::function<bool(const Progres
 
 // --- Install
 
-constexpr wchar_t kDocs[] = L"https://github.com/Aleksanaa/virtio-win-dx12#required-configuration";
+constexpr wchar_t kDocs[] = L"https://github.com/Aleksanaa/venera#required-configuration";
 
 int blocked(const SystemState& s, const std::wstring& main, const std::wstring& content)
 {
@@ -111,7 +111,7 @@ int offer_test_signing(const Options& opts, const SystemState& s)
 {
     if (wizard) {
         Page page = {L"Test signing must be on", {},
-                     L"vgd's drivers are test-signed: Windows loads them only with test signing on, which shows "
+                     L"Venera's drivers are test-signed: Windows loads them only with test signing on, which shows "
                      L"\"Test Mode\" in a corner of the desktop. Turning it on takes a reboot; run this installer "
                      L"again after it.\n\nIf BitLocker is on, its protection is suspended for that one reboot, so "
                      L"that it does not ask for the recovery key.",
@@ -151,20 +151,20 @@ bool confirm_install(const SystemState& s)
 {
     std::wstring heading, action = L"Install";
     if (s.installed_version.empty()) {
-        heading = L"Install vgd " + version;
+        heading = L"Install Venera " + version;
     } else {
         int c = compare_versions(version, s.installed_version);
         action = c > 0 ? L"Update" : c == 0 ? L"Reinstall" : L"Downgrade";
-        heading = c > 0  ? L"Update vgd " + s.installed_version + L" to " + version
-                : c == 0 ? L"Reinstall vgd " + version
-                         : L"Replace vgd " + s.installed_version + L" with the older " + version;
+        heading = c > 0  ? L"Update Venera " + s.installed_version + L" to " + version
+                : c == 0 ? L"Reinstall Venera " + version
+                         : L"Replace Venera " + s.installed_version + L" with the older " + version;
     }
-    std::wstring text = L"vgd brings Direct3D 9 to 12, Vulkan and OpenGL to the VirtIO GPU, rendered on the host's "
+    std::wstring text = L"Venera brings Direct3D 9 to 12, Vulkan and OpenGL to the VirtIO GPU, rendered on the host's "
                         L"GPU through Venus.";
     if (s.device_driver.empty())
         text += L"\n\nThe VirtIO GPU has no driver configured now.";
     else if (_wcsicmp(s.device_provider.c_str(), kProvider) != 0)
-        text += format(L"\n\nThe VirtIO GPU runs on %ls (%ls %ls) now; vgd replaces it.", s.device_driver.c_str(),
+        text += format(L"\n\nThe VirtIO GPU runs on %ls (%ls %ls) now; Venera replaces it.", s.device_driver.c_str(),
                        s.device_provider.c_str(), s.device_version.c_str());
     std::wstring others;
     for (const auto& p : s.packages)
@@ -172,7 +172,7 @@ bool confirm_install(const SystemState& s)
             others += format(L"\n  •  %ls %ls (%ls)", p.provider.c_str(), p.version.c_str(), p.inf.c_str());
     if (!others.empty())
         text += L"\n\nThese drivers for it are removed from the driver store, so that Windows does not pick them "
-                L"over vgd again:" + others;
+                L"over Venera again:" + others;
     if (!s.cert_exists)
         text += std::wstring(L"\n\nThe installer signs the driver package with a certificate it creates on this "
                              L"computer, \"") + kCertSubject + L"\", and trusts it, so that Windows installs the "
@@ -190,7 +190,7 @@ int run_install(const Options& opts)
     SystemState s = inspect();
     log(s.summary());
     if (!s.x64 || s.build < 22000)
-        return blocked(s, L"vgd needs 64-bit Windows 11",
+        return blocked(s, L"Venera needs 64-bit Windows 11",
                        format(L"This is Windows build %lu%ls.", s.build, s.x64 ? L"" : L", not x64"));
     if (s.devices == 0)
         return blocked(s, L"There is no VirtIO GPU",
@@ -198,7 +198,7 @@ int run_install(const Options& opts)
                        L"venus=true, hostmem set). See ") + kDocs);
     if (s.secure_boot)
         return blocked(s, L"Secure Boot is on",
-                       std::wstring(L"vgd's drivers are test-signed, which takes test signing, which Secure Boot "
+                       std::wstring(L"Venera's drivers are test-signed, which takes test signing, which Secure Boot "
                        L"does not allow. Turn Secure Boot off in the VM's firmware:\n\n  •  libvirt: use the UEFI "
                        L"firmware without Secure Boot (<os firmware=\"efi\"> with <feature enabled=\"no\" "
                        L"name=\"secure-boot\"/>).\n  •  QEMU: use OVMF_CODE.fd instead of OVMF_CODE.secboot.fd, or "
@@ -211,8 +211,8 @@ int run_install(const Options& opts)
         log(L"Warnings:" + w);
     if (wizard && !confirm_install(s))
         return kCancelled;
-    return run_work(L"Installing vgd " + version, [&s](const Progress& p) { return install(s, version, p); },
-                    L"vgd " + version + L" is installed");
+    return run_work(L"Installing Venera " + version, [&s](const Progress& p) { return install(s, version, p); },
+                    L"Venera " + version + L" is installed");
 }
 
 int run_uninstall()
@@ -221,7 +221,7 @@ int run_uninstall()
     log(s.summary());
     if (wizard) {
         std::wstring installed = s.installed_version.empty() ? L"" : L" " + s.installed_version;
-        Page page = {L"Uninstall vgd" + installed, {},
+        Page page = {L"Uninstall Venera" + installed, {},
                      L"The VirtIO GPU goes back to the Microsoft Basic Display Adapter (no 3D) after a reboot, and "
                      L"the signing certificate is removed.\n\nTest signing stays on. If nothing else needs it, turn "
                      L"it off from an elevated prompt with  bcdedit /set testsigning off  and reboot.",
@@ -229,7 +229,7 @@ int run_uninstall()
         if (wizard->ask(page) != kButtonPrimary)
             return kCancelled;
     }
-    return run_work(L"Uninstalling vgd", [](const Progress& p) { return uninstall(p); }, L"vgd is uninstalled");
+    return run_work(L"Uninstalling Venera", [](const Progress& p) { return uninstall(p); }, L"Venera is uninstalled");
 }
 
 }  // namespace
@@ -296,7 +296,7 @@ std::wstring self_path()
 
 std::wstring log_path()
 {
-    return known_folder(FOLDERID_ProgramData) + L"\\vgd\\setup.log";
+    return known_folder(FOLDERID_ProgramData) + L"\\venera\\setup.log";
 }
 
 namespace {
@@ -416,20 +416,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             opts.cleanup = opts.silent = true;
         else {
             MessageBoxW(nullptr,
-                        L"vgd-setup.exe [/S] [/testsigning]\n    Install or update; /S silently; /testsigning with "
-                        L"/S: turn test signing on if it is off.\n\nvgd-setup.exe /uninstall [/S]",
+                        L"venera-setup.exe [/S] [/testsigning]\n    Install or update; /S silently; /testsigning with "
+                        L"/S: turn test signing on if it is off.\n\nvenera-setup.exe /uninstall [/S]",
                         kTitle, MB_ICONINFORMATION);
             return a == L"/?" ? kDone : ERROR_INVALID_PARAMETER;
         }
     }
     LocalFree(argv);
-    log(format(L"vgd-setup %ls (%ls): %ls", version.c_str(), build_id.c_str(), GetCommandLineW()));
+    log(format(L"venera-setup %ls (%ls): %ls", version.c_str(), build_id.c_str(), GetCommandLineW()));
 
-    HANDLE instance = CreateMutexW(nullptr, TRUE, L"Global\\vgd-setup");
+    HANDLE instance = CreateMutexW(nullptr, TRUE, L"Global\\venera-setup");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        log(L"Another vgd-setup is running");
+        log(L"Another venera-setup is running");
         if (!opts.silent)
-            MessageBoxW(nullptr, L"vgd Setup is running already.", kTitle, MB_ICONWARNING);
+            MessageBoxW(nullptr, L"Venera Setup is running already.", kTitle, MB_ICONWARNING);
         return kRunning;
     }
     if (!opts.silent)

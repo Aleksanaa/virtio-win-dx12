@@ -9,7 +9,7 @@
 #include <cstddef>
 #include <new>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -35,8 +35,8 @@ HRESULT APIENTRY create_descriptor_heap(D3D12DDI_HDEVICE h, const D3D12DDIARG_CR
                                           args->NodeMask};
     HRESULT hr = Device::from(h)->d3d->CreateDescriptorHeap(&desc, __uuidof(ID3D12DescriptorHeap), obj->heap.put_void());
     if (FAILED(hr)) {
-        VGD_WARN("CreateDescriptorHeap: type %d, %u descriptors, flags 0x%x failed: 0x%08lx",
-                 static_cast<int>(args->Type), args->NumDescriptors, static_cast<unsigned>(args->Flags), hr);
+        VENERA_WARN("CreateDescriptorHeap: type %d, %u descriptors, flags 0x%x failed: 0x%08lx",
+                    static_cast<int>(args->Type), args->NumDescriptors, static_cast<unsigned>(args->Flags), hr);
         obj->~DescriptorHeapObject();
         return E_OUTOFMEMORY;
     }
@@ -140,7 +140,7 @@ void APIENTRY create_shader_resource_view(D3D12DDI_HDEVICE h, const D3D12DDIARG_
         r = nullptr;
         break;
     default:
-        VGD_WARN("CreateShaderResourceView: dimension %d not supported", static_cast<int>(a->ResourceDimension));
+        VENERA_WARN("CreateShaderResourceView: dimension %d not supported", static_cast<int>(a->ResourceDimension));
         return;
     }
     Device::from(h)->d3d->CreateShaderResourceView(r, &v, cpu(dest));
@@ -184,7 +184,7 @@ void APIENTRY create_unordered_access_view(D3D12DDI_HDEVICE h, const D3D12DDIARG
         v.Texture3D = {a->Tex3D.MipSlice, a->Tex3D.FirstW, a->Tex3D.WSize};
         break;
     default:
-        VGD_WARN("CreateUnorderedAccessView: dimension %d not supported", static_cast<int>(a->ResourceDimension));
+        VENERA_WARN("CreateUnorderedAccessView: dimension %d not supported", static_cast<int>(a->ResourceDimension));
         return;
     }
     Device::from(h)->d3d->CreateUnorderedAccessView(resource_of(a->hDrvResource), counter, &v, cpu(dest));
@@ -230,7 +230,7 @@ void APIENTRY create_depth_stencil_view(D3D12DDI_HDEVICE h, const D3D12DDIARG_CR
         }
         break;
     default:
-        VGD_WARN("CreateDepthStencilView: dimension %d not supported", static_cast<int>(a->ResourceDimension));
+        VENERA_WARN("CreateDepthStencilView: dimension %d not supported", static_cast<int>(a->ResourceDimension));
         return;
     }
     Device::from(h)->d3d->CreateDepthStencilView(r, &v, cpu(dest));
@@ -271,7 +271,7 @@ void APIENTRY create_render_target_view(D3D12DDI_HDEVICE h, const D3D12DDIARG_CR
         v.Texture3D = {a->Tex3D.MipSlice, a->Tex3D.FirstW, a->Tex3D.WSize};
         break;
     default:
-        VGD_WARN("CreateRenderTargetView: dimension %d not supported", static_cast<int>(a->ResourceDimension));
+        VENERA_WARN("CreateRenderTargetView: dimension %d not supported", static_cast<int>(a->ResourceDimension));
         return;
     }
     Device::from(h)->d3d->CreateRenderTargetView(r, &v, cpu(dest));
@@ -317,4 +317,4 @@ void fill_descriptor_ddi(D3D12DDI_DEVICE_FUNCS_CORE_0088& t)
     t.pfnCopyDescriptorsSimple = copy_descriptors_simple;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

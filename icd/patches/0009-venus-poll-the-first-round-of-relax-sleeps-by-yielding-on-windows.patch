@@ -1,4 +1,4 @@
-From: vgd3d12
+From: venera_d3d12
 Subject: venus: poll the first round of relax sleeps by yielding on Windows
 
 vn_relax polls fences, semaphores, queries and ring progress with sleeps

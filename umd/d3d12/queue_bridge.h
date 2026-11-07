@@ -25,7 +25,7 @@
 #include <mutex>
 #include <thread>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 struct Device;
 
@@ -64,4 +64,4 @@ private:
     std::thread gate_thread_, completion_thread_;
 };
 
-} // namespace vgd::umd
+} // namespace venera::umd

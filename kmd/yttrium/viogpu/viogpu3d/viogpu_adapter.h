@@ -49,7 +49,8 @@ typedef struct
     UINT VgaDevice : 1;
     UINT FlexResolution : 1;
     UINT UsePhysicalMemory : 1;
-    UINT Unused : 26;
+    UINT CursorSwapRB : 1;
+    UINT Unused : 25;
 } DRIVER_STATUS_FLAG;
 
 #pragma pack(pop)
@@ -205,6 +206,14 @@ class VioGpuAdapter : IVioGpuPCI, public IVioGpuQueueSync
     {
         m_Flags.UsePhysicalMemory = enable;
     }
+    BOOLEAN IsCursorSwapRB() const
+    {
+        return m_Flags.CursorSwapRB;
+    }
+    void SetCursorSwapRB(BOOLEAN enable)
+    {
+        m_Flags.CursorSwapRB = enable;
+    }
 #pragma code_seg(pop)
 
     NTSTATUS StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
@@ -295,6 +304,8 @@ class VioGpuAdapter : IVioGpuPCI, public IVioGpuQueueSync
     NTSTATUS ReadRegistryDWORD(_In_ HANDLE DevInstRegKeyHandle, _In_ PCWSTR pszwValueName, _Inout_ PDWORD pdwValue);
     NTSTATUS SetRegisterInfo(_In_ ULONG Id, _In_ DWORD MemSize);
     NTSTATUS GetRegisterInfo(void);
+    void ReadCursorSettings(_In_ HANDLE DevInstRegKeyHandle);
+    void RereadCursorSettings(void);
 
     NTSTATUS HWInit(PCM_RESOURCE_LIST pResList);
     NTSTATUS HWClose(void);

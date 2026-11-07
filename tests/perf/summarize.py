@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-# Summarizes `vgd-test.ps1 Perf` runs: cuts each run's ETW trace (perf.csv) into uibench's scenarios and reports, per
+# Summarizes `venera-test.ps1 Perf` runs: cuts each run's ETW trace (perf.csv) into uibench's scenarios and reports, per
 # scenario, how regular the display's VSync was, how often and how evenly DWM composed and the screen flipped, how
 # long DWM spent per frame, and how long GPU work took to complete (submit to done: the host round trip on Venus).
 # Several runs are reported side by side, so two builds can be compared.
@@ -201,8 +201,8 @@ def main():
     names = [r.name for r in runs]
     for r in runs:
         info = (r / 'info.txt').read_text(encoding='utf-8-sig', errors='replace').split('\n')
-        print(f'{r.name}: ' + '; '.join(l for l in info if l.startswith(('driver', 'file viogpu3d', 'file vgd3d11',
-                                                                         'file vgd_vulkan', 'logical'))))
+        print(f'{r.name}: ' + '; '.join(l for l in info if l.startswith(('driver', 'file viogpu3d', 'file venera_d3d11',
+                                                                         'file venera_vulkan', 'logical'))))
     for scenario in scenarios:
         print(f'\n== {scenario}')
         print(f'{"":30}' + ''.join(f'{n:>16}' for n in names))

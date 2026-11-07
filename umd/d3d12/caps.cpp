@@ -10,7 +10,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -18,8 +18,8 @@ template <class T>
 T* payload(const D3D12DDIARG_GETCAPS& r)
 {
     if (!r.pData || r.DataSize != sizeof(T)) {
-        VGD_WARN("GetCaps type=%d: DataSize %u, expected %u", static_cast<int>(r.Type), r.DataSize,
-                 static_cast<unsigned>(sizeof(T)));
+        VENERA_WARN("GetCaps type=%d: DataSize %u, expected %u", static_cast<int>(r.Type), r.DataSize,
+                    static_cast<unsigned>(sizeof(T)));
         return nullptr;
     }
     return static_cast<T*>(r.pData);
@@ -306,11 +306,11 @@ HRESULT get_caps(ID3D12Device* dev, const D3D12DDIARG_GETCAPS& r)
     }
     default:
         // An unknown query gets an all-zero answer ("not supported"). Each one logged here needs a real decision.
-        VGD_WARN("GetCaps type=%d size=%u: UNHANDLED, answered with zeros", static_cast<int>(r.Type), r.DataSize);
+        VENERA_WARN("GetCaps type=%d size=%u: UNHANDLED, answered with zeros", static_cast<int>(r.Type), r.DataSize);
         if (!r.pData) return E_INVALIDARG;
         std::memset(r.pData, 0, r.DataSize);
         return S_OK;
     }
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

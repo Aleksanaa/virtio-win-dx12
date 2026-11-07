@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MIT
-// Guest probe: a Vulkan swapchain through the Vulkan loader (vulkan-1.dll), as applications use one. Creates a Win32
-// surface and a swapchain on the first GPU, then for 120 frames acquires an image with a semaphore, clears it in a
+// Vulkan tests: a swapchain through the Vulkan loader (vulkan-1.dll), as applications use one. Creates a Win32 surface
+// and a swapchain on the Venus device, then for 120 frames acquires an image with a semaphore, clears it in a
 // submission waiting on that semaphore and presents it. Prints every step's result.
-//   vkswapchain [--d3d11] [--gpu N] [output file]
-// --d3d11 first creates a D3D11 device (so our D3D11 UMD, and its DXVK on the same ICD, are in the process too);
-// --gpu N uses the Nth physical device instead of the first.
-#include <windows.h>
+//   swapchain        the swapchain alone
+//   swapchain-d3d11  with a D3D11 device created first, so our D3D11 UMD, and its DXVK on the same ICD, are in the
+//                    process too
+#include "tests.h"
+
 #include <d3d11.h>
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
 
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -25,26 +25,11 @@ FILE* out = stdout;
         const VkResult r_ = (call);                                                                                    \
         std::fprintf(out, "%-60s %d\n", #call, static_cast<int>(r_));                                                 \
         if (r_ < 0)                                                                                                    \
-            return 1;                                                                                                  \
+            return false;                                                                                              \
     } while (0)
 
-} // namespace
-
-int main(int argc, char** argv)
+bool swapchain(bool d3d11)
 {
-    bool d3d11 = false;
-    unsigned gpu_index = 0;
-    for (int i = 1; i < argc; i++) {
-        if (!std::strcmp(argv[i], "--d3d11")) {
-            d3d11 = true;
-        } else if (!std::strcmp(argv[i], "--gpu") && i + 1 < argc) {
-            gpu_index = static_cast<unsigned>(std::atoi(argv[++i]));
-        } else if (!(out = std::fopen(argv[i], "w"))) {
-            std::fprintf(stderr, "cannot write %s\n", argv[i]);
-            return 1;
-        }
-    }
-    std::setvbuf(out, nullptr, _IONBF, 0);   // a crash keeps what was written before it
     ID3D11Device* d3d11_device = nullptr;
     if (d3d11) {
         D3D_FEATURE_LEVEL level{};
@@ -59,7 +44,7 @@ int main(int argc, char** argv)
                        : nullptr;
     if (!gipa) {
         std::fprintf(out, "no vulkan-1.dll\n");
-        return 1;
+        return false;
     }
 #define INSTANCE_FN(name) auto name = reinterpret_cast<PFN_##name>(gipa(instance, #name))
     VkInstance instance = VK_NULL_HANDLE;
@@ -86,15 +71,19 @@ int main(int argc, char** argv)
     CHECK(vkEnumeratePhysicalDevices(instance, &count, nullptr));
     std::vector<VkPhysicalDevice> gpus(count);
     CHECK(vkEnumeratePhysicalDevices(instance, &count, gpus.data()));
+    // the Venus device: its name is "Virtio-GPU Venus (<host GPU>)"
+    VkPhysicalDevice gpu = VK_NULL_HANDLE;
     for (VkPhysicalDevice g : gpus) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(g, &p);
         std::fprintf(out, "gpu: %s (type %d)\n", p.deviceName, static_cast<int>(p.deviceType));
+        if (!gpu && !std::strncmp(p.deviceName, "Virtio-GPU Venus", 16))
+            gpu = g;
     }
-    if (gpu_index >= count)
-        return 1;
-    VkPhysicalDevice gpu = gpus[gpu_index];
-    std::fprintf(out, "using gpu %u\n", gpu_index);
+    if (!gpu) {
+        std::fprintf(out, "no Venus device\n");
+        return false;
+    }
 
     WNDCLASSW wc{};
     wc.lpfnWndProc = DefWindowProcW;
@@ -121,7 +110,7 @@ int main(int argc, char** argv)
     }
     std::fprintf(out, "graphics+present queue family: %u\n", family);
     if (family == UINT32_MAX)
-        return 1;
+        return false;
 
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -167,7 +156,7 @@ int main(int argc, char** argv)
                  count ? static_cast<int>(formats[0].format) : -1, caps.currentExtent.width, caps.currentExtent.height,
                  caps.minImageCount, caps.maxImageCount, caps.supportedUsageFlags);
     if (!count)
-        return 1;
+        return false;
 
     VkSwapchainCreateInfoKHR swci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     swci.surface = surface;
@@ -275,5 +264,20 @@ int main(int argc, char** argv)
     vkDeviceWaitIdle(device);
     std::fprintf(out, "%u of 120 frames presented\nresult: %s\n", presented, presented == 120 ? "PASS" : "FAIL");
     DestroyWindow(wnd);
-    return presented == 120 ? 0 : 1;
+    return presented == 120;
 }
+
+} // namespace
+
+namespace panel {
+
+TestGroup vulkanTests()
+{
+    return {"vulkan", L"Vulkan", L"Venus through the Vulkan loader", {
+        {"swapchain", L"Swapchain", L"Presents 120 frames to a window", [] { return swapchain(false); }},
+        {"swapchain-d3d11", L"Swapchain beside Direct3D 11", L"The same with a D3D11 device in the process",
+         [] { return swapchain(true); }},
+    }};
+}
+
+}  // namespace panel

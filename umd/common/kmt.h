@@ -11,7 +11,7 @@
 #include <memory>
 #include "viogpu_abi.h"
 
-namespace vgd::umd {
+namespace venera::umd {
 
 class KmtDevice {
 public:
@@ -62,4 +62,4 @@ inline int fd_of_handle(HANDLE h)
     return v > INT_MAX ? -1 : static_cast<int>(v);
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

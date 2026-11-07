@@ -8,7 +8,7 @@
 #include <new>
 #include <vector>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 std::unique_ptr<KmtDevice> KmtDevice::open()
 {
@@ -30,7 +30,7 @@ std::unique_ptr<KmtDevice> KmtDevice::open()
         !get(k->destroy_allocation_, "D3DKMTDestroyAllocation") || !get(k->share_objects_, "D3DKMTShareObjects") ||
         !get(k->create_allocation_, "D3DKMTCreateAllocation") ||
         !get(k->escape_, "D3DKMTEscape")) {
-        VGD_WARN("kmt: gdi32 lacks the D3DKMT entry points we need");
+        VENERA_WARN("kmt: gdi32 lacks the D3DKMT entry points we need");
         return nullptr;
     }
 
@@ -54,22 +54,22 @@ std::unique_ptr<KmtDevice> KmtDevice::open()
         } else {
             D3DKMT_CLOSEADAPTER ca{adapters[i].hAdapter};
             if (k->close_adapter_(&ca) < 0)
-                VGD_WARN("kmt: D3DKMTCloseAdapter(0x%x) failed", adapters[i].hAdapter);
+                VENERA_WARN("kmt: D3DKMTCloseAdapter(0x%x) failed", adapters[i].hAdapter);
         }
     }
     if (!k->adapter_) {
-        VGD_WARN("kmt: no viogpu adapter among %lu", e.NumAdapters);
+        VENERA_WARN("kmt: no viogpu adapter among %lu", e.NumAdapters);
         return nullptr;
     }
     D3DKMT_CREATEDEVICE cd{};
     cd.hAdapter = k->adapter_;
     NTSTATUS s = k->create_device_(&cd);
     if (s < 0) {
-        VGD_WARN("kmt: D3DKMTCreateDevice failed: 0x%08lx", s);
+        VENERA_WARN("kmt: D3DKMTCreateDevice failed: 0x%08lx", s);
         return nullptr;
     }
     k->device_ = cd.hDevice;
-    VGD_TRACE("kmt: kernel device 0x%x on adapter 0x%x", k->device_, k->adapter_);
+    VENERA_TRACE("kmt: kernel device 0x%x on adapter 0x%x", k->device_, k->adapter_);
     return k;
 }
 
@@ -78,12 +78,12 @@ KmtDevice::~KmtDevice()
     if (device_) {
         D3DKMT_DESTROYDEVICE dd{device_};
         if (destroy_device_(&dd) < 0)
-            VGD_WARN("kmt: D3DKMTDestroyDevice(0x%x) failed", device_);
+            VENERA_WARN("kmt: D3DKMTDestroyDevice(0x%x) failed", device_);
     }
     if (adapter_) {
         D3DKMT_CLOSEADAPTER ca{adapter_};
         if (close_adapter_(&ca) < 0)
-            VGD_WARN("kmt: D3DKMTCloseAdapter(0x%x) failed", adapter_);
+            VENERA_WARN("kmt: D3DKMTCloseAdapter(0x%x) failed", adapter_);
     }
 }
 
@@ -94,7 +94,7 @@ HRESULT KmtDevice::open_shared(HANDLE nt, D3DKMT_HANDLE* resource, D3DKMT_HANDLE
     q.hNtHandle = nt;
     NTSTATUS s = query_resource_info_(&q);
     if (s < 0 || q.NumAllocations != 1) {
-        VGD_WARN("kmt: QueryResourceInfoFromNtHandle failed: 0x%08lx, %u allocations", s, q.NumAllocations);
+        VENERA_WARN("kmt: QueryResourceInfoFromNtHandle failed: 0x%08lx, %u allocations", s, q.NumAllocations);
         return E_FAIL;
     }
     std::vector<char> runtime(q.PrivateRuntimeDataSize), total(q.TotalPrivateDriverDataSize),
@@ -113,7 +113,7 @@ HRESULT KmtDevice::open_shared(HANDLE nt, D3DKMT_HANDLE* resource, D3DKMT_HANDLE
     o.pTotalPrivateDriverDataBuffer = total.data();
     s = open_resource_(&o);
     if (s < 0 || !info.hAllocation) {
-        VGD_WARN("kmt: OpenResourceFromNtHandle failed: 0x%08lx", s);
+        VENERA_WARN("kmt: OpenResourceFromNtHandle failed: 0x%08lx", s);
         return E_FAIL;
     }
     *resource = o.hResource;
@@ -128,7 +128,7 @@ void KmtDevice::close(D3DKMT_HANDLE resource)
     d.hResource = resource;
     NTSTATUS s = destroy_allocation_(&d);
     if (s < 0)
-        VGD_WARN("kmt: closing opened resource 0x%x failed: 0x%08lx", resource, s);
+        VENERA_WARN("kmt: closing opened resource 0x%x failed: 0x%08lx", resource, s);
 }
 
 HRESULT KmtDevice::share(D3DKMT_HANDLE object, DWORD access, HANDLE* nt)
@@ -138,7 +138,7 @@ HRESULT KmtDevice::share(D3DKMT_HANDLE object, DWORD access, HANDLE* nt)
     *nt = nullptr;
     NTSTATUS s = share_objects_(1, &object, &attrs, access, nt);
     if (s < 0 || !*nt) {
-        VGD_WARN("kmt: D3DKMTShareObjects(0x%x) failed: 0x%08lx", object, s);
+        VENERA_WARN("kmt: D3DKMTShareObjects(0x%x) failed: 0x%08lx", object, s);
         return E_FAIL;
     }
     return S_OK;
@@ -168,7 +168,7 @@ HRESULT KmtDevice::share_surface(D3DKMT_HANDLE allocation, const viogpu::Allocat
     create.Flags.NtSecuritySharing = 1;
     const NTSTATUS status = create_allocation_(&create);
     if (status < 0) {
-        VGD_WARN("kmt: NT alias of allocation 0x%x failed: 0x%08lx", allocation, status);
+        VENERA_WARN("kmt: NT alias of allocation 0x%x failed: 0x%08lx", allocation, status);
         return E_FAIL;
     }
     const HRESULT hr = share(create.hResource, nt);
@@ -190,9 +190,9 @@ UINT KmtDevice::resource_id(D3DKMT_HANDLE allocation)
     args.PrivateDriverDataSize = sizeof(e);
     const NTSTATUS s = escape_(&args);
     if (s < 0) {
-        VGD_WARN("kmt: resource info of allocation 0x%x failed: 0x%08lx", allocation, s);
+        VENERA_WARN("kmt: resource info of allocation 0x%x failed: 0x%08lx", allocation, s);
         return 0;
     }
     return e.ResourceInfo.Id;
 }
-} // namespace vgd::umd
+} // namespace venera::umd

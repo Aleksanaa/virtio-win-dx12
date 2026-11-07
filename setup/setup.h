@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// vgd-setup.exe: installs, updates and uninstalls the driver package (pkg/vgd.inf), which the build packs into the
-// executable as a cabinet (setup/payload.cmake). See main.cpp for the flow.
+// venera-setup.exe: installs, updates and uninstalls the driver package (pkg/venera.inf) and the control panel, which
+// the build packs into the executable as a cabinet (setup/payload.cmake). See main.cpp for the flow.
 #pragma once
 
 #include <windows.h>
@@ -12,16 +12,20 @@
 #include <string>
 #include <vector>
 
-// The VirtIO GPU as pkg/vgd.inf names it, and the part of it any virtio-gpu driver package names.
+// The VirtIO GPU as pkg/venera.inf names it, and the part of it any virtio-gpu driver package names.
 inline constexpr wchar_t kHardwareId[] = L"PCI\\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01";
 inline constexpr wchar_t kDeviceIdPrefix[] = L"VEN_1AF4&DEV_1050";
-// pkg/vgd.inf's provider, which marks our packages in the driver store.
-inline constexpr wchar_t kProvider[] = L"vgd project";
+// pkg/venera.inf's provider, which marks our packages in the driver store.
+inline constexpr wchar_t kProvider[] = L"Venera project";
 // The certificate that signs the package's catalog, created on each computer (install.cpp).
-inline constexpr wchar_t kCertSubject[] = L"vgd test signing";
-inline constexpr wchar_t kUninstallKey[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\vgd";
-inline constexpr wchar_t kProductName[] = L"vgd";
-inline constexpr wchar_t kProjectUrl[] = L"https://github.com/Aleksanaa/virtio-win-dx12";
+inline constexpr wchar_t kCertSubject[] = L"Venera test signing";
+inline constexpr wchar_t kUninstallKey[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Venera";
+inline constexpr wchar_t kProductName[] = L"Venera";
+inline constexpr wchar_t kProjectUrl[] = L"https://github.com/Aleksanaa/venera";
+// The control panel, installed in install_dir() and linked from the Start menu and the desktop's context menu.
+inline constexpr wchar_t kPanelExe[] = L"venera-panel.exe";
+inline constexpr wchar_t kPanelCom[] = L"venera-panel.com";
+inline constexpr wchar_t kPanelName[] = L"Venera Display Control Panel";
 
 // An error to show the user: what failed, with the system's message for the error code.
 struct Failure {
@@ -31,7 +35,7 @@ struct Failure {
 [[noreturn]] void fail(const std::wstring& what);
 std::wstring error_text(DWORD error);
 
-// Appends to %ProgramData%\vgd\setup.log (and stdout when it is redirected, as under the guest agent).
+// Appends to %ProgramData%\Venera\setup.log (and stdout when it is redirected, as under the guest agent).
 void log(const std::wstring& line);
 std::wstring log_path();
 

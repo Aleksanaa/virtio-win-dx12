@@ -3,7 +3,7 @@
 
 #include <cstring>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 const char* const kSharingExtensions[3] = {
     VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
@@ -28,17 +28,17 @@ HRESULT VulkanDevice::init(PFN_vkGetInstanceProcAddr gipa, VkInstance inst, VkPh
     instance = inst;
     physical = phys;
     device = dev;
-#define VGD_VK_FN(fn) vk.fn = reinterpret_cast<PFN_##fn>(gipa(instance, #fn));
+#define VENERA_VK_FN(fn) vk.fn = reinterpret_cast<PFN_##fn>(gipa(instance, #fn));
 #include "vulkan_fns.inc"
-#undef VGD_VK_FN
+#undef VENERA_VK_FN
     if (!vk.vkGetDeviceProcAddr)
         return E_FAIL;
     // Device-level functions straight from the device, skipping the instance's trampolines.
-#define VGD_VK_FN(fn)                                                                                       \
+#define VENERA_VK_FN(fn)                                                                                       \
     if (auto p = vk.vkGetDeviceProcAddr(device, #fn))                                                      \
         vk.fn = reinterpret_cast<PFN_##fn>(p);
 #include "vulkan_fns.inc"
-#undef VGD_VK_FN
+#undef VENERA_VK_FN
 
     uint32_t count = 0;
     vk.vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
@@ -54,4 +54,4 @@ HRESULT VulkanDevice::init(PFN_vkGetInstanceProcAddr gipa, VkInstance inst, VkPh
     return S_OK;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

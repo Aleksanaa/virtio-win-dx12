@@ -5,7 +5,7 @@
 
 #include <array>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -40,7 +40,7 @@ ID3D11DeviceContext4* ctx(D3D10DDI_HDEVICE h) { return Device::from(h)->ctx.get(
 
 // --- Per-stage bindings ------------------------------------------------------------------------------------
 
-#define VGD_STAGE(Ddi, Api, Shader)                                                                                 \
+#define VENERA_STAGE(Ddi, Api, Shader)                                                                                 \
     void APIENTRY Ddi##_set_shader(D3D10DDI_HDEVICE h, D3D10DDI_HSHADER hs)                                         \
     {                                                                                                               \
         ctx(h)->Api##SetShader(shader_of<Shader>(hs), nullptr, 0);                                                  \
@@ -49,7 +49,7 @@ ID3D11DeviceContext4* ctx(D3D10DDI_HDEVICE h) { return Device::from(h)->ctx.get(
                                                const UINT*, const D3D11DDIARG_POINTERDATA*)                         \
     {                                                                                                               \
         if (instances)                                                                                              \
-            VGD_WARN(#Api "SetShaderWithIfaces: %u class instances not supported", instances);                       \
+            VENERA_WARN(#Api "SetShaderWithIfaces: %u class instances not supported", instances);                    \
         ctx(h)->Api##SetShader(shader_of<Shader>(hs), nullptr, 0);                                                  \
     }                                                                                                               \
     void APIENTRY Ddi##_set_srvs(D3D10DDI_HDEVICE h, UINT start, UINT count,                                        \
@@ -67,13 +67,13 @@ ID3D11DeviceContext4* ctx(D3D10DDI_HDEVICE h) { return Device::from(h)->ctx.get(
         ctx(h)->Api##SetConstantBuffers1(start, count, buffers(hb, count).data(), first, num);                      \
     }
 
-VGD_STAGE(vs, VS, ID3D11VertexShader)
-VGD_STAGE(ps, PS, ID3D11PixelShader)
-VGD_STAGE(gs, GS, ID3D11GeometryShader)
-VGD_STAGE(hs, HS, ID3D11HullShader)
-VGD_STAGE(ds, DS, ID3D11DomainShader)
-VGD_STAGE(cs, CS, ID3D11ComputeShader)
-#undef VGD_STAGE
+VENERA_STAGE(vs, VS, ID3D11VertexShader)
+VENERA_STAGE(ps, PS, ID3D11PixelShader)
+VENERA_STAGE(gs, GS, ID3D11GeometryShader)
+VENERA_STAGE(hs, HS, ID3D11HullShader)
+VENERA_STAGE(ds, DS, ID3D11DomainShader)
+VENERA_STAGE(cs, CS, ID3D11ComputeShader)
+#undef VENERA_STAGE
 
 void APIENTRY cs_set_uavs(D3D10DDI_HDEVICE h, UINT start, UINT count, const D3D11DDI_HUNORDEREDACCESSVIEW* hv,
                           const UINT* initial_counts)
@@ -211,19 +211,19 @@ void APIENTRY srv_read_after_write_hazard(D3D10DDI_HDEVICE, D3D10DDI_HSHADERRESO
 
 void fill_draw_ddi(D3D11_1DDI_DEVICEFUNCS& t)
 {
-#define VGD_FILL_STAGE(Ddi, Name)                                                                                   \
+#define VENERA_FILL_STAGE(Ddi, Name)                                                                                   \
     t.pfn##Name##SetShader = Ddi##_set_shader;                                                                      \
     t.pfn##Name##SetShaderWithIfaces = Ddi##_set_shader_with_ifaces;                                                \
     t.pfn##Name##SetShaderResources = Ddi##_set_srvs;                                                               \
     t.pfn##Name##SetSamplers = Ddi##_set_samplers;                                                                  \
     t.pfn##Name##SetConstantBuffers = Ddi##_set_constant_buffers;
-    VGD_FILL_STAGE(vs, Vs)
-    VGD_FILL_STAGE(ps, Ps)
-    VGD_FILL_STAGE(gs, Gs)
-    VGD_FILL_STAGE(hs, Hs)
-    VGD_FILL_STAGE(ds, Ds)
-    VGD_FILL_STAGE(cs, Cs)
-#undef VGD_FILL_STAGE
+    VENERA_FILL_STAGE(vs, Vs)
+    VENERA_FILL_STAGE(ps, Ps)
+    VENERA_FILL_STAGE(gs, Gs)
+    VENERA_FILL_STAGE(hs, Hs)
+    VENERA_FILL_STAGE(ds, Ds)
+    VENERA_FILL_STAGE(cs, Cs)
+#undef VENERA_FILL_STAGE
     t.pfnCsSetUnorderedAccessViews = cs_set_uavs;
     t.pfnIaSetInputLayout = ia_set_input_layout;
     t.pfnIaSetVertexBuffers = ia_set_vertex_buffers;
@@ -248,4 +248,4 @@ void fill_draw_ddi(D3D11_1DDI_DEVICEFUNCS& t)
     t.pfnShaderResourceViewReadAfterWriteHazard = srv_read_after_write_hazard;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

@@ -10,7 +10,7 @@
 
 #include <atomic>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -39,7 +39,7 @@ HRESULT surface_texture(Device& d, const D3D11_TEXTURE2D_DESC1& desc, int import
     Com<ID3D11Texture2D> tex;
     hr = dxvk::texture_from_image(d.d3d.get(), desc, out.image->image(), !export_fd, tex.put());
     if (FAILED(hr)) {
-        VGD_WARN("shared surface: DXVK did not take the image: 0x%08lx", hr);
+        VENERA_WARN("shared surface: DXVK did not take the image: 0x%08lx", hr);
         return hr;
     }
     out.resource = tex.as<ID3D11Resource>();
@@ -62,7 +62,7 @@ HRESULT make_resident(Device& d, D3DKMT_HANDLE allocation)
         c.Priority = D3DDDI_PAGINGQUEUE_PRIORITY_NORMAL;
         const HRESULT hr = d.kt.pfnCreatePagingQueueCb(dev, &c);
         if (FAILED(hr)) {
-            VGD_WARN("shared surface: CreatePagingQueueCb failed: 0x%08lx", hr);
+            VENERA_WARN("shared surface: CreatePagingQueueCb failed: 0x%08lx", hr);
             return hr;
         }
         d.paging_queue = c.hPagingQueue;
@@ -83,7 +83,7 @@ HRESULT make_resident(Device& d, D3DKMT_HANDLE allocation)
         hr = d.kt.pfnWaitForSynchronizationObjectFromCpuCb(dev, &w);
     }
     if (FAILED(hr))
-        VGD_WARN("shared surface: MakeResidentCb(0x%x) failed: 0x%08lx", allocation, hr);
+        VENERA_WARN("shared surface: MakeResidentCb(0x%x) failed: 0x%08lx", allocation, hr);
     return hr;
 }
 
@@ -101,18 +101,18 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     const UINT width = a.pMipInfoList[0].TexelWidth, height = a.pMipInfoList[0].TexelHeight;
     if (a.ResourceDimension != D3D10DDIRESOURCE_TEXTURE2D || a.MipLevels != 1 || a.ArraySize != 1 ||
         a.SampleDesc.Count != 1 || (a.BindFlags & D3D10_DDI_BIND_DEPTH_STENCIL)) {
-        VGD_WARN("shared surface: only single 2D colour textures are supported (dimension %d, %u mips, %u layers, "
-                 "%u samples, bind 0x%x)",
-                 a.ResourceDimension, a.MipLevels, a.ArraySize, a.SampleDesc.Count, a.BindFlags);
+        VENERA_WARN("shared surface: only single 2D colour textures are supported (dimension %d, %u mips, %u layers, "
+                    "%u samples, bind 0x%x)",
+                    a.ResourceDimension, a.MipLevels, a.ArraySize, a.SampleDesc.Count, a.BindFlags);
         return E_NOTIMPL;
     }
     if (!d.allocation_alias) {
-        VGD_WARN("shared surface: the KMD cannot alias allocations (yttrium's unpatched viogpu3d?)");
+        VENERA_WARN("shared surface: the KMD cannot alias allocations (yttrium's unpatched viogpu3d?)");
         return E_NOTIMPL;
     }
     const ULONG format = virgl_format(a.Format);
     if (!format && a.pPrimaryDesc) {
-        VGD_WARN("shared surface: primary of format %d cannot be scanned out", a.Format);
+        VENERA_WARN("shared surface: primary of format %d cannot be scanned out", a.Format);
         return E_NOTIMPL;
     }
     // Openers sample it and may render to it; DWM's primaries are render targets.
@@ -125,7 +125,7 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     int fd = -1;
     HRESULT hr = surface_texture(d, desc, -1, 0, out, &fd, blt_source);
     if (FAILED(hr)) {
-        VGD_WARN("shared surface: %ux%u format %d failed: 0x%08lx", width, height, a.Format, hr);
+        VENERA_WARN("shared surface: %ux%u format %d failed: 0x%08lx", width, height, a.Format, hr);
         return hr;
     }
     SurfaceAlias alias(d.kernel());
@@ -154,7 +154,7 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
     cb.pAllocationInfo = &info;
     hr = d.kt.pfnAllocateCb(d.rt_device.handle, &cb);
     if (FAILED(hr) || !info.hAllocation) {
-        VGD_WARN("shared surface: AllocateCb failed: 0x%08lx", hr);
+        VENERA_WARN("shared surface: AllocateCb failed: 0x%08lx", hr);
         return FAILED(hr) ? hr : E_FAIL;
     }
     out.allocation = info.hAllocation;
@@ -164,11 +164,11 @@ HRESULT create_shared_surface(Device& d, const D3D11DDIARG_CREATERESOURCE& a, D3
         if (FAILED(hr))
             return hr;
     }
-    VGD_TRACE("shared surface: %ux%u format %d%s, allocation 0x%x (km resource 0x%x) aliases 0x%x (host resource "
-              "%u): %llu bytes, pitch %u",
-              width, height, a.Format, a.pPrimaryDesc ? " primary" : "", info.hAllocation, cb.hKMResource,
-              alias.data.SourceAllocation, alias.host_resource(), static_cast<unsigned long long>(out.image->size()),
-              out.image->row_pitch());
+    VENERA_TRACE("shared surface: %ux%u format %d%s, allocation 0x%x (km resource 0x%x) aliases 0x%x (host resource "
+                 "%u): %llu bytes, pitch %u",
+                 width, height, a.Format, a.pPrimaryDesc ? " primary" : "", info.hAllocation, cb.hKMResource,
+                 alias.data.SourceAllocation, alias.host_resource(), static_cast<unsigned long long>(out.image->size()),
+                 out.image->row_pitch());
     return S_OK;
 }
 
@@ -194,10 +194,10 @@ HRESULT open_shared_surface(Device& d, const D3D10DDIARG_OPENRESOURCE& a, Resour
         height = surface->height;
         bind = surface->bind;
     }
-    VGD_TRACE("OpenResource: %s format %d %ux%u bind 0x%x", ours ? "ours," : "foreign,", format, width, height,
-              bind);
+    VENERA_TRACE("OpenResource: %s format %d %ux%u bind 0x%x", ours ? "ours," : "foreign,", format, width, height,
+                 bind);
     if (format == DXGI_FORMAT_UNKNOWN) {
-        VGD_WARN("OpenResource: only surfaces of known formats can be opened");
+        VENERA_WARN("OpenResource: only surfaces of known formats can be opened");
         return E_NOTIMPL;
     }
     const int fd = import_fd("OpenResource", d.kernel(), alloc->hAllocation, *e);
@@ -209,7 +209,7 @@ HRESULT open_shared_surface(Device& d, const D3D10DDIARG_OPENRESOURCE& a, Resour
     out.height = height;
     HRESULT hr = surface_texture(d, surface_desc(format, width, height, bind), fd, e->Size, out, nullptr);
     if (FAILED(hr))
-        VGD_WARN("OpenResource: import of %ux%u format %d failed: 0x%08lx", width, height, format, hr);
+        VENERA_WARN("OpenResource: import of %ux%u format %d failed: 0x%08lx", width, height, format, hr);
     return hr;
 }
 
@@ -228,7 +228,7 @@ void destroy_shared_surface(Device& d, ResourceObject& r)
         cb.hResource = r.rt_resource.handle;
         HRESULT hr = d.kt.pfnDeallocateCb(d.rt_device.handle, &cb);
         if (FAILED(hr))
-            VGD_WARN("shared surface: DeallocateCb(0x%x) failed: 0x%08lx", r.allocation, hr);
+            VENERA_WARN("shared surface: DeallocateCb(0x%x) failed: 0x%08lx", r.allocation, hr);
         r.allocated = false;
     }
 }
@@ -236,9 +236,9 @@ void destroy_shared_surface(Device& d, ResourceObject& r)
 namespace {
 
 // Our ICD's entry points (icd/patches/0006), through vkGetDeviceProcAddr.
-using PFN_vkOpenFenceVGD = VkResult(VKAPI_PTR*)(VkDevice device, HANDLE nt_handle, uint32_t* fence);
-using PFN_vkCloseFenceVGD = void(VKAPI_PTR*)(VkDevice device, uint32_t fence);
-using PFN_vkQueueSignalFenceVGD = VkResult(VKAPI_PTR*)(VkQueue queue, uint32_t fence, uint64_t value);
+using PFN_vkOpenFenceVENERA = VkResult(VKAPI_PTR*)(VkDevice device, HANDLE nt_handle, uint32_t* fence);
+using PFN_vkCloseFenceVENERA = void(VKAPI_PTR*)(VkDevice device, uint32_t fence);
+using PFN_vkQueueSignalFenceVENERA = VkResult(VKAPI_PTR*)(VkQueue queue, uint32_t fence, uint64_t value);
 
 // Device::render_fence, on the first present: a shared monitored fence of the runtime's, which our ICD opens on its
 // own kernel device from an NT handle. Not set up (logged) if the ICD or the KMD cannot.
@@ -247,19 +247,19 @@ void init_render_fence(Device& d)
     auto& f = d.render_fence;
     f.tried = true;
     char off[4] = {};
-    if (setting("VGD_PRESENT_GPU_WAIT", off, sizeof(off)) && off[0] == '0') {
-        VGD_TRACE("Present: VGD_PRESENT_GPU_WAIT=0: presents wait for the GPU here");
+    if (setting("VENERA_PRESENT_GPU_WAIT", off, sizeof(off)) && off[0] == '0') {
+        VENERA_TRACE("Present: VENERA_PRESENT_GPU_WAIT=0: presents wait for the GPU here");
         return;
     }
     const auto& vk = d.vulkan.vk;
-    auto open = reinterpret_cast<PFN_vkOpenFenceVGD>(vk.vkGetDeviceProcAddr(d.vulkan.device, "vkOpenFenceVGD"));
-    f.close = vk.vkGetDeviceProcAddr(d.vulkan.device, "vkCloseFenceVGD");
-    f.signal = vk.vkGetDeviceProcAddr(d.vulkan.device, "vkQueueSignalFenceVGD");
+    auto open = reinterpret_cast<PFN_vkOpenFenceVENERA>(vk.vkGetDeviceProcAddr(d.vulkan.device, "vkOpenFenceVENERA"));
+    f.close = vk.vkGetDeviceProcAddr(d.vulkan.device, "vkCloseFenceVENERA");
+    f.signal = vk.vkGetDeviceProcAddr(d.vulkan.device, "vkQueueSignalFenceVENERA");
     KmtDevice* kmt = d.kernel();
     if (!open || !f.close || !f.signal || !kmt || !d.kt.pfnCreateSynchronizationObject2Cb ||
         !d.kt.pfnWaitForSynchronizationObjectFromGpuCb) {
-        VGD_WARN("Present: no GPU fence (ICD entry points %d, kernel device %d): presents wait for the GPU here",
-                 open && f.close && f.signal, kmt != nullptr);
+        VENERA_WARN("Present: no GPU fence (ICD entry points %d, kernel device %d): presents wait for the GPU here",
+                    open && f.close && f.signal, kmt != nullptr);
         return;
     }
     D3DDDICB_CREATESYNCHRONIZATIONOBJECT2 c{};
@@ -268,7 +268,7 @@ void init_render_fence(Device& d)
     c.Info.Flags.NtSecuritySharing = 1;
     HRESULT hr = d.kt.pfnCreateSynchronizationObject2Cb(d.rt_device.handle, &c);
     if (FAILED(hr)) {
-        VGD_WARN("Present: CreateSynchronizationObject2Cb (shared monitored fence) failed: 0x%08lx", hr);
+        VENERA_WARN("Present: CreateSynchronizationObject2Cb (shared monitored fence) failed: 0x%08lx", hr);
         return;
     }
     HANDLE nt = nullptr;
@@ -278,23 +278,23 @@ void init_render_fence(Device& d)
         const VkResult r = open(d.vulkan.device, nt, &icd);
         CloseHandle(nt);
         if (r != VK_SUCCESS) {
-            VGD_WARN("Present: vkOpenFenceVGD failed: %d", r);
+            VENERA_WARN("Present: vkOpenFenceVENERA failed: %d", r);
             hr = E_FAIL;
         }
     }
     if (FAILED(hr)) {
         D3DDDICB_DESTROYSYNCHRONIZATIONOBJECT dc{c.hSyncObject};
         if (FAILED(d.kt.pfnDestroySynchronizationObjectCb(d.rt_device.handle, &dc)))
-            VGD_WARN("Present: DestroySynchronizationObjectCb failed");
+            VENERA_WARN("Present: DestroySynchronizationObjectCb failed");
         return;
     }
     f.sync = c.hSyncObject;
     f.icd = icd;
-    VGD_TRACE("Present: GPU fence 0x%x (ICD 0x%x): presents wait for our rendering on the GPU", f.sync, f.icd);
+    VENERA_TRACE("Present: GPU fence 0x%x (ICD 0x%x): presents wait for our rendering on the GPU", f.sync, f.icd);
 }
 
 struct SignalArgs {
-    PFN_vkQueueSignalFenceVGD signal;
+    PFN_vkQueueSignalFenceVENERA signal;
     uint32_t fence;
     uint64_t value;
 };
@@ -317,11 +317,11 @@ HRESULT wait_for_rendering_on_gpu(Device& d)
         init_render_fence(d);
     if (!f.sync)
         return E_NOTIMPL;
-    SignalArgs a{reinterpret_cast<PFN_vkQueueSignalFenceVGD>(f.signal), f.icd, f.value + 1};
+    SignalArgs a{reinterpret_cast<PFN_vkQueueSignalFenceVENERA>(f.signal), f.icd, f.value + 1};
     HRESULT hr = dxvk::with_submitted_queue(d.d3d.get(), signal_on_queue, &a);
     if (hr != S_OK) {
         if (FAILED(hr))
-            VGD_WARN("Present: vkQueueSignalFenceVGD failed: 0x%08lx", hr);
+            VENERA_WARN("Present: vkQueueSignalFenceVENERA failed: 0x%08lx", hr);
         return hr;
     }
     f.value = a.value;
@@ -332,8 +332,8 @@ HRESULT wait_for_rendering_on_gpu(Device& d)
     w.MonitoredFenceValueArray = &f.value;
     hr = d.kt.pfnWaitForSynchronizationObjectFromGpuCb(d.rt_device.handle, &w);
     if (FAILED(hr))
-        VGD_WARN("Present: WaitForSynchronizationObjectFromGpuCb(%llu) failed: 0x%08lx",
-                 static_cast<unsigned long long>(f.value), hr);
+        VENERA_WARN("Present: WaitForSynchronizationObjectFromGpuCb(%llu) failed: 0x%08lx",
+                    static_cast<unsigned long long>(f.value), hr);
     return hr;
 }
 
@@ -344,10 +344,10 @@ void destroy_render_fence(Device& d)
     auto& f = d.render_fence;
     if (!f.sync)
         return;
-    reinterpret_cast<PFN_vkCloseFenceVGD>(f.close)(d.vulkan.device, f.icd);
+    reinterpret_cast<PFN_vkCloseFenceVENERA>(f.close)(d.vulkan.device, f.icd);
     D3DDDICB_DESTROYSYNCHRONIZATIONOBJECT dc{f.sync};
     if (FAILED(d.kt.pfnDestroySynchronizationObjectCb(d.rt_device.handle, &dc)))
-        VGD_WARN("DestroyDevice: DestroySynchronizationObjectCb failed");
+        VENERA_WARN("DestroyDevice: DestroySynchronizationObjectCb failed");
     f = {};
 }
 
@@ -385,17 +385,17 @@ HRESULT APIENTRY present(DXGI_DDI_ARG_PRESENT* a)
     static std::atomic<unsigned> count{0};
     const unsigned n = count.fetch_add(1, std::memory_order_relaxed);
     if (!src) {
-        VGD_WARN("Present: surface %p has no allocation", reinterpret_cast<void*>(a->hSurfaceToPresent));
+        VENERA_WARN("Present: surface %p has no allocation", reinterpret_cast<void*>(a->hSurfaceToPresent));
         return E_INVALIDARG;
     }
     // Also before: a present that blocks (on our rendering or in the KMD) never reaches the line below.
     if (n < 8 || verbose())
-        VGD_TRACE("Present #%u: src 0x%x, dst 0x%x: begin", n, src, dst);
+        VENERA_TRACE("Present #%u: src 0x%x, dst 0x%x: begin", n, src, dst);
     HRESULT hr = present_allocations(d, src, dst, a->pDXGIContext);
     if (n < 8 || FAILED(hr) || verbose())
-        VGD_TRACE("Present #%u: src 0x%x (sub %u), dst 0x%x (sub %u), flags 0x%x, interval %d -> 0x%08lx", n, src,
-                  a->SrcSubResourceIndex, dst, a->DstSubResourceIndex, a->Flags.Value,
-                  static_cast<int>(a->FlipInterval), hr);
+        VENERA_TRACE("Present #%u: src 0x%x (sub %u), dst 0x%x (sub %u), flags 0x%x, interval %d -> 0x%08lx", n, src,
+                     a->SrcSubResourceIndex, dst, a->DstSubResourceIndex, a->Flags.Value,
+                     static_cast<int>(a->FlipInterval), hr);
     return hr;
 }
 
@@ -407,8 +407,8 @@ HRESULT blt(Device& d, DXGI_DDI_HRESOURCE dst, UINT dst_sub, UINT dst_left, UINT
     ResourceObject* t = ResourceObject::from(dst);
     if (flags.Stretch || flags.Convert || (rotate != DXGI_DDI_MODE_ROTATION_UNSPECIFIED &&
                                            rotate != DXGI_DDI_MODE_ROTATION_IDENTITY)) {
-        VGD_WARN("Blt: flags 0x%x, rotation %d: stretching, conversion and rotation not supported; copying",
-                 flags.Value, rotate);
+        VENERA_WARN("Blt: flags 0x%x, rotation %d: stretching, conversion and rotation not supported; copying",
+                    flags.Value, rotate);
     }
     if (flags.Resolve && s->samples > 1)
         d.ctx->ResolveSubresource(t->resource.get(), dst_sub, s->resource.get(), src_sub, t->format);
@@ -461,7 +461,7 @@ HRESULT APIENTRY rotate_resource_identities(DXGI_DDI_ARG_ROTATE_RESOURCE_IDENTIT
         for (ViewObject* v : res->views) {
             ID3D11View* old = v->view.get();
             if (FAILED(v->create(d.d3d.get())))
-                VGD_WARN("RotateResourceIdentities: view %p could not be made again", static_cast<void*>(v));
+                VENERA_WARN("RotateResourceIdentities: view %p could not be made again", static_cast<void*>(v));
             for (auto& rtv : d.om_rtvs)
                 if (rtv == old) {
                     rtv = v->as<ID3D11RenderTargetView>();
@@ -483,7 +483,7 @@ HRESULT APIENTRY set_display_mode(DXGI_DDI_ARG_SETDISPLAYMODE* a)
     D3DDDICB_SETDISPLAYMODE m{};
     m.hPrimaryAllocation = allocation_of(a->hResource);
     HRESULT hr = d.kt.pfnSetDisplayModeCb(d.rt_device.handle, &m);
-    VGD_TRACE("SetDisplayMode: allocation 0x%x -> 0x%08lx", m.hPrimaryAllocation, hr);
+    VENERA_TRACE("SetDisplayMode: allocation 0x%x -> 0x%08lx", m.hPrimaryAllocation, hr);
     return hr;
 }
 
@@ -510,7 +510,7 @@ HRESULT APIENTRY resolve_shared_resource(DXGI_DDI_ARG_RESOLVESHAREDRESOURCE* a)
     // ReleaseSync and GetDC reach this boundary without an application Flush.
     // The runtime's context cannot order work submitted on DXVK's own device.
     d.flush_clears();
-    VGD_TRACE("ResolveSharedResource: allocation 0x%x: complete rendering before handoff", r->allocation);
+    VENERA_TRACE("ResolveSharedResource: allocation 0x%x: complete rendering before handoff", r->allocation);
     return d.wait_idle();
 }
 
@@ -546,4 +546,4 @@ void fill_dxgi_ddi(DXGI1_2_DDI_BASE_FUNCTIONS& t)
     t.pfnPresentMultiplaneOverlay = nullptr;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

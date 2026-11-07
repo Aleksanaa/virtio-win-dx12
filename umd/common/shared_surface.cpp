@@ -2,7 +2,7 @@
 #include "shared_surface.h"
 #include "log.h"
 
-namespace vgd::umd {
+namespace venera::umd {
 
 SurfaceAlias::~SurfaceAlias()
 {
@@ -18,7 +18,7 @@ HRESULT SurfaceAlias::open(int fd, ULONG format, UINT width, UINT height, UINT64
     if (nt != INVALID_HANDLE_VALUE)
         CloseHandle(nt);   // the opened resource keeps the allocation
     if (FAILED(hr)) {
-        VGD_WARN("shared surface: could not open the exported memory (handle %p): 0x%08lx", nt, hr);
+        VENERA_WARN("shared surface: could not open the exported memory (handle %p): 0x%08lx", nt, hr);
         return hr;
     }
     auto& o = data.exchange.options;
@@ -49,19 +49,19 @@ const viogpu::AllocationExchange* importable_surface(const char* what, UINT allo
                                                      D3DKMT_HANDLE allocation, D3DKMT_HANDLE km_resource)
 {
     if (allocations != 1 || !data || size < sizeof(viogpu::AllocationExchange)) {
-        VGD_WARN("%s: %u allocations, private data %u bytes: not a surface of ours", what, allocations, size);
+        VENERA_WARN("%s: %u allocations, private data %u bytes: not a surface of ours", what, allocations, size);
         return nullptr;
     }
     const auto* e = static_cast<const viogpu::AllocationExchange*>(data);
     const viogpu::ResourceOptions& o = e->options;
-    VGD_TRACE("%s: allocation 0x%x, km resource 0x%x: target %lu format %lu bind 0x%lx %lux%lux%lu array %lu levels "
-              "%lu samples %lu; size %llu, blob mem %lu, blob flags 0x%lx, stride %lu",
-              what, allocation, km_resource, o.target, o.format, o.bind, o.width, o.height, o.depth, o.array_size,
-              o.last_level + 1, o.nr_samples, static_cast<unsigned long long>(e->Size), e->BlobMem, e->BlobFlags,
-              e->Stride);
+    VENERA_TRACE("%s: allocation 0x%x, km resource 0x%x: target %lu format %lu bind 0x%lx %lux%lux%lu array %lu levels "
+                 "%lu samples %lu; size %llu, blob mem %lu, blob flags 0x%lx, stride %lu",
+                 what, allocation, km_resource, o.target, o.format, o.bind, o.width, o.height, o.depth, o.array_size,
+                 o.last_level + 1, o.nr_samples, static_cast<unsigned long long>(e->Size), e->BlobMem, e->BlobFlags,
+                 e->Stride);
     if (o.target != viogpu::kPipeTexture2d || o.depth > 1 || o.array_size > 1 || o.last_level || o.nr_samples > 1 ||
         e->BlobMem != viogpu::kBlobMemHost3d || !(e->BlobFlags & viogpu::kBlobFlagShareable)) {
-        VGD_WARN("%s: only shareable blobs under a single 2D image can be opened", what);
+        VENERA_WARN("%s: only shareable blobs under a single 2D image can be opened", what);
         return nullptr;
     }
     return e;
@@ -72,14 +72,14 @@ int import_fd(const char* what, KmtDevice* kmt, D3DKMT_HANDLE allocation,
 {
     HANDLE nt = nullptr;
     if (!kmt || FAILED(kmt->share_surface(allocation, surface, &nt))) {
-        VGD_WARN("%s: could not export allocation 0x%x", what, allocation);
+        VENERA_WARN("%s: could not export allocation 0x%x", what, allocation);
         return -1;
     }
     // For the log: the host names resources by this id in its errors (an import of one it does not know kills the
     // Venus context).
     D3DKMT_HANDLE opened = 0, source = 0;
     if (SUCCEEDED(kmt->open_shared(nt, &opened, &source))) {
-        VGD_TRACE("%s: allocation 0x%x is host resource %u", what, allocation, kmt->resource_id(source));
+        VENERA_TRACE("%s: allocation 0x%x is host resource %u", what, allocation, kmt->resource_id(source));
         kmt->close(opened);
     }
     const int fd = fd_of_handle(nt);
@@ -88,4 +88,4 @@ int import_fd(const char* what, KmtDevice* kmt, D3DKMT_HANDLE allocation,
     return fd;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

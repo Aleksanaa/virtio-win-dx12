@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: MIT
 // Installs and uninstalls the driver package.
 //
-// Install: unpack the package (the cabinet in our resources) into %ProgramData%\vgd\staging; catalog it and sign the
+// Install: unpack the package (the cabinet in our resources) into %ProgramData%\Venera\staging; catalog it and sign the
 // catalog with a certificate made on this computer and trusted there (so PnP installs it without asking); install it
-// on the VirtIO GPU from the next boot, in place of whatever drives it now (install_on_devices); and register in Apps &
-// features with a copy of this executable as the uninstaller. At that boot, the copy (`/cleanup`, a one-shot task)
-// removes the other packages for the device from the driver store and what yttrium's package left in System32.
+// on the VirtIO GPU from the next boot, in place of whatever drives it now (install_on_devices); install the control
+// panel in Program Files, with a Start menu shortcut and a desktop context-menu entry; and register in Apps & features
+// with a copy of this executable as the uninstaller. At that boot, the copy (`/cleanup`, a one-shot task) removes the
+// other packages for the device from the driver store and what yttrium's package left in System32.
 //
 // Uninstall: switch the VirtIO GPU to Microsoft Basic Display from the next boot, the same way, and remove the
-// resolution service, the certificate and the Apps & features entry. At that boot the cleanup removes our packages and
-// the uninstaller.
+// resolution service, the certificate, the control panel's shortcuts and the Apps & features entry. At that boot the
+// cleanup removes our packages, the control panel and the uninstaller.
+//
+// An update from the earlier vgd builds (the product's name before Venera) removes what they left: Program Files\vgd,
+// ProgramData\vgd, their Apps & features entry and settings, their certificate and their scheduled cleanup. Their
+// driver package goes with the other packages the cleanup removes at the next boot.
 //
 // The kernel loads viogpu3d.sys on its own test signature (test signing on), whoever made it; the catalog's signature
 // only serves PnP, which wants a publisher it trusts. That is why the certificate can be local: its private key is
@@ -19,7 +24,9 @@
 #include <cryptuiapi.h>
 #include <mscat.h>
 #include <ncrypt.h>
+#include <shlobj.h>
 #include <shlwapi.h>
+#include <shobjidl.h>
 #include <setupapi.h>
 #include <wincrypt.h>
 
@@ -35,17 +42,20 @@ extern "C" BOOL WINAPI SetupGetInfDriverStoreLocationW(PCWSTR FileName, PSP_ALTP
 
 namespace {
 
-constexpr wchar_t kKeyName[] = L"vgd-test-signing";
-constexpr wchar_t kSetupName[] = L"vgd-setup.exe";
+constexpr wchar_t kKeyName[] = L"venera-test-signing";
+constexpr wchar_t kSetupName[] = L"venera-setup.exe";
+// Earlier builds called the product vgd; an update from one removes what it left (remove_old_vgd).
+constexpr wchar_t kOldCertSubject[] = L"vgd test signing";
+constexpr wchar_t kOldCleanupTask[] = L"vgd cleanup";
 
 std::wstring staging_dir()
 {
-    return known_folder(FOLDERID_ProgramData) + L"\\vgd\\staging";
+    return known_folder(FOLDERID_ProgramData) + L"\\Venera\\staging";
 }
 
 std::wstring install_dir()
 {
-    return known_folder(FOLDERID_ProgramFiles) + L"\\vgd";
+    return known_folder(FOLDERID_ProgramFiles) + L"\\Venera";
 }
 
 // --- The payload
@@ -104,10 +114,10 @@ HCERTSTORE open_store(const wchar_t* name)
     return store;
 }
 
-// Our certificate in `store` (any certificate with our subject), or null.
-PCCERT_CONTEXT find_cert(HCERTSTORE store, PCCERT_CONTEXT prev = nullptr)
+// The certificate with `subject` in `store` (any one), or null.
+PCCERT_CONTEXT find_cert(HCERTSTORE store, const wchar_t* subject, PCCERT_CONTEXT prev = nullptr)
 {
-    return CertFindCertificateInStore(store, X509_ASN_ENCODING, 0, CERT_FIND_SUBJECT_STR_W, kCertSubject, prev);
+    return CertFindCertificateInStore(store, X509_ASN_ENCODING, 0, CERT_FIND_SUBJECT_STR_W, subject, prev);
 }
 
 bool usable(PCCERT_CONTEXT cert)
@@ -193,7 +203,7 @@ PCCERT_CONTEXT signing_cert()
 {
     HCERTSTORE my = open_store(L"My");
     PCCERT_CONTEXT cert = nullptr;
-    while ((cert = find_cert(my, cert)) && !usable(cert)) {
+    while ((cert = find_cert(my, kCertSubject, cert)) && !usable(cert)) {
     }
     if (!cert) {
         PCCERT_CONTEXT created = create_cert();
@@ -213,11 +223,11 @@ PCCERT_CONTEXT signing_cert()
     return cert;
 }
 
-void remove_certs()
+void remove_certs(const wchar_t* subject)
 {
     for (const wchar_t* name : {L"My", L"Root", L"TrustedPublisher"}) {
         HCERTSTORE store = open_store(name);
-        while (PCCERT_CONTEXT cert = find_cert(store)) {
+        while (PCCERT_CONTEXT cert = find_cert(store, subject)) {
             // The private key goes with the certificate.
             HCRYPTPROV_OR_NCRYPT_KEY_HANDLE key = 0;
             DWORD spec = 0;
@@ -228,7 +238,7 @@ void remove_certs()
                     NCryptFreeObject(key);
             }
             CertDeleteCertificateFromStore(cert);  // frees cert
-            log(format(L"Removed the signing certificate from %ls", name));
+            log(format(L"Removed the certificate %ls from %ls", subject, name));
         }
         CertCloseStore(store, 0);
     }
@@ -251,15 +261,15 @@ std::string narrow(const std::wstring& s)
     return out;
 }
 
-// vgd.cat in `dir`, listing `files` by their SHA-256 hashes, as MakeCat would make it from a catalog definition.
+// venera.cat in `dir`, listing `files` by their SHA-256 hashes, as MakeCat would make it from a catalog definition.
 void make_catalog(const std::wstring& dir, const std::vector<std::wstring>& files)
 {
-    std::string cdf = "[CatalogHeader]\r\nName=vgd.cat\r\nResultDir=" + narrow(dir) +
+    std::string cdf = "[CatalogHeader]\r\nName=venera.cat\r\nResultDir=" + narrow(dir) +
                       "\r\nPublicVersion=0x00000001\r\nCatalogVersion=2\r\nHashAlgorithms=SHA256\r\n"
                       "EncodingType=0x00010001\r\nCATATTR1=0x10010001:OSAttr:2:10.0\r\n\r\n[CatalogFiles]\r\n";
     for (const auto& f : files)
         cdf += "<hash>" + narrow(f) + "=" + narrow(dir + L"\\" + f) + "\r\n";
-    std::wstring path = dir + L"\\vgd.cdf";
+    std::wstring path = dir + L"\\venera.cdf";
     {
         std::ofstream out(fs::path(path), std::ios::binary);
         out << cdf;
@@ -325,6 +335,26 @@ void delete_file(const std::wstring& path)
         log(L"Could not delete " + path + L": " + error_text(GetLastError()));
 }
 
+// Deletes a directory and what is in it now, or at the next restart what is in use.
+void remove_dir(const std::wstring& dir)
+{
+    std::error_code ec;
+    if (!fs::exists(dir, ec))
+        return;
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        if (entry.is_directory(ec))
+            remove_dir(entry.path().wstring());
+        else
+            delete_file(entry.path().wstring());
+    }
+    if (RemoveDirectoryW(dir.c_str())) {
+        log(L"Removed " + dir);
+    } else {
+        MoveFileExW(dir.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+        log(L"Removing " + dir + L" at the next restart");
+    }
+}
+
 // What yttrium's package leaves once it is gone: the user-mode drivers its INF copied to System32 and SysWOW64 (our
 // package has its own viogpu_wgl.dll in the DriverStore; its opengl32.dll is left alone, that name is Windows' own),
 // and its Vulkan ICD registrations.
@@ -361,7 +391,7 @@ void remove_yttrium_leftovers()
     }
 }
 
-// Stops and deletes a service that runs from one of our packages (its binary in a vgd.inf_* DriverStore folder).
+// Stops and deletes a service that runs from one of our packages (its binary in a venera.inf_* DriverStore folder).
 void delete_our_service(const wchar_t* name)
 {
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
@@ -371,7 +401,7 @@ void delete_our_service(const wchar_t* name)
         DWORD size = 0;
         auto config = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(buf.data());
         if (QueryServiceConfigW(service, config, buf.size(), &size) && config->lpBinaryPathName &&
-            StrStrIW(config->lpBinaryPathName, L"\\vgd.inf_")) {
+            StrStrIW(config->lpBinaryPathName, L"\\venera.inf_")) {
             SERVICE_STATUS status;
             ControlService(service, SERVICE_CONTROL_STOP, &status);
             if (DeleteService(service))
@@ -383,6 +413,35 @@ void delete_our_service(const wchar_t* name)
     }
     if (scm)
         CloseServiceHandle(scm);
+}
+
+// Earlier builds called the product vgd (and its settings key vgd3d12). Installing over one removes its uninstaller,
+// its Apps & features entry, its settings, log and staging directory, its certificate, and a cleanup it scheduled, so
+// that only Venera is left. Its driver package goes with the other packages the cleanup removes at the next boot.
+void remove_old_vgd()
+{
+    std::wstring old_install = known_folder(FOLDERID_ProgramFiles) + L"\\vgd";
+    std::wstring old_data = known_folder(FOLDERID_ProgramData) + L"\\vgd";
+    std::error_code ec;
+    bool present = fs::exists(old_install, ec) || fs::exists(old_data, ec);
+    for (const wchar_t* key : {L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\vgd", L"SOFTWARE\\vgd3d12"}) {
+        HKEY probe;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key, 0, KEY_READ, &probe) == ERROR_SUCCESS) {
+            present = true;
+            RegCloseKey(probe);
+        }
+        RegDeleteTreeW(HKEY_LOCAL_MACHINE, key);
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, key);
+    }
+    // The old certificate goes even if the rest was deleted by hand: nothing can use it any more.
+    remove_certs(kOldCertSubject);
+    if (!present)
+        return;
+    // A cleanup an old install scheduled would run its uninstaller from the directory removed below.
+    run(L"schtasks.exe", format(L"/delete /f /tn \"%ls\"", kOldCleanupTask));
+    remove_dir(old_install);
+    remove_dir(old_data);
+    log(L"Removed what vgd left: its uninstaller, Apps & features entry, settings, log and certificate");
 }
 
 // --- Apps & features
@@ -413,7 +472,7 @@ void register_product(const std::wstring& version, DWORD size_kb)
         fail(L"Registering in Apps & features failed");
     SYSTEMTIME now;
     GetLocalTime(&now);
-    set_string(key, L"DisplayName", L"vgd: Direct3D, Vulkan and OpenGL for the VirtIO GPU");
+    set_string(key, L"DisplayName", L"venera: Direct3D, Vulkan and OpenGL for the VirtIO GPU");
     set_string(key, L"DisplayVersion", version);
     set_string(key, L"Publisher", kProvider);
     set_string(key, L"URLInfoAbout", kProjectUrl);
@@ -433,27 +492,137 @@ void unregister_product()
 {
     RegDeleteTreeW(HKEY_LOCAL_MACHINE, kUninstallKey);
     RegDeleteKeyW(HKEY_LOCAL_MACHINE, kUninstallKey);
-    // The UMDs' log settings (tests/win/vgd-test.ps1 Install sets them).
-    RegDeleteTreeW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\vgd3d12");
-    RegDeleteKeyW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\vgd3d12");
+    // The UMDs' log settings (tests/win/venera-test.ps1 Install sets them).
+    RegDeleteTreeW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Venera");
+    RegDeleteKeyW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Venera");
+}
+
+// --- The control panel
+
+std::wstring start_menu_dir()
+{
+    return known_folder(FOLDERID_CommonPrograms) + L"\\Venera";
+}
+
+// Copies the control panel out of the unpacked package. A running panel holds its executable open, in which case the
+// new one replaces it at the next boot.
+void install_panel(const std::wstring& staging)
+{
+    std::wstring dir = install_dir();
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec)
+        fail(L"Creating " + dir + L" failed", ec.value());
+    for (const wchar_t* name : {kPanelExe, kPanelCom}) {
+        std::wstring from = staging + L"\\" + name;
+        std::wstring to = dir + L"\\" + name;
+        if (CopyFileW(from.c_str(), to.c_str(), FALSE)) {
+            log(L"Installed " + to);
+            continue;
+        }
+        DWORD error = GetLastError();
+        if (error != ERROR_SHARING_VIOLATION && error != ERROR_ACCESS_DENIED)
+            fail(L"Installing " + to + L" failed", error);
+        std::wstring pending = to + L".new";
+        if (!CopyFileW(from.c_str(), pending.c_str(), FALSE) ||
+            !MoveFileExW(pending.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT))
+            fail(L"Installing " + to + L" at the next reboot failed", GetLastError());
+        log(L"Installing " + to + L" at the next reboot: the running control panel holds it");
+    }
+}
+
+// Joins or leaves the current thread's COM apartment (install runs on the wizard's worker thread).
+struct Apartment {
+    bool joined = false;
+    Apartment()
+    {
+        HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        joined = SUCCEEDED(hr);
+        if (FAILED(hr) && hr != RPC_E_CHANGED_MODE)  // already in another apartment: its owner leaves it
+            fail(L"Starting COM failed", static_cast<DWORD>(hr));
+    }
+    ~Apartment()
+    {
+        if (joined)
+            CoUninitialize();
+    }
+    Apartment(const Apartment&) = delete;
+    Apartment& operator=(const Apartment&) = delete;
+};
+
+void create_shortcut(const std::wstring& link, const std::wstring& target)
+{
+    IShellLinkW* shell_link = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW,
+                                  reinterpret_cast<void**>(&shell_link));
+    if (SUCCEEDED(hr)) {
+        shell_link->SetPath(target.c_str());
+        shell_link->SetWorkingDirectory(install_dir().c_str());
+        shell_link->SetDescription(L"Venera's Direct3D, Vulkan and OpenGL settings and tests");
+        shell_link->SetIconLocation(target.c_str(), 0);
+        IPersistFile* file = nullptr;
+        hr = shell_link->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&file));
+        if (SUCCEEDED(hr)) {
+            hr = file->Save(link.c_str(), TRUE);
+            file->Release();
+        }
+        shell_link->Release();
+    }
+    if (FAILED(hr))
+        fail(L"Creating the shortcut " + link + L" failed", static_cast<DWORD>(hr));
+}
+
+// A Start menu shortcut and an entry in the desktop's context menu (right-click on the desktop), for every user.
+void create_shortcuts()
+{
+    std::wstring panel = install_dir() + L"\\" + kPanelExe;
+    std::wstring menu = start_menu_dir();
+    std::error_code ec;
+    fs::create_directories(menu, ec);
+    if (ec)
+        fail(L"Creating " + menu + L" failed", ec.value());
+
+    {
+        Apartment apartment;
+        create_shortcut(menu + L"\\" + kPanelName + L".lnk", panel);
+    }
+
+    HKEY key;
+    DWORD error = RegCreateKeyExW(HKEY_CLASSES_ROOT, L"DesktopBackground\\Shell\\Venera", 0, nullptr, 0, KEY_WRITE,
+                                  nullptr, &key, nullptr);
+    if (error != ERROR_SUCCESS)
+        fail(std::wstring(L"Adding ") + kPanelName + L" to the desktop's context menu failed", error);
+    set_string(key, nullptr, kPanelName);
+    set_string(key, L"Icon", panel);
+    HKEY command = nullptr;
+    error = RegCreateKeyExW(key, L"command", 0, nullptr, 0, KEY_WRITE, nullptr, &command, nullptr);
+    RegCloseKey(key);
+    if (error != ERROR_SUCCESS)
+        fail(std::wstring(L"Adding ") + kPanelName + L" to the desktop's context menu failed", error);
+    set_string(command, nullptr, L"\"" + panel + L"\"");
+    RegCloseKey(command);
+    log(std::wstring(L"Added ") + kPanelName + L" to the Start menu and the desktop's context menu");
+}
+
+void remove_shortcuts()
+{
+    std::wstring menu = start_menu_dir();
+    std::error_code ec;
+    if (fs::remove(menu + L"\\" + kPanelName + L".lnk", ec))
+        log(L"Removed the control panel's Start menu shortcut");
+    fs::remove(menu, ec);  // only when it is empty
+    if (RegDeleteTreeW(HKEY_CLASSES_ROOT, L"DesktopBackground\\Shell\\Venera") == ERROR_SUCCESS)
+        log(L"Removed the control panel from the desktop's context menu");
 }
 
 void remove_install_dir()
 {
-    std::wstring dir = install_dir();
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(dir, ec)) {
-        std::wstring path = entry.path().wstring();
-        if (!DeleteFileW(path.c_str()))
-            MoveFileExW(path.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);  // the running uninstaller
-    }
-    if (!RemoveDirectoryW(dir.c_str()))
-        MoveFileExW(dir.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+    remove_dir(install_dir());  // the running uninstaller goes at the next restart
 }
 
 // --- The device and the boot after
 
-constexpr wchar_t kCleanupTask[] = L"vgd cleanup";
+constexpr wchar_t kCleanupTask[] = L"Venera cleanup";
 
 bool runs_ours(HDEVINFO set, SP_DEVINFO_DATA* dev)
 {
@@ -469,7 +638,7 @@ bool runs_ours(HDEVINFO set, SP_DEVINFO_DATA* dev)
 }
 
 // Installs the driver from `inf` (in the driver store) on each present VirtIO GPU (with `only_ours`, those running on
-// vgd) as its driver from the next boot: the class installer writes the device's configuration but does not restart
+// Venera) as its driver from the next boot: the class installer writes the device's configuration but does not restart
 // the device (DI_DONOTCALLCONFIGMG). Restarting a display device under the running desktop crashes the processes
 // that have the old user-mode drivers loaded (DWM in the old Venus ICD), and the display did not always come back.
 // Selecting the driver from that one INF also makes it win over a better-signed one (Red Hat's WHQL-signed viogpudo).
@@ -503,7 +672,7 @@ int install_on_devices(const std::wstring& inf, bool only_ours)
     return installed;
 }
 
-// Runs `vgd-setup.exe /cleanup` once at the next boot, as SYSTEM: the packages an install replaces, or an uninstall
+// Runs `venera-setup.exe /cleanup` once at the next boot, as SYSTEM: the packages an install replaces, or an uninstall
 // removes, are in use until then.
 void schedule_cleanup()
 {
@@ -529,11 +698,11 @@ bool install(const SystemState& state, const std::wstring& version, const Progre
     PCCERT_CONTEXT cert = signing_cert();
     progress(35, L"Signing the driver package");
     make_catalog(dir, files);
-    sign(dir + L"\\vgd.cat", cert);
+    sign(dir + L"\\venera.cat", cert);
     CertFreeCertificateContext(cert);
 
     progress(45, L"Adding the driver package to the driver store");
-    std::wstring inf = dir + L"\\vgd.inf";
+    std::wstring inf = dir + L"\\venera.inf";
     wchar_t published[MAX_PATH];
     PWSTR published_name = nullptr;
     if (!SetupCopyOEMInfW(inf.c_str(), nullptr, SPOST_PATH, 0, published, ARRAYSIZE(published), nullptr,
@@ -554,7 +723,13 @@ bool install(const SystemState& state, const std::wstring& version, const Progre
 
     progress(80, L"Registering in Apps & features");
     register_product(version, size_kb);
-    progress(90, L"Scheduling the removal of the drivers it replaces at the next boot");
+    progress(82, L"Removing what earlier vgd builds left");
+    remove_old_vgd();
+    progress(85, L"Installing the control panel");
+    install_panel(dir);
+    progress(90, L"Adding the control panel to the Start menu and the desktop's menu");
+    create_shortcuts();
+    progress(95, L"Scheduling the removal of the drivers it replaces at the next boot");
     schedule_cleanup();
     std::error_code ec;
     fs::remove_all(dir, ec);
@@ -580,7 +755,7 @@ void cleanup()
                 remove_package(p);
         remove_install_dir();
     } else {
-        log(L"The VirtIO GPU does not run on vgd: nothing to clean up");
+        log(L"The VirtIO GPU does not run on venera: nothing to clean up");
     }
     run(L"schtasks.exe", format(L"/delete /f /tn \"%ls\"", kCleanupTask));
 }
@@ -593,9 +768,11 @@ bool uninstall(const Progress& progress)
     progress(40, L"Removing the resolution service");
     delete_our_service(L"vgpusrv");
     progress(55, L"Removing the signing certificate");
-    remove_certs();
+    remove_certs(kCertSubject);
     progress(70, L"Removing the Apps & features entry");
     unregister_product();
+    progress(75, L"Removing the control panel's shortcuts");
+    remove_shortcuts();
     // Our packages stay in use until the next boot, and the cleanup then runs from the uninstaller in Program Files.
     progress(85, L"Scheduling the removal of the driver packages at the next boot");
     schedule_cleanup();

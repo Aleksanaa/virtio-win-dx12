@@ -1,4 +1,4 @@
-From: vgd3d12
+From: venera_d3d12
 Subject: wsi/win32: allow up to 8 images on the DXGI_SHARED present path
 
 The surface reported exactly two images whenever DXGI presents, because DXGI presents a swapchain's buffers in

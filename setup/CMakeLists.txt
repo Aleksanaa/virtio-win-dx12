@@ -1,16 +1,21 @@
 # SPDX-License-Identifier: MIT
-# vgd-setup.exe, the installer: one executable with the driver package (pkg/vgd.inf and the files it lists) inside as
-# a cabinet, which payload.cmake stamps and packs at each build. The KMD and the Mesa drivers come from their own
+# venera-setup.exe, the installer: one executable with the driver package (pkg/venera.inf and the files it lists) inside
+# as a cabinet, which payload.cmake stamps and packs at each build. The KMD and the Mesa drivers come from their own
 # builds (kmd/, icd/build.sh), which have to run first.
-set(VGD_ICD_DIR "${CMAKE_SOURCE_DIR}/build/icd" CACHE PATH "icd/build.sh's output (vgd_vulkan_virtio.dll, viogpu_wgl.dll)")
-set(VGD_KMD_SYS "${CMAKE_SOURCE_DIR}/build/kmd/signed/viogpu3d.sys" CACHE FILEPATH "The test-signed KMD (kmd/ build)")
+set(VENERA_ICD_DIR "${CMAKE_SOURCE_DIR}/build/icd" CACHE PATH
+    "icd/build.sh's output (venera_vulkan_virtio.dll, viogpu_wgl.dll)")
+set(VENERA_KMD_SYS "${CMAKE_SOURCE_DIR}/build/kmd/signed/viogpu3d.sys" CACHE FILEPATH
+    "The test-signed KMD (kmd/ build)")
 find_program(GCAB gcab REQUIRED)
 find_package(Git REQUIRED)
 
-set(payload "${VGD_KMD_SYS}" "${VGD_ICD_DIR}/vgd_vulkan_virtio.dll" "${VGD_ICD_DIR}/viogpu_wgl.dll"
-    "${CMAKE_SOURCE_DIR}/pkg/vgd_vulkan_virtio.json"
-    $<TARGET_FILE:vgd3d11> $<TARGET_FILE:vgd3d12> $<TARGET_FILE:vgpusrv> $<TARGET_FILE:viogpuap>)
-foreach(f "${VGD_KMD_SYS}" "${VGD_ICD_DIR}/vgd_vulkan_virtio.dll")
+# The driver package's files, and the control panel, which is not part of the package: the installer copies it out of
+# the cabinet into Program Files, before it removes the cabinet.
+set(payload "${VENERA_KMD_SYS}" "${VENERA_ICD_DIR}/venera_vulkan_virtio.dll" "${VENERA_ICD_DIR}/viogpu_wgl.dll"
+    "${CMAKE_SOURCE_DIR}/pkg/venera_vulkan_virtio.json"
+    $<TARGET_FILE:venera_d3d11> $<TARGET_FILE:venera_d3d12> $<TARGET_FILE:vgpusrv> $<TARGET_FILE:viogpuap>
+    $<TARGET_FILE:venera-panel> $<TARGET_FILE:venera-panel-com>)
+foreach(f "${VENERA_KMD_SYS}" "${VENERA_ICD_DIR}/venera_vulkan_virtio.dll")
   if(NOT EXISTS "${f}")
     message(WARNING "${f} is missing: build the KMD and the ICD (README) before the installer")
   endif()
@@ -27,15 +32,19 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" -E env --unset=SOURCE_DATE_EPOCH "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}" "-DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             "-DVERSION=${PROJECT_VERSION}" "-DGIT=${GIT_EXECUTABLE}" "-DGCAB=${GCAB}" "-DFILES=${payload}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/payload.cmake"
-    DEPENDS payload.cmake "${CMAKE_SOURCE_DIR}/pkg/vgd.inf" ${payload} ${head_log}
-    COMMENT "Packing the driver package"
+    DEPENDS payload.cmake "${CMAKE_SOURCE_DIR}/pkg/venera.inf" ${payload} ${head_log}
+    COMMENT "Packing the driver package and the control panel"
     VERBATIM)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/payload.rc" PROPERTIES
     OBJECT_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/payload.cab")
+set_source_files_properties(setup.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/docs/venera.ico")
 
 enable_language(RC)
-add_executable(vgd-setup WIN32 main.cpp system.cpp install.cpp ui.cpp setup.rc "${CMAKE_CURRENT_BINARY_DIR}/payload.rc")
-target_compile_definitions(vgd-setup PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-target_link_libraries(vgd-setup PRIVATE setupapi crypt32 cryptui wintrust ncrypt comctl32 shell32 shlwapi
-    ole32 advapi32 ntdll)
-target_link_options(vgd-setup PRIVATE -municode -s -static -static-libgcc -static-libstdc++)
+add_executable(venera-setup WIN32 main.cpp system.cpp install.cpp ui.cpp setup.rc
+    "${CMAKE_CURRENT_BINARY_DIR}/payload.rc")
+# The cabinet holds the panel: it has to be built first.
+add_dependencies(venera-setup venera-panel venera-panel-com)
+target_compile_definitions(venera-setup PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+target_link_libraries(venera-setup PRIVATE setupapi crypt32 cryptui wintrust ncrypt comctl32 shell32 shlwapi
+    ole32 uuid advapi32 ntdll)
+target_link_options(venera-setup PRIVATE -municode -s -static -static-libgcc -static-libstdc++)

@@ -3,21 +3,21 @@
 
 #include <initializer_list>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 enum class LogLevel { error, warn, info, debug };
 
-// Lines go to OutputDebugString, and also to the file named by VGD_LOG, from the environment or else from
-// HKLM\SOFTWARE\vgd3d12 (for processes that do not inherit the environment, such as DWM and browsers' GPU
+// Lines go to OutputDebugString, and also to the file named by VENERA_LOG, from the environment or else from
+// HKLM\SOFTWARE\Venera (for processes that do not inherit the environment, such as DWM and browsers' GPU
 // processes). Each line names `component`, the UMD writing it.
 void log_init(const char* component);
-// Copies each named setting from HKLM\SOFTWARE\vgd3d12 into the process environment unless the environment has it:
+// Copies each named setting from HKLM\SOFTWARE\Venera into the process environment unless the environment has it:
 // the engines (vkd3d-proton, DXVK) and the Venus ICD read their options with GetEnvironmentVariable.
 void forward_settings(std::initializer_list<const char*> names);
 // The setting `name` from the environment or else the registry (as above); false if neither has it. A REG_DWORD
 // value reads as its decimal digits.
 bool setting(const char* name, char* out, unsigned long size);
-// VGD_VERBOSE=1 (likewise): also log every answer of high-volume queries (format support, MSAA levels).
+// VENERA_VERBOSE=1 (likewise): also log every answer of high-volume queries (format support, MSAA levels).
 bool verbose();
 // Logs every thread's stack in the process (module+offset frames, thread names), for hangs: see stacks.cpp.
 void log_thread_stacks(const char* why);
@@ -30,8 +30,9 @@ void logf(LogLevel level, const char* fmt, ...)
 #endif
     ;
 
-} // namespace vgd::umd
+} // namespace venera::umd
 
-#define VGD_TRACE(...) ::vgd::umd::logf(::vgd::umd::LogLevel::debug, __VA_ARGS__)
-#define VGD_VERBOSE(...) (::vgd::umd::verbose() ? ::vgd::umd::logf(::vgd::umd::LogLevel::debug, __VA_ARGS__) : void())
-#define VGD_WARN(...) ::vgd::umd::logf(::vgd::umd::LogLevel::warn, __VA_ARGS__)
+#define VENERA_TRACE(...) ::venera::umd::logf(::venera::umd::LogLevel::debug, __VA_ARGS__)
+#define VENERA_VERBOSE(...) \
+    (::venera::umd::verbose() ? ::venera::umd::logf(::venera::umd::LogLevel::debug, __VA_ARGS__) : void())
+#define VENERA_WARN(...) ::venera::umd::logf(::venera::umd::LogLevel::warn, __VA_ARGS__)

@@ -1,5 +1,5 @@
 {
-  description = "vgd3d12: a D3D12 user-mode driver for Windows guests on QEMU + Venus";
+  description = "Venera: Direct3D, Vulkan and OpenGL for Windows guests on QEMU + Venus";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -31,14 +31,14 @@
 
         # Read by cmake/mingw-w64.cmake: GCC from nixpkgs uses the mcfgthread model,
         # whose headers and static library live outside the wrapper's default paths.
-        VGD_MINGW_MCFG_INCLUDE = "${mcfg.dev}/include";
-        VGD_MINGW_MCFG_LIB = "${mcfg}/lib";
+        VENERA_MINGW_MCFG_INCLUDE = "${mcfg.dev}/include";
+        VENERA_MINGW_MCFG_LIB = "${mcfg}/lib";
 
         # Read by cmake/clang-cl-kmd.cmake. Not on PATH: unwrapped clang would shadow the host cc/cpp.
-        VGD_CLANG_CL = "${pkgs.llvmPackages.clang-unwrapped}/bin/clang-cl";
-        VGD_LLD_LINK = "${pkgs.lld}/bin/lld-link";
-        VGD_LLVM_RC = "${pkgs.llvmPackages.llvm}/bin/llvm-rc";
-        VGD_LLVM_LIB = "${pkgs.llvmPackages.llvm}/bin/llvm-lib";
+        VENERA_CLANG_CL = "${pkgs.llvmPackages.clang-unwrapped}/bin/clang-cl";
+        VENERA_LLD_LINK = "${pkgs.lld}/bin/lld-link";
+        VENERA_LLVM_RC = "${pkgs.llvmPackages.llvm}/bin/llvm-rc";
+        VENERA_LLVM_LIB = "${pkgs.llvmPackages.llvm}/bin/llvm-lib";
       };
     };
 }

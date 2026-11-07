@@ -9,19 +9,19 @@
 #   - No version resource (yttrium's viogpu3d.rc needs MSBuild-generated vendor macros; not imported).
 #   - clang does not provide MSVC's port I/O intrinsics out of line; shim/portio.c does.
 cmake_minimum_required(VERSION 3.24)
-project(vgd-kmd LANGUAGES C CXX)
+project(venera-kmd LANGUAGES C CXX)
 
-get_filename_component(VGD_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
-set(VGD_WINKITS_DIR "${VGD_ROOT}/refs/winkits" CACHE PATH "WDK/SDK from the Microsoft.Windows.WDK.x64 / SDK.CPP NuGet packages")
-set(VGD_KMD_SIGN_PFX "${CMAKE_SOURCE_DIR}/yttrium/build/VirtIOTestCert.pfx" CACHE FILEPATH
+get_filename_component(VENERA_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
+set(VENERA_WINKITS_DIR "${VENERA_ROOT}/refs/winkits" CACHE PATH "WDK/SDK from the Microsoft.Windows.WDK.x64 / SDK.CPP NuGet packages")
+set(VENERA_KMD_SIGN_PFX "${CMAKE_SOURCE_DIR}/yttrium/build/VirtIOTestCert.pfx" CACHE FILEPATH
     "Test certificate for signing; yttrium's own, which guests running its test-signed builds already trust")
 
-set(wdk_inc "${VGD_WINKITS_DIR}/wdk/c/Include/10.0.26100.0")
-set(sdk_inc "${VGD_WINKITS_DIR}/sdk/c/Include/10.0.26100.0")
-set(wdk_lib "${VGD_WINKITS_DIR}/wdk/c/Lib/10.0.26100.0/km/x64")
+set(wdk_inc "${VENERA_WINKITS_DIR}/wdk/c/Include/10.0.26100.0")
+set(sdk_inc "${VENERA_WINKITS_DIR}/sdk/c/Include/10.0.26100.0")
+set(wdk_lib "${VENERA_WINKITS_DIR}/wdk/c/Lib/10.0.26100.0/km/x64")
 foreach(f "${wdk_inc}/km/ntddk.h" "${wdk_lib}/displib.lib")
   if(NOT EXISTS "${f}")
-    message(FATAL_ERROR "${f} missing: extract the WDK NuGet package (c/Include and c/Lib/.../km/x64) into ${VGD_WINKITS_DIR}/wdk")
+    message(FATAL_ERROR "${f} missing: extract the WDK NuGet package (c/Include and c/Lib/.../km/x64) into ${VENERA_WINKITS_DIR}/wdk")
   endif()
 endforeach()
 
@@ -87,7 +87,7 @@ target_link_libraries(viogpu3d PRIVATE
 # Test-signed copy, the file the guest loads.
 find_program(OSSLSIGNCODE osslsigncode REQUIRED)
 add_custom_command(TARGET viogpu3d POST_BUILD
-    COMMAND "${OSSLSIGNCODE}" sign -pkcs12 "${VGD_KMD_SIGN_PFX}" -pass "" -h sha256
+    COMMAND "${OSSLSIGNCODE}" sign -pkcs12 "${VENERA_KMD_SIGN_PFX}" -pass "" -h sha256
             -in "$<TARGET_FILE:viogpu3d>" -out "${CMAKE_BINARY_DIR}/signed/viogpu3d.sys.tmp" > /dev/null
     COMMAND "${CMAKE_COMMAND}" -E rename "${CMAKE_BINARY_DIR}/signed/viogpu3d.sys.tmp" "${CMAKE_BINARY_DIR}/signed/viogpu3d.sys"
     COMMENT "Test-signing viogpu3d.sys"

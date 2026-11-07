@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Shaders for the ExecuteIndirect tests (d3dprobe --indirect). Rebuild with build.sh.
+// Shaders for the ExecuteIndirect tests (venera-panel /test d3d12.indirect). Rebuild with build.sh.
 
 RWByteAddressBuffer counter : register(u0);   // root UAV
 

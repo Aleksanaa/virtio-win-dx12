@@ -813,17 +813,16 @@ NTSTATUS VioGpuAdapter::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQ
                 pDriverCaps->SupportSmoothRotation = FALSE;
                 pDriverCaps->SupportNonVGA = IsVgaDevice();
 
-                // The hardware cursor (HWCursor). Monochrome and masked color shapes are converted to color, so
-                // that the default text I-beam (monochrome) is not left for Windows to draw.
-                if (IsPointerEnabled())
-                {
-                    pDriverCaps->MaxPointerWidth = POINTER_SIZE;
-                    pDriverCaps->MaxPointerHeight = POINTER_SIZE;
-                    pDriverCaps->PointerCaps.Value = 0;
-                    pDriverCaps->PointerCaps.Monochrome = 1;
-                    pDriverCaps->PointerCaps.Color = 1;
-                    pDriverCaps->PointerCaps.MaskedColor = 1;
-                }
+                // The hardware cursor. Monochrome and masked color shapes are converted to color, so that the
+                // default text I-beam (monochrome) is not left for Windows to draw. Offered also with HWCursor off,
+                // which can change while the adapter runs: SetPointerShape then refuses each shape, and Windows draws
+                // the pointer itself.
+                pDriverCaps->MaxPointerWidth = POINTER_SIZE;
+                pDriverCaps->MaxPointerHeight = POINTER_SIZE;
+                pDriverCaps->PointerCaps.Value = 0;
+                pDriverCaps->PointerCaps.Monochrome = 1;
+                pDriverCaps->PointerCaps.Color = 1;
+                pDriverCaps->PointerCaps.MaskedColor = 1;
 
                 DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s Driver caps return\n", __FUNCTION__));
                 return STATUS_SUCCESS;
@@ -1429,25 +1428,37 @@ BOOLEAN VioGpuAdapter::UploadCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
     if (!pSetPointerShape->Flags.Color)
     {
         ConvertMaskedCursor(pSetPointerShape, (UINT32 *)m_pCursorBuf->GetVirtualAddress());
-        return NT_SUCCESS(ctrlQueue.TransferToHost2DSync(m_pCursorBuf->GetId(), POINTER_SIZE, POINTER_SIZE));
     }
-    RECT rect = {0, 0, (LONG)pSetPointerShape->Width, (LONG)pSetPointerShape->Height};
-    BLT_INFO dst = {};
-    dst.pBits = m_pCursorBuf->GetVirtualAddress();
-    dst.Pitch = POINTER_SIZE * 4;
-    dst.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
-    dst.Rotation = D3DKMDT_VPPR_IDENTITY;
-    dst.Width = POINTER_SIZE;
-    dst.Height = POINTER_SIZE;
-    BLT_INFO src = {};
-    src.pBits = (PVOID)pSetPointerShape->pPixels;
-    src.Pitch = pSetPointerShape->Pitch;
-    src.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
-    src.Rotation = vidpn.GetCurrentMode(0)->Rotation;
-    src.Width = pSetPointerShape->Width;
-    src.Height = pSetPointerShape->Height;
-    BltBits(&dst, &src, &rect);
-
+    else
+    {
+        RECT rect = {0, 0, (LONG)pSetPointerShape->Width, (LONG)pSetPointerShape->Height};
+        BLT_INFO dst = {};
+        dst.pBits = m_pCursorBuf->GetVirtualAddress();
+        dst.Pitch = POINTER_SIZE * 4;
+        dst.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
+        dst.Rotation = D3DKMDT_VPPR_IDENTITY;
+        dst.Width = POINTER_SIZE;
+        dst.Height = POINTER_SIZE;
+        BLT_INFO src = {};
+        src.pBits = (PVOID)pSetPointerShape->pPixels;
+        src.Pitch = pSetPointerShape->Pitch;
+        src.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
+        src.Rotation = vidpn.GetCurrentMode(0)->Rotation;
+        src.Width = pSetPointerShape->Width;
+        src.Height = pSetPointerShape->Height;
+        BltBits(&dst, &src, &rect);
+    }
+    if (IsCursorSwapRB())
+    {
+        // HWCursorSwapRB: QEMU's GTK front end takes the cursor's pixels as RGBA bytes, which virglrenderer reads in
+        // the resource's format, BGRA bytes, unless patched to read RGBA: red and blue change places, and this changes
+        // them back.
+        UINT32 *bits = (UINT32 *)m_pCursorBuf->GetVirtualAddress();
+        for (UINT i = 0; i < POINTER_SIZE * POINTER_SIZE; i++)
+        {
+            bits[i] = (bits[i] & 0xFF00FF00) | (bits[i] >> 16 & 0xFF) | (bits[i] & 0xFF) << 16;
+        }
+    }
     return NT_SUCCESS(ctrlQueue.TransferToHost2DSync(m_pCursorBuf->GetId(), POINTER_SIZE, POINTER_SIZE));
 }
 
@@ -1504,6 +1515,7 @@ NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSet
               pSetPointerShape->YHot,
               pSetPointerShape->VidPnSourceId));
 
+    RereadCursorSettings();
     // Shapes of the kinds the caps offer, that fit the resource; the converted kinds only on an unrotated display.
     // Anything else fails, and Windows then draws that pointer itself: ours must not show meanwhile.
     DXGK_POINTERFLAGS flags = pSetPointerShape->Flags;
@@ -2725,6 +2737,37 @@ NTSTATUS VioGpuAdapter::SetRegisterInfo(_In_ ULONG Id, _In_ DWORD MemSize)
     return Status;
 }
 
+// The hardware cursor's settings: HWCursor and HWCursorSwapRB. Read when the adapter starts and again before each
+// pointer shape, so a change (the control panel's Settings) applies from the next shape, without restarting the
+// adapter.
+void VioGpuAdapter::ReadCursorSettings(_In_ HANDLE DevInstRegKeyHandle)
+{
+    PAGED_CODE();
+
+    DWORD value = 0;
+    if (NT_SUCCESS(ReadRegistryDWORD(DevInstRegKeyHandle, L"HWCursor", &value)))
+    {
+        SetPointerEnabled(!!value);
+    }
+    value = 0;
+    if (NT_SUCCESS(ReadRegistryDWORD(DevInstRegKeyHandle, L"HWCursorSwapRB", &value)))
+    {
+        SetCursorSwapRB(!!value);
+    }
+}
+
+void VioGpuAdapter::RereadCursorSettings(void)
+{
+    PAGED_CODE();
+
+    HANDLE DevInstRegKeyHandle;
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_READ, &DevInstRegKeyHandle)))
+    {
+        ReadCursorSettings(DevInstRegKeyHandle);
+        ZwClose(DevInstRegKeyHandle);
+    }
+}
+
 NTSTATUS VioGpuAdapter::GetRegisterInfo(void)
 {
     PAGED_CODE();
@@ -2740,14 +2783,9 @@ NTSTATUS VioGpuAdapter::GetRegisterInfo(void)
         return Status;
     }
 
-    DWORD value = 0;
-    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"HWCursor", &value);
-    if (NT_SUCCESS(Status))
-    {
-        SetPointerEnabled(!!value);
-    }
+    ReadCursorSettings(DevInstRegKeyHandle);
 
-    value = 0;
+    DWORD value = 0;
     Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"FlexResolution", &value);
     if (NT_SUCCESS(Status))
     {

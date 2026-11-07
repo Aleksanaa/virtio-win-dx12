@@ -10,7 +10,7 @@
 #include <cstring>
 #include <new>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 namespace {
 
@@ -22,8 +22,8 @@ HRESULT check_table_size(D3D12DDI_TABLE_TYPE type, SIZE_T size)
 {
     if (size == sizeof(Table))
         return S_OK;
-    VGD_WARN("FillDDITable type=%d: size %llu, expected %llu", static_cast<int>(type),
-             static_cast<unsigned long long>(size), static_cast<unsigned long long>(sizeof(Table)));
+    VENERA_WARN("FillDDITable type=%d: size %llu, expected %llu", static_cast<int>(type),
+                static_cast<unsigned long long>(size), static_cast<unsigned long long>(sizeof(Table)));
     return E_INVALIDARG;
 }
 
@@ -40,7 +40,7 @@ HRESULT APIENTRY get_supported_extended_features(D3D12DDI_HDEVICE, UINT32* count
 HRESULT APIENTRY get_supported_extended_feature_versions(D3D12DDI_HDEVICE, D3D12DDI_FEATURE_0020 feature,
                                                          UINT32* count, UINT32*)
 {
-    VGD_WARN("GetSupportedExtendedFeatureVersions(%d): feature not offered", static_cast<int>(feature));
+    VENERA_WARN("GetSupportedExtendedFeatureVersions(%d): feature not offered", static_cast<int>(feature));
     if (count)
         *count = 0;
     return E_INVALIDARG;
@@ -48,14 +48,14 @@ HRESULT APIENTRY get_supported_extended_feature_versions(D3D12DDI_HDEVICE, D3D12
 
 HRESULT APIENTRY enable_extended_feature(D3D12DDI_HDEVICE, D3D12DDI_FEATURE_0020 feature, UINT32 version)
 {
-    VGD_WARN("EnableExtendedFeature(%d, %u): feature not offered", static_cast<int>(feature), version);
+    VENERA_WARN("EnableExtendedFeature(%d, %u): feature not offered", static_cast<int>(feature), version);
     return E_INVALIDARG;
 }
 
 HRESULT APIENTRY set_extended_feature_callbacks(D3D12DDI_HDEVICE, D3D12DDI_TABLE_TYPE table, const void*, SIZE_T size)
 {
-    VGD_TRACE("SetExtendedFeatureCallbacks table=%d size=%llu (ignored)", static_cast<int>(table),
-              static_cast<unsigned long long>(size));
+    VENERA_TRACE("SetExtendedFeatureCallbacks table=%d size=%llu (ignored)", static_cast<int>(table),
+                 static_cast<unsigned long long>(size));
     return S_OK;
 }
 
@@ -67,7 +67,7 @@ HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandLi
                       const viogpu::AdapterInfo& info, std::shared_ptr<Engine> engine)
 {
     if ((args.Version >> 16) != kBuildVersion) {
-        VGD_WARN("CreateDevice: runtime picked build %u, we only fill tables for %u", args.Version >> 16, kBuildVersion);
+        VENERA_WARN("CreateDevice: runtime picked build %u, we only fill tables for %u", args.Version >> 16, kBuildVersion);
         return E_INVALIDARG;
     }
     auto* d = new (args.hDrvDevice.pDrvPrivate) Device;
@@ -83,7 +83,7 @@ HRESULT create_device(const D3D12DDIARG_CREATEDEVICE_0003& args, const CommandLi
     d->d3d8 = d->engine->device.as<ID3D12Device8>();
     // GetTimestampFrequency comes from the KMD, which reports the performance counter's; resolved timestamps are
     // the Vulkan device's ticks (not rescaled yet).
-    VGD_TRACE("CreateDevice: ok on %s (flags 0x%x)", d->engine->name.c_str(), static_cast<unsigned>(args.Flags));
+    VENERA_TRACE("CreateDevice: ok on %s (flags 0x%x)", d->engine->name.c_str(), static_cast<unsigned>(args.Flags));
     return S_OK;
 }
 
@@ -103,7 +103,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         if (FAILED(hr = check_table_size<T>(type, size)))
             break;
         auto& t = *static_cast<T*>(table);
-        VGD_FILL_STUBS(t, "device", VGD_SLOTS_DEVICE_CORE_0088);
+        VENERA_FILL_STUBS(t, "device", VENERA_SLOTS_DEVICE_CORE_0088);
         fill_device_core(t);
         fill_present_ddi(t);
         break;
@@ -113,7 +113,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         if (FAILED(hr = check_table_size<T>(type, size)))
             break;
         auto& t = *static_cast<T*>(table);
-        VGD_FILL_STUBS(t, "cmdlist", VGD_SLOTS_COMMAND_LIST_3D_0092);
+        VENERA_FILL_STUBS(t, "cmdlist", VENERA_SLOTS_COMMAND_LIST_3D_0092);
         fill_command_list_ddi(t);
         fill_query_list_ddi(t);
         fill_indirect_list_ddi(t);
@@ -123,7 +123,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
             if (index >= tables.count)
                 tables.count = index + 1;
         } else {
-            VGD_WARN("FillDDITable: command list table %u beyond the %u we keep", index, CommandListTables::kMax);
+            VENERA_WARN("FillDDITable: command list table %u beyond the %u we keep", index, CommandListTables::kMax);
         }
         break;
     }
@@ -132,7 +132,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         if (FAILED(hr = check_table_size<T>(type, size)))
             break;
         auto& t = *static_cast<T*>(table);
-        VGD_FILL_STUBS(t, "queue", VGD_SLOTS_COMMAND_QUEUE_CORE_0001);
+        VENERA_FILL_STUBS(t, "queue", VENERA_SLOTS_COMMAND_QUEUE_CORE_0001);
         fill_command_queue_ddi(t);
         fill_resource_queue_ddi(t);
         break;
@@ -142,7 +142,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         if (FAILED(hr = check_table_size<T>(type, size)))
             break;
         auto& t = *static_cast<T*>(table);
-        VGD_FILL_STUBS(t, "dxgi", VGD_SLOTS_DXGI_1_4);
+        VENERA_FILL_STUBS(t, "dxgi", VENERA_SLOTS_DXGI_1_4);
         fill_dxgi_ddi(t);
         break;
     }
@@ -151,7 +151,7 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
         if (FAILED(hr = check_table_size<T>(type, size)))
             break;
         auto& t = *static_cast<T*>(table);
-        VGD_FILL_STUBS(t, "extended", VGD_SLOTS_EXTENDED_FEATURES_0021);
+        VENERA_FILL_STUBS(t, "extended", VENERA_SLOTS_EXTENDED_FEATURES_0021);
         t.pfnGetSupportedExtendedFeatures = get_supported_extended_features;
         t.pfnGetSupportedExtendedFeatureVersions = get_supported_extended_feature_versions;
         t.pfnEnableExtendedFeature = enable_extended_feature;
@@ -161,9 +161,9 @@ HRESULT fill_ddi_table(D3D12DDI_TABLE_TYPE type, void* table, SIZE_T size, UINT 
     default:
         break;
     }
-    VGD_TRACE("FillDDITable type=%d size=%llu index=%u rt_table=%p -> 0x%08lx", static_cast<int>(type),
-              static_cast<unsigned long long>(size), index, rt_table.handle, hr);
+    VENERA_TRACE("FillDDITable type=%d size=%llu index=%u rt_table=%p -> 0x%08lx", static_cast<int>(type),
+                 static_cast<unsigned long long>(size), index, rt_table.handle, hr);
     return hr;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Compiles the test shaders with dxc (signed DXIL containers) into C++ headers, one per .hlsl file. Needs dxc on
 # PATH, e.g.
-#   nix shell nixpkgs#directx-shader-compiler -c tests/shaders/build.sh
+#   nix shell nixpkgs#directx-shader-compiler -c panel/tests/shaders/build.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./dxil_header.sh

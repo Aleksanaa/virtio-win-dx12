@@ -5,7 +5,7 @@
 
 #include <algorithm>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 UINT api_bind_flags(UINT b)
 {
@@ -163,7 +163,7 @@ void APIENTRY map(D3D10DDI_HDEVICE h, D3D10DDI_HRESOURCE hr_, UINT sub, D3D10_DD
     }
     if (FAILED(hr)) {
         // Map may only report "still drawing" and device loss.
-        VGD_WARN("Map(subresource %u, type %d, flags 0x%x) failed: 0x%08lx", sub, type, flags, hr);
+        VENERA_WARN("Map(subresource %u, type %d, flags 0x%x) failed: 0x%08lx", sub, type, flags, hr);
         d->set_error(D3DDDIERR_DEVICEREMOVED);
         return;
     }
@@ -296,4 +296,4 @@ void fill_resource_ddi(D3D11_1DDI_DEVICEFUNCS& t)
     t.pfnDiscard = discard;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd

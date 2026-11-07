@@ -10,7 +10,7 @@
 #include <cstddef>
 #include <type_traits>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 template <size_t N>
 struct Name {
@@ -28,7 +28,7 @@ struct Stub<Table, Slot, R(APIENTRY*)(A...)> {
         static std::atomic<unsigned> calls{0};
         const unsigned n = calls.fetch_add(1, std::memory_order_relaxed);
         if (n < 3)
-            VGD_WARN("UNIMPLEMENTED %s.%s%s", Table.s, Slot.s, n == 2 ? " (further calls not logged)" : "");
+            VENERA_WARN("UNIMPLEMENTED %s.%s%s", Table.s, Slot.s, n == 2 ? " (further calls not logged)" : "");
         if constexpr (std::is_void_v<R>)
             return;
         else if constexpr (std::is_same_v<R, HRESULT>)
@@ -64,13 +64,13 @@ void set_stub(F& slot)
         slot = nullptr;
 }
 
-} // namespace vgd::umd
+} // namespace venera::umd
 
 // Fills every slot of `table` (an X-macro list from ddi_slots.h) with stubs tagged `name`.
-#define VGD_FILL_STUBS(table, name, SLOTS)                                                                   \
+#define VENERA_FILL_STUBS(table, name, SLOTS)                                                                   \
     do {                                                                                                     \
-        auto& vgd_t_ = (table);                                                                              \
-        static constexpr ::vgd::umd::Name vgd_n_{name};                                                      \
-        SLOTS(VGD_STUB_ONE_)                                                                                 \
+        auto& venera_t_ = (table);                                                                              \
+        static constexpr ::venera::umd::Name venera_n_{name};                                                      \
+        SLOTS(VENERA_STUB_ONE_)                                                                                 \
     } while (0)
-#define VGD_STUB_ONE_(m) ::vgd::umd::set_stub<vgd_n_, #m>(vgd_t_.m);
+#define VENERA_STUB_ONE_(m) ::venera::umd::set_stub<venera_n_, #m>(venera_t_.m);

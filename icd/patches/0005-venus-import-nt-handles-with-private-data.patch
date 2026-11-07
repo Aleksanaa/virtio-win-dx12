@@ -1,4 +1,4 @@
-From: vgd3d12
+From: venera_d3d12
 Subject: venus: import NT handles with their private data, attached to the context
 
 virtgpu_d3dkmt_prime_fd_to_handle opened the resource of an NT handle without room for its private

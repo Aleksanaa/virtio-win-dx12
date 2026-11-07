@@ -15,7 +15,7 @@ ClassGuid   = {4d36e968-e325-11ce-bfc1-08002be10318}
 Provider    = %Provider%
 ; Stamped by the build (setup/payload.cmake) with the version and the build.
 DriverVer   = 10/23/2026,1.0.0.0
-CatalogFile = vgd.cat
+CatalogFile = venera.cat
 PnpLockdown = 1
 
 [SourceDisksNames]
@@ -23,10 +23,10 @@ PnpLockdown = 1
 
 [SourceDisksFiles]
 viogpu3d.sys           = 1
-vgd3d11.dll            = 1
-vgd3d12.dll            = 1
-vgd_vulkan_virtio.dll  = 1
-vgd_vulkan_virtio.json = 1
+venera_d3d11.dll            = 1
+venera_d3d12.dll            = 1
+venera_vulkan_virtio.dll  = 1
+venera_vulkan_virtio.json = 1
 viogpu_wgl.dll         = 1
 vgpusrv.exe            = 1
 viogpuap.exe           = 1
@@ -35,73 +35,74 @@ viogpuap.exe           = 1
 DefaultDestDir = 13   ; DriverStore
 
 [Manufacturer]
-%Provider% = VGD, NTamd64.10.0...22000
+%Provider% = VENERA, NTamd64.10.0...22000
 
-[VGD.NTamd64.10.0...22000]
-%Device.Desc% = VGD_Inst, PCI\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01
+[VENERA.NTamd64.10.0...22000]
+%Device.Desc% = VENERA_Inst, PCI\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01
 
-[VGD_Inst.NT]
+[VENERA_Inst.NT]
 Include      = msdv.inf
 FeatureScore = F9
-CopyFiles    = VGD_Files
-AddReg       = VGD_DeviceSettings
+CopyFiles    = VENERA_Files
+AddReg       = VENERA_DeviceSettings
 
-[VGD_Files]
+[VENERA_Files]
 viogpu3d.sys
-vgd3d11.dll
-vgd3d12.dll
-vgd_vulkan_virtio.dll
-vgd_vulkan_virtio.json
+venera_d3d11.dll
+venera_d3d12.dll
+venera_vulkan_virtio.dll
+venera_vulkan_virtio.json
 viogpu_wgl.dll
 vgpusrv.exe
 viogpuap.exe
 
-[VGD_Inst.NT.Services]
+[VENERA_Inst.NT.Services]
 ; The service keeps yttrium's name, so installing over its package moves the device to our driver.
-AddService = VioGpu3D, 0x00000002, VGD_Service, VGD_EventLog   ; SPSVCINST_ASSOCSERVICE
+AddService = VioGpu3D, 0x00000002, VENERA_Service, VENERA_EventLog   ; SPSVCINST_ASSOCSERVICE
 ; The guest follows the viewer window: vgpusrv starts viogpuap (next to it) in each session, which waits for the
 ; KMD's resolution event and applies the size the host asks for. yttrium's name, so it replaces yttrium's service.
-AddService = vgpusrv,  0x00000800, VGD_Resolution_Service              ; SPSVCINST_STARTSERVICE
+AddService = vgpusrv,  0x00000800, VENERA_Resolution_Service              ; SPSVCINST_STARTSERVICE
 
-[VGD_Inst.NT.HW]
-AddReg = VGD_PCI_MSIX
+[VENERA_Inst.NT.HW]
+AddReg = VENERA_PCI_MSIX
 
-[VGD_Service]
+[VENERA_Service]
 ServiceType   = 1   ; SERVICE_KERNEL_DRIVER
 StartType     = 3   ; SERVICE_DEMAND_START
 ErrorControl  = 0   ; SERVICE_ERROR_IGNORE
 ServiceBinary = %13%\viogpu3d.sys
 
-[VGD_Resolution_Service]
+[VENERA_Resolution_Service]
 DisplayName   = %Resolution.Desc%
 ServiceType   = 0x10   ; SERVICE_WIN32_OWN_PROCESS
 StartType     = 2      ; SERVICE_AUTO_START
 ErrorControl  = 1      ; SERVICE_ERROR_NORMAL
 ServiceBinary = %13%\vgpusrv.exe
 
-[VGD_EventLog]
-AddReg = VGD_EventLog.AddReg
+[VENERA_EventLog]
+AddReg = VENERA_EventLog.AddReg
 
-[VGD_EventLog.AddReg]
+[VENERA_EventLog.AddReg]
 HKR,, EventMessageFile, %REG_EXPAND_SZ%, "%%SystemRoot%%\System32\IoLogMsg.dll"
 HKR,, TypesSupported,   %REG_DWORD%, 7
 
-[VGD_DeviceSettings]
-; Read by the KMD (viogpu_adapter.cpp), with yttrium's values.
+[VENERA_DeviceSettings]
+; Read by the KMD (viogpu_adapter.cpp): yttrium's with its values, and ours (HWCursorSwapRB), off.
 HKR,, HWCursor,          %REG_DWORD%, 1
+HKR,, HWCursorSwapRB,    %REG_DWORD%, 0
 HKR,, FlexResolution,    %REG_DWORD%, 1
 HKR,, UsePhysicalMemory, %REG_DWORD%, 0
-; Slots: D3D9, D3D10, D3D11, D3D12. vgd3d11.dll serves D3D10 and D3D11 (DWM too), vgd3d12.dll D3D12. D3D9 runs on
-; Windows' D3D9On12, on vgd3d12.dll: "<>" is dxgkrnl's null UMD (IsNullUmdDriver), for which it answers the D3D9
+; Slots: D3D9, D3D10, D3D11, D3D12. venera_d3d11.dll serves D3D10 and D3D11 (DWM too), venera_d3d12.dll D3D12. D3D9 runs
+; on Windows' D3D9On12, on venera_d3d12.dll: "<>" is dxgkrnl's null UMD (IsNullUmdDriver), for which it answers the D3D9
 ; runtime's driver-name query with STATUS_INVALID_PARAMETER, and the runtime then uses d3d9on12.dll
 ; (D3D9RequestsD3D9on12). An empty entry instead fails the adapter's start. No 32-bit UMDs (UserModeDriverNameWow).
-HKR,, UserModeDriverName,      %REG_MULTI_SZ%, "<>", %13%\vgd3d11.dll, %13%\vgd3d11.dll, %13%\vgd3d12.dll
-HKR,, InstalledDisplayDrivers, %REG_MULTI_SZ%, vgd3d11, vgd3d11, vgd3d11, vgd3d12
+HKR,, UserModeDriverName,      %REG_MULTI_SZ%, "<>", %13%\venera_d3d11.dll, %13%\venera_d3d11.dll, %13%\venera_d3d12.dll
+HKR,, InstalledDisplayDrivers, %REG_MULTI_SZ%, venera_d3d11, venera_d3d11, venera_d3d11, venera_d3d12
 ; The Vulkan loader finds the ICD through the adapter (its manifest is in the DriverStore with it). The UMDs load it
 ; from their own directory without the loader.
-HKR,, VulkanDriverName,        %REG_MULTI_SZ%, %13%\vgd_vulkan_virtio.json
+HKR,, VulkanDriverName,        %REG_MULTI_SZ%, %13%\venera_vulkan_virtio.json
 ; OpenGL: Windows' opengl32.dll loads this ICD, which renders through zink on the Vulkan driver above and presents
-; through D3D11 (vgd3d11.dll). Flags and version as yttrium's package sets them.
+; through D3D11 (venera_d3d11.dll). Flags and version as yttrium's package sets them.
 HKR,, OpenGLDriverName,        %REG_MULTI_SZ%, %13%\viogpu_wgl.dll
 HKR,, OpenGLFlags,             %REG_DWORD%, 3
 HKR,, OpenGLVersion,           %REG_DWORD%, 4096
@@ -109,7 +110,7 @@ HKR,, OpenGLVersion,           %REG_DWORD%, 4096
 HKLM, "SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Scheduler", EnablePreemption, %REG_DWORD%, 1
 HKLM, "SYSTEM\CurrentControlSet\Control\GraphicsDrivers", TdrDebugMode, %REG_DWORD%, 1
 
-[VGD_PCI_MSIX]
+[VENERA_PCI_MSIX]
 ; yttrium's: line-based interrupts (MSISupported 0).
 HKR, "Interrupt Management",, 0x00000010
 HKR, "Interrupt Management\MessageSignaledInterruptProperties",, 0x00000010
@@ -117,9 +118,9 @@ HKR, "Interrupt Management\MessageSignaledInterruptProperties", MSISupported,   
 HKR, "Interrupt Management\MessageSignaledInterruptProperties", MessageNumberLimit, 0x00010001, 4
 
 [Strings]
-Provider      = "vgd project"
-DiskName      = "vgd install disk"
-Device.Desc   = "VirtIO GPU (Venus) with vgd D3D10/11/12"
+Provider      = "Venera project"
+DiskName      = "Venera install disk"
+Device.Desc   = "VirtIO GPU (Venus) with Venera D3D10/11/12"
 Resolution.Desc = "VirtIO GPU resolution service"
 REG_MULTI_SZ  = 0x00010000
 REG_EXPAND_SZ = 0x00020000

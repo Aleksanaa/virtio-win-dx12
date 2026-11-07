@@ -16,7 +16,7 @@
 #include <memory>
 #include <vector>
 
-namespace vgd::umd {
+namespace venera::umd {
 
 struct LinearImageDesc {
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -57,4 +57,4 @@ private:
     uint32_t row_pitch_ = 0;
 };
 
-} // namespace vgd::umd
+} // namespace venera::umd

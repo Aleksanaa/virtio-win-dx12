@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-// What vgd3d11 needs from DXVK beyond its D3D11 API objects: creating its D3D11 device on the Venus ICD, the Vulkan
-// handles behind it, wrapping our images as textures, and its format tables. dxvk_bridge.cpp is the one source that
-// includes DXVK's internal headers (they clash with the WDK's); this header only needs the D3D11 and Vulkan APIs.
+// What venera_d3d11 needs from DXVK beyond its D3D11 API objects: creating its D3D11 device on the Venus ICD, the
+// Vulkan handles behind it, wrapping our images as textures, and its format tables. dxvk_bridge.cpp is the one source
+// that includes DXVK's internal headers (they clash with the WDK's); this header only needs the D3D11 and Vulkan APIs.
 #pragma once
 
 #include <d3d11_4.h>
@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace vgd::umd::dxvk {
+namespace venera::umd::dxvk {
 
 struct DeviceHandles {
     VkInstance instance = VK_NULL_HANDLE;
@@ -52,4 +52,4 @@ void dxbc_checksum(const void* dxbc, size_t size, uint32_t checksum[4]);
 // Lets DXVK see the settings forwarded from the registry; called before DXVK logs or reads its configuration.
 void init_settings();
 
-} // namespace vgd::umd::dxvk
+} // namespace venera::umd::dxvk
