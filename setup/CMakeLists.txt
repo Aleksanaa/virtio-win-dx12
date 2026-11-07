@@ -9,9 +9,12 @@ set(VENERA_KMD_SYS "${CMAKE_SOURCE_DIR}/build/kmd/signed/viogpu3d.sys" CACHE FIL
 find_program(GCAB gcab REQUIRED)
 find_package(Git REQUIRED)
 
+# The driver package's files, and the control panel, which is not part of the package: the installer copies it out of
+# the cabinet into Program Files, before it removes the cabinet.
 set(payload "${VENERA_KMD_SYS}" "${VENERA_ICD_DIR}/venera_vulkan_virtio.dll" "${VENERA_ICD_DIR}/viogpu_wgl.dll"
     "${CMAKE_SOURCE_DIR}/pkg/venera_vulkan_virtio.json"
-    $<TARGET_FILE:venera_d3d11> $<TARGET_FILE:venera_d3d12> $<TARGET_FILE:vgpusrv> $<TARGET_FILE:viogpuap>)
+    $<TARGET_FILE:venera_d3d11> $<TARGET_FILE:venera_d3d12> $<TARGET_FILE:vgpusrv> $<TARGET_FILE:viogpuap>
+    $<TARGET_FILE:venera-panel> $<TARGET_FILE:venera-panel-com>)
 foreach(f "${VENERA_KMD_SYS}" "${VENERA_ICD_DIR}/venera_vulkan_virtio.dll")
   if(NOT EXISTS "${f}")
     message(WARNING "${f} is missing: build the KMD and the ICD (README) before the installer")
@@ -30,7 +33,7 @@ add_custom_command(
             "-DVERSION=${PROJECT_VERSION}" "-DGIT=${GIT_EXECUTABLE}" "-DGCAB=${GCAB}" "-DFILES=${payload}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/payload.cmake"
     DEPENDS payload.cmake "${CMAKE_SOURCE_DIR}/pkg/venera.inf" ${payload} ${head_log}
-    COMMENT "Packing the driver package"
+    COMMENT "Packing the driver package and the control panel"
     VERBATIM)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/payload.rc" PROPERTIES
     OBJECT_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/payload.cab")
@@ -39,7 +42,9 @@ set_source_files_properties(setup.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_SOURCE_D
 enable_language(RC)
 add_executable(venera-setup WIN32 main.cpp system.cpp install.cpp ui.cpp setup.rc
     "${CMAKE_CURRENT_BINARY_DIR}/payload.rc")
+# The cabinet holds the panel: it has to be built first.
+add_dependencies(venera-setup venera-panel venera-panel-com)
 target_compile_definitions(venera-setup PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_link_libraries(venera-setup PRIVATE setupapi crypt32 cryptui wintrust ncrypt comctl32 shell32 shlwapi
-    ole32 advapi32 ntdll)
+    ole32 uuid advapi32 ntdll)
 target_link_options(venera-setup PRIVATE -municode -s -static -static-libgcc -static-libstdc++)

@@ -593,7 +593,7 @@ int Window::run(HINSTANCE inst, int show, int page)
     UINT dpi = GetDpiForSystem();
     RECT r = {0, 0, MulDiv(1180, dpi, 96), MulDiv(760, dpi, 96)};
     AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
-    hwnd_ = CreateWindowExW(0, wc.lpszClassName, L"Venera Control Panel", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+    hwnd_ = CreateWindowExW(0, wc.lpszClassName, L"Venera Display Control Panel", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                             CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
     if (!hwnd_)
         return 1;

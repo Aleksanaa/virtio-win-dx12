@@ -15,7 +15,7 @@ namespace {
 constexpr DWORD kProbeTimeoutMs = 20000;
 
 const wchar_t kHelp[] =
-    L"Venera Control Panel\n"
+    L"Venera Display Control Panel\n"
     L"\n"
     L"Usage: venera-panel [command]\n"
     L"\n"

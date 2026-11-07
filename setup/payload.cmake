@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Run by the build (setup/CMakeLists.txt): stamps pkg/venera.inf with the version and the build, packs it with the files
-# it lists into payload.cab, and writes payload.rc, which puts the cabinet, the version and Windows' version
-# information into venera-setup.exe.
+# it lists (FILES, which also brings the control panel; the INF ignores what it does not name) into payload.cab, and
+# writes payload.rc, which puts the cabinet, the version and Windows' version information into venera-setup.exe.
 #   cmake -DSOURCE_DIR= -DOUT_DIR= -DVERSION=x.y.z -DGIT= -DGCAB= -DFILES=a;b -P payload.cmake
 #
 # The version is VERSION (the project's), the commit count, so each commit on main ranks above the one before it, and

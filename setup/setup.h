@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// venera-setup.exe: installs, updates and uninstalls the driver package (pkg/venera.inf), which the build packs into
-// the executable as a cabinet (setup/payload.cmake). See main.cpp for the flow.
+// venera-setup.exe: installs, updates and uninstalls the driver package (pkg/venera.inf) and the control panel, which
+// the build packs into the executable as a cabinet (setup/payload.cmake). See main.cpp for the flow.
 #pragma once
 
 #include <windows.h>
@@ -22,6 +22,10 @@ inline constexpr wchar_t kCertSubject[] = L"Venera test signing";
 inline constexpr wchar_t kUninstallKey[] = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Venera";
 inline constexpr wchar_t kProductName[] = L"Venera";
 inline constexpr wchar_t kProjectUrl[] = L"https://github.com/Aleksanaa/venera";
+// The control panel, installed in install_dir() and linked from the Start menu and the desktop's context menu.
+inline constexpr wchar_t kPanelExe[] = L"venera-panel.exe";
+inline constexpr wchar_t kPanelCom[] = L"venera-panel.com";
+inline constexpr wchar_t kPanelName[] = L"Venera Display Control Panel";
 
 // An error to show the user: what failed, with the system's message for the error code.
 struct Failure {

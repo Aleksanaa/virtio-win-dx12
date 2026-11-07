@@ -3,13 +3,14 @@
 //
 // Install: unpack the package (the cabinet in our resources) into %ProgramData%\Venera\staging; catalog it and sign the
 // catalog with a certificate made on this computer and trusted there (so PnP installs it without asking); install it
-// on the VirtIO GPU from the next boot, in place of whatever drives it now (install_on_devices); and register in Apps &
-// features with a copy of this executable as the uninstaller. At that boot, the copy (`/cleanup`, a one-shot task)
-// removes the other packages for the device from the driver store and what yttrium's package left in System32.
+// on the VirtIO GPU from the next boot, in place of whatever drives it now (install_on_devices); install the control
+// panel in Program Files, with a Start menu shortcut and a desktop context-menu entry; and register in Apps & features
+// with a copy of this executable as the uninstaller. At that boot, the copy (`/cleanup`, a one-shot task) removes the
+// other packages for the device from the driver store and what yttrium's package left in System32.
 //
 // Uninstall: switch the VirtIO GPU to Microsoft Basic Display from the next boot, the same way, and remove the
-// resolution service, the certificate and the Apps & features entry. At that boot the cleanup removes our packages and
-// the uninstaller.
+// resolution service, the certificate, the control panel's shortcuts and the Apps & features entry. At that boot the
+// cleanup removes our packages, the control panel and the uninstaller.
 //
 // The kernel loads viogpu3d.sys on its own test signature (test signing on), whoever made it; the catalog's signature
 // only serves PnP, which wants a publisher it trusts. That is why the certificate can be local: its private key is
@@ -19,7 +20,9 @@
 #include <cryptuiapi.h>
 #include <mscat.h>
 #include <ncrypt.h>
+#include <shlobj.h>
 #include <shlwapi.h>
+#include <shobjidl.h>
 #include <setupapi.h>
 #include <wincrypt.h>
 
@@ -438,6 +441,124 @@ void unregister_product()
     RegDeleteKeyW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Venera");
 }
 
+// --- The control panel
+
+std::wstring start_menu_dir()
+{
+    return known_folder(FOLDERID_CommonPrograms) + L"\\Venera";
+}
+
+// Copies the control panel out of the unpacked package. A running panel holds its executable open, in which case the
+// new one replaces it at the next boot.
+void install_panel(const std::wstring& staging)
+{
+    std::wstring dir = install_dir();
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec)
+        fail(L"Creating " + dir + L" failed", ec.value());
+    for (const wchar_t* name : {kPanelExe, kPanelCom}) {
+        std::wstring from = staging + L"\\" + name;
+        std::wstring to = dir + L"\\" + name;
+        if (CopyFileW(from.c_str(), to.c_str(), FALSE)) {
+            log(L"Installed " + to);
+            continue;
+        }
+        DWORD error = GetLastError();
+        if (error != ERROR_SHARING_VIOLATION && error != ERROR_ACCESS_DENIED)
+            fail(L"Installing " + to + L" failed", error);
+        std::wstring pending = to + L".new";
+        if (!CopyFileW(from.c_str(), pending.c_str(), FALSE) ||
+            !MoveFileExW(pending.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT))
+            fail(L"Installing " + to + L" at the next reboot failed", GetLastError());
+        log(L"Installing " + to + L" at the next reboot: the running control panel holds it");
+    }
+}
+
+// Joins or leaves the current thread's COM apartment (install runs on the wizard's worker thread).
+struct Apartment {
+    bool joined = false;
+    Apartment()
+    {
+        HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        joined = SUCCEEDED(hr);
+        if (FAILED(hr) && hr != RPC_E_CHANGED_MODE)  // already in another apartment: its owner leaves it
+            fail(L"Starting COM failed", static_cast<DWORD>(hr));
+    }
+    ~Apartment()
+    {
+        if (joined)
+            CoUninitialize();
+    }
+    Apartment(const Apartment&) = delete;
+    Apartment& operator=(const Apartment&) = delete;
+};
+
+void create_shortcut(const std::wstring& link, const std::wstring& target)
+{
+    IShellLinkW* shell_link = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW,
+                                  reinterpret_cast<void**>(&shell_link));
+    if (SUCCEEDED(hr)) {
+        shell_link->SetPath(target.c_str());
+        shell_link->SetWorkingDirectory(install_dir().c_str());
+        shell_link->SetDescription(L"Venera's Direct3D, Vulkan and OpenGL settings and tests");
+        shell_link->SetIconLocation(target.c_str(), 0);
+        IPersistFile* file = nullptr;
+        hr = shell_link->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&file));
+        if (SUCCEEDED(hr)) {
+            hr = file->Save(link.c_str(), TRUE);
+            file->Release();
+        }
+        shell_link->Release();
+    }
+    if (FAILED(hr))
+        fail(L"Creating the shortcut " + link + L" failed", static_cast<DWORD>(hr));
+}
+
+// A Start menu shortcut and an entry in the desktop's context menu (right-click on the desktop), for every user.
+void create_shortcuts()
+{
+    std::wstring panel = install_dir() + L"\\" + kPanelExe;
+    std::wstring menu = start_menu_dir();
+    std::error_code ec;
+    fs::create_directories(menu, ec);
+    if (ec)
+        fail(L"Creating " + menu + L" failed", ec.value());
+
+    {
+        Apartment apartment;
+        create_shortcut(menu + L"\\" + kPanelName + L".lnk", panel);
+    }
+
+    HKEY key;
+    DWORD error = RegCreateKeyExW(HKEY_CLASSES_ROOT, L"DesktopBackground\\Shell\\Venera", 0, nullptr, 0, KEY_WRITE,
+                                  nullptr, &key, nullptr);
+    if (error != ERROR_SUCCESS)
+        fail(std::wstring(L"Adding ") + kPanelName + L" to the desktop's context menu failed", error);
+    set_string(key, nullptr, kPanelName);
+    set_string(key, L"Icon", panel);
+    HKEY command = nullptr;
+    error = RegCreateKeyExW(key, L"command", 0, nullptr, 0, KEY_WRITE, nullptr, &command, nullptr);
+    RegCloseKey(key);
+    if (error != ERROR_SUCCESS)
+        fail(std::wstring(L"Adding ") + kPanelName + L" to the desktop's context menu failed", error);
+    set_string(command, nullptr, L"\"" + panel + L"\"");
+    RegCloseKey(command);
+    log(std::wstring(L"Added ") + kPanelName + L" to the Start menu and the desktop's context menu");
+}
+
+void remove_shortcuts()
+{
+    std::wstring menu = start_menu_dir();
+    std::error_code ec;
+    if (fs::remove(menu + L"\\" + kPanelName + L".lnk", ec))
+        log(L"Removed the control panel's Start menu shortcut");
+    fs::remove(menu, ec);  // only when it is empty
+    if (RegDeleteTreeW(HKEY_CLASSES_ROOT, L"DesktopBackground\\Shell\\Venera") == ERROR_SUCCESS)
+        log(L"Removed the control panel from the desktop's context menu");
+}
+
 void remove_install_dir()
 {
     std::wstring dir = install_dir();
@@ -554,7 +675,11 @@ bool install(const SystemState& state, const std::wstring& version, const Progre
 
     progress(80, L"Registering in Apps & features");
     register_product(version, size_kb);
-    progress(90, L"Scheduling the removal of the drivers it replaces at the next boot");
+    progress(85, L"Installing the control panel");
+    install_panel(dir);
+    progress(90, L"Adding the control panel to the Start menu and the desktop's menu");
+    create_shortcuts();
+    progress(95, L"Scheduling the removal of the drivers it replaces at the next boot");
     schedule_cleanup();
     std::error_code ec;
     fs::remove_all(dir, ec);
@@ -596,6 +721,8 @@ bool uninstall(const Progress& progress)
     remove_certs();
     progress(70, L"Removing the Apps & features entry");
     unregister_product();
+    progress(75, L"Removing the control panel's shortcuts");
+    remove_shortcuts();
     // Our packages stay in use until the next boot, and the cleanup then runs from the uninstaller in Program Files.
     progress(85, L"Scheduling the removal of the driver packages at the next boot");
     schedule_cleanup();
