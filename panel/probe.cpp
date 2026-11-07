@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// The graphics probe: `vgd-panel.exe --probe` tries each API on the VirtIO GPU as an application would (Vulkan through
+// The graphics probe: `vgd-panel.exe /probe` tries each API on the VirtIO GPU as an application would (Vulkan through
 // the loader, D3D12 and D3D11 on the adapter, OpenGL on a window) and prints key=value lines. Each API first prints
 // "<api>.status=checking", so one that crashes the process is told apart from one that was never reached. The panel
 // runs it as a child process (startProbe) and reads its output.
@@ -203,58 +203,64 @@ int runProbe()
     return 0;
 }
 
+ProbeResult probeNow(DWORD timeoutMs)
+{
+    ProbeResult r;
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), nullptr, TRUE};
+    HANDLE read = nullptr, write = nullptr;
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    std::wstring cmd = L"\"" + std::wstring(self) + L"\" /probe";
+    STARTUPINFOW si = {sizeof(si)};
+    PROCESS_INFORMATION pi = {};
+    if (CreatePipe(&read, &write, &sa, 1 << 16)) {
+        SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdOutput = write;
+        si.hStdError = write;
+        if (!CreateProcessW(self, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
+                            &pi))
+            r["failed"] = L"1";
+        CloseHandle(write);
+    }
+    if (pi.hProcess) {
+        // The output fits the pipe's buffer, so the probe never waits on us: wait for it, then read.
+        if (WaitForSingleObject(pi.hProcess, timeoutMs) == WAIT_TIMEOUT) {
+            TerminateProcess(pi.hProcess, 1);
+            r["timeout"] = L"1";
+        }
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        char hexCode[16];
+        snprintf(hexCode, sizeof(hexCode), "0x%08lx", code);
+        r["exit"] = widen(hexCode);
+        std::string text;
+        char buf[4096];
+        DWORD got;
+        while (ReadFile(read, buf, sizeof(buf), &got, nullptr) && got)
+            text.append(buf, got);
+        for (size_t start = 0; start < text.size();) {
+            size_t end = text.find('\n', start);
+            if (end == std::string::npos)
+                end = text.size();
+            std::string line = text.substr(start, end - start);
+            size_t eq = line.find('=');
+            if (eq != std::string::npos)
+                r[line.substr(0, eq)] = widen(line.substr(eq + 1));
+            start = end + 1;
+        }
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    if (read)
+        CloseHandle(read);
+    return r;
+}
+
 void startProbe(HWND window, UINT msg, DWORD timeoutMs)
 {
     std::thread([=] {
-        auto* result = new ProbeResult;
-        SECURITY_ATTRIBUTES sa = {sizeof(sa), nullptr, TRUE};
-        HANDLE read = nullptr, write = nullptr;
-        wchar_t self[MAX_PATH];
-        GetModuleFileNameW(nullptr, self, MAX_PATH);
-        std::wstring cmd = L"\"" + std::wstring(self) + L"\" --probe";
-        STARTUPINFOW si = {sizeof(si)};
-        PROCESS_INFORMATION pi = {};
-        if (CreatePipe(&read, &write, &sa, 1 << 16)) {
-            SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
-            si.dwFlags = STARTF_USESTDHANDLES;
-            si.hStdOutput = write;
-            si.hStdError = write;
-            if (!CreateProcessW(self, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
-                                &pi))
-                (*result)["failed"] = L"1";
-            CloseHandle(write);
-        }
-        if (pi.hProcess) {
-            // The output fits the pipe's buffer, so the probe never waits on us: wait for it, then read.
-            if (WaitForSingleObject(pi.hProcess, timeoutMs) == WAIT_TIMEOUT) {
-                TerminateProcess(pi.hProcess, 1);
-                (*result)["timeout"] = L"1";
-            }
-            DWORD code = 0;
-            GetExitCodeProcess(pi.hProcess, &code);
-            char hexCode[16];
-            snprintf(hexCode, sizeof(hexCode), "0x%08lx", code);
-            (*result)["exit"] = widen(hexCode);
-            std::string text;
-            char buf[4096];
-            DWORD got;
-            while (ReadFile(read, buf, sizeof(buf), &got, nullptr) && got)
-                text.append(buf, got);
-            for (size_t start = 0; start < text.size();) {
-                size_t end = text.find('\n', start);
-                if (end == std::string::npos)
-                    end = text.size();
-                std::string line = text.substr(start, end - start);
-                size_t eq = line.find('=');
-                if (eq != std::string::npos)
-                    (*result)[line.substr(0, eq)] = widen(line.substr(eq + 1));
-                start = end + 1;
-            }
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-        }
-        if (read)
-            CloseHandle(read);
+        auto* result = new ProbeResult(probeNow(timeoutMs));
         if (!PostMessageW(window, msg, 0, reinterpret_cast<LPARAM>(result)))
             delete result;
     }).detach();

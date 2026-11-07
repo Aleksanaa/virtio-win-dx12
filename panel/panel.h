@@ -165,14 +165,39 @@ SystemInfo readSystemInfo();
 std::vector<Display> readDisplays(const std::wstring& adapterName);
 
 // ---- the graphics probe (probe.cpp) -------------------------------------------------------------------------------
-// `vgd-panel.exe --probe` creates a Vulkan instance and D3D12, D3D11 and OpenGL devices on the VirtIO GPU and prints
+// `vgd-panel.exe /probe` creates a Vulkan instance and D3D12, D3D11 and OpenGL devices on the VirtIO GPU and prints
 // what it found as key=value lines. It runs as a child process, so a driver that crashes or hangs takes only the
 // probe down. Each API's lines are written before the next is tried.
 int runProbe();
 using ProbeResult = std::map<std::string, std::wstring>;
-// Starts the probe on a thread; posts `msg` to `window` with a ProbeResult* (the receiver deletes it) when it is done.
-// A probe that does not finish in `timeoutMs` is ended, and the result has "timeout".
+// Runs the probe and waits for it. A probe that does not finish in `timeoutMs` is ended, and the result has
+// "timeout".
+ProbeResult probeNow(DWORD timeoutMs);
+// The same on a thread; posts `msg` to `window` with a ProbeResult* (the receiver deletes it) when it is done.
 void startProbe(HWND window, UINT msg, DWORD timeoutMs);
+
+// ---- the system report (report.cpp): what the Overview shows and /info prints ---------------------------------------
+
+struct InfoRow {
+    std::wstring key, value;
+    bool bad = false;  // something that does not work
+};
+struct InfoSection {
+    const wchar_t* icon;
+    std::wstring title;
+    std::vector<InfoRow> rows;
+};
+// `probe` null: the probe is still running.
+std::vector<InfoSection> describe(const SystemInfo& info, const ProbeResult* probe);
+std::wstring reportText(const std::vector<InfoSection>& sections);
+bool anyProblem(const std::vector<InfoSection>& sections);
+// The host GPU and its Vulkan driver from Venus' device name, "Virtio-GPU Venus (<GPU> (<driver>))".
+void hostGpu(const ProbeResult* probe, std::wstring& gpu, std::wstring& driver);
+
+// ---- the command line (cli.cpp) -------------------------------------------------------------------------------------
+// Runs the command in argv when there is one, and returns its exit code; returns -1 when there is none (the window),
+// with *page set from /page.
+int runCommandLine(int argc, wchar_t** argv, int* page);
 
 // UTF-8 / UTF-16.
 std::wstring widen(const std::string& s);

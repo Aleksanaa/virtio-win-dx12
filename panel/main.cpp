@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // The window: a NavigationView (pages on the left, the current page on a layer with a rounded top-left corner) with
-// WinUI's ScrollBar, a dark title bar, and per-monitor DPI. `--probe` runs the graphics probe instead (probe.cpp).
-//   vgd-panel.exe [--page N]
+// WinUI's ScrollBar, a dark title bar, and per-monitor DPI. With a command it runs that instead (cli.cpp).
+//   vgd-panel.exe [/page N]
 #include "panel.h"
 
 #include <windowsx.h>
@@ -583,12 +583,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     int page = 0;
-    for (int i = 1; i < argc; i++) {
-        if (!wcscmp(argv[i], L"--probe"))
-            return panel::runProbe();
-        if (!wcscmp(argv[i], L"--page") && i + 1 < argc)
-            page = _wtoi(argv[++i]);
-    }
+    int code = panel::runCommandLine(argc, argv, &page);
+    if (code >= 0)
+        return code;
     panel::Window window;
     return window.run(inst, show, page);
 }
