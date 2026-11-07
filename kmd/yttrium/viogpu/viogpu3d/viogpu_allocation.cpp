@@ -577,6 +577,11 @@ void VioGpuAllocation::UnmapForCpuCopy(PVOID map_va,
                                        ULONGLONG map_size,
                                        BOOLEAN io_mapping)
 {
+    if (m_alias_source)
+    {
+        m_alias_source->UnmapForCpuCopy(map_va, map_size, io_mapping);
+        return;
+    }
     if (io_mapping && map_va && map_size)
     {
         MmUnmapIoSpace(map_va, (SIZE_T)map_size);

@@ -67,18 +67,19 @@ const viogpu::AllocationExchange* importable_surface(const char* what, UINT allo
     return e;
 }
 
-int import_fd(const char* what, KmtDevice* kmt, D3DKMT_HANDLE km_resource)
+int import_fd(const char* what, KmtDevice* kmt, D3DKMT_HANDLE allocation,
+              const viogpu::AllocationExchange& surface)
 {
     HANDLE nt = nullptr;
-    if (!kmt || FAILED(kmt->share(km_resource, &nt))) {
-        VGD_WARN("%s: could not share km resource 0x%x", what, km_resource);
+    if (!kmt || FAILED(kmt->share_surface(allocation, surface, &nt))) {
+        VGD_WARN("%s: could not export allocation 0x%x", what, allocation);
         return -1;
     }
     // For the log: the host names resources by this id in its errors (an import of one it does not know kills the
     // Venus context).
     D3DKMT_HANDLE opened = 0, source = 0;
     if (SUCCEEDED(kmt->open_shared(nt, &opened, &source))) {
-        VGD_TRACE("%s: km resource 0x%x is host resource %u", what, km_resource, kmt->resource_id(source));
+        VGD_TRACE("%s: allocation 0x%x is host resource %u", what, allocation, kmt->resource_id(source));
         kmt->close(opened);
     }
     const int fd = fd_of_handle(nt);

@@ -31,9 +31,12 @@ struct Device {
     // The KMD understands viogpu::AllocationAlias (our patch): shared surfaces and primaries can be created.
     bool allocation_alias = false;
     std::unique_ptr<KmtDevice> kmt;                   // created on first use (kmt.h)
-    HANDLE present_context = nullptr;                 // a kernel context of the runtime's, for presents
+    HANDLE present_context = nullptr;                 // a kernel context of the runtime's: presents, keyed mutexes
     D3DKMT_HANDLE paging_queue = 0, paging_fence = 0; // for making presentable surfaces resident
     HANDLE idle_event = nullptr;                      // set by DXVK when a flush completes (wait_idle)
+    // A shared surface cleared since the last handoff: DXVK keeps a clear that no draw follows pending across its
+    // submissions, and running it needs a surface to transition (flush_clears).
+    Com<ID3D11Resource> pending_clear;
     // A monitored fence of the runtime's that the GPU signals when our rendering is done, through our ICD
     // (icd/patches/0006): presents wait for it on the present context rather than for the GPU here.
     struct RenderFence {
@@ -62,6 +65,8 @@ struct Device {
             kmt = KmtDevice::open();
         return kmt.get();
     }
+    // Runs the clears DXVK still holds back, before a shared surface leaves this device.
+    void flush_clears();
     // Waits until the GPU has done all work submitted so far.
     HRESULT wait_idle();
 };

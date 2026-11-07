@@ -9,6 +9,7 @@
 #include <d3dkmthk.h>
 
 #include <memory>
+#include "viogpu_abi.h"
 
 namespace vgd::umd {
 
@@ -25,6 +26,8 @@ public:
     HRESULT share(D3DKMT_HANDLE resource, HANDLE* nt) { return share(resource, SHARED_ALLOCATION_ALL_ACCESS, nt); }
     // Of any shareable kernel object of this process (resources, sync objects), with `access`.
     HRESULT share(D3DKMT_HANDLE object, DWORD access, HANDLE* nt);
+    // Export an NT-shareable alias of an allocation already opened by the runtime.
+    HRESULT share_surface(D3DKMT_HANDLE allocation, const viogpu::AllocationExchange& surface, HANDLE* nt);
     // The host (virtio-gpu) resource id that `allocation`, an allocation of this device, names; 0 if the KMD says none.
     UINT resource_id(D3DKMT_HANDLE allocation);
 
@@ -39,6 +42,7 @@ private:
     PFND3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query_resource_info_ = nullptr;
     PFND3DKMT_OPENRESOURCEFROMNTHANDLE open_resource_ = nullptr;
     PFND3DKMT_DESTROYALLOCATION destroy_allocation_ = nullptr;
+    PFND3DKMT_CREATEALLOCATION create_allocation_ = nullptr;
     PFND3DKMT_SHAREOBJECTS share_objects_ = nullptr;
     PFND3DKMT_ESCAPE escape_ = nullptr;
     D3DKMT_HANDLE adapter_ = 0;

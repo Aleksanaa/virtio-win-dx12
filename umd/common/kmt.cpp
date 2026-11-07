@@ -28,6 +28,7 @@ std::unique_ptr<KmtDevice> KmtDevice::open()
         !get(k->query_resource_info_, "D3DKMTQueryResourceInfoFromNtHandle") ||
         !get(k->open_resource_, "D3DKMTOpenResourceFromNtHandle") ||
         !get(k->destroy_allocation_, "D3DKMTDestroyAllocation") || !get(k->share_objects_, "D3DKMTShareObjects") ||
+        !get(k->create_allocation_, "D3DKMTCreateAllocation") ||
         !get(k->escape_, "D3DKMTEscape")) {
         VGD_WARN("kmt: gdi32 lacks the D3DKMT entry points we need");
         return nullptr;
@@ -143,6 +144,38 @@ HRESULT KmtDevice::share(D3DKMT_HANDLE object, DWORD access, HANDLE* nt)
     return S_OK;
 }
 
+
+HRESULT KmtDevice::share_surface(D3DKMT_HANDLE allocation, const viogpu::AllocationExchange& surface, HANDLE* nt)
+{
+    *nt = nullptr;
+    if (!allocation)
+        return E_INVALIDARG;
+    // A legacy shared resource cannot be exported with D3DKMTShareObjects.
+    // The alias keeps its backing blob alive and has its own NT-sharing flags.
+    viogpu::AllocationAlias alias{};
+    alias.exchange = surface;
+    alias.Magic = viogpu::kAllocationAliasMagic;
+    alias.SourceAllocation = allocation;
+    D3DDDI_ALLOCATIONINFO info{};
+    info.pPrivateDriverData = &alias;
+    info.PrivateDriverDataSize = sizeof(alias);
+    D3DKMT_CREATEALLOCATION create{};
+    create.hDevice = device_;
+    create.NumAllocations = 1;
+    create.pAllocationInfo = &info;
+    create.Flags.CreateResource = 1;
+    create.Flags.CreateShared = 1;
+    create.Flags.NtSecuritySharing = 1;
+    const NTSTATUS status = create_allocation_(&create);
+    if (status < 0) {
+        VGD_WARN("kmt: NT alias of allocation 0x%x failed: 0x%08lx", allocation, status);
+        return E_FAIL;
+    }
+    const HRESULT hr = share(create.hResource, nt);
+    // The exported NT handle retains the alias after this device closes it.
+    close(create.hResource);
+    return hr;
+}
 
 UINT KmtDevice::resource_id(D3DKMT_HANDLE allocation)
 {

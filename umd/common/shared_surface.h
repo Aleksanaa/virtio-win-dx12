@@ -43,9 +43,9 @@ private:
 // `data`) if it is one we can import: a shareable blob under a single 2D image. Null, logged as `what`, otherwise.
 const viogpu::AllocationExchange* importable_surface(const char* what, UINT allocations, const void* data, UINT size,
                                                      D3DKMT_HANDLE allocation, D3DKMT_HANDLE km_resource);
-// An fd of the opened runtime resource `km_resource` for our ICD's import, which takes it over (if the import does
-// not, the caller closes handle_of_fd(fd)); -1, logged as `what`, on failure.
-int import_fd(const char* what, KmtDevice* kmt, D3DKMT_HANDLE km_resource);
+// An NT alias of an opened allocation, for the ICD to import. The caller closes it if the import fails.
+int import_fd(const char* what, KmtDevice* kmt, D3DKMT_HANDLE allocation,
+              const viogpu::AllocationExchange& surface);
 
 // The resource private data of the shared surfaces our UMDs create (the allocation's is a viogpu::AllocationAlias),
 // which openers get back: what the surface is in API terms. It must stay smaller than the allocation's private data,

@@ -107,6 +107,8 @@ HRESULT APIENTRY close_adapter(D3D10DDI_HADAPTER h)
 {
     VGD_TRACE("CloseAdapter");
     delete Adapter::from(h);
+    // The Vulkan instance owns WSI state. Release it before DLL teardown.
+    dxvk::release_instance_cache();
     return S_OK;
 }
 
