@@ -9,10 +9,15 @@ memfd:
 
 ```
 -machine q35,memory-backend=mem
+-accel kvm,honor-guest-pat=on  # Intel iGPU hosts, see below
 -object memory-backend-memfd,id=mem,size=8G,share=on
 -device virtio-vga-gl,venus=on,blob=on,hostmem=4G
 -display sdl,gl=on            # or gtk,gl=on
 ```
+
+On an Intel iGPU host, `-accel kvm,honor-guest-pat=on` is needed. Without it, KVM on Intel ignores the guest's page
+attributes and maps the `hostmem` window write-back, so the guest's write-combined views of host GPU memory are not
+coherent with the iGPU. KVM on AMD always honors them, so AMD hosts don't need it.
 
 - **SDL** is pixel-exact on a fractionally scaled Wayland desktop if QEMU's environment has
   `SDL_VIDEO_WAYLAND_SCALE_TO_DISPLAY=1`. SDL sizes the window in physical pixels and the guest's resolution matches
