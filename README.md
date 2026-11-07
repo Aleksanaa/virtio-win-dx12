@@ -79,7 +79,9 @@ powershell -ExecutionPolicy Bypass -File .\vgd-test.ps1 Install
 
 ## Status
 
-Work in progress. GravityMark's D3D12, OpenGL and Vulkan benchmarks work, D3D11 lacks a rasterization feature in DXVK. WebGL examples in Edge browser should work. UI should be flawless most of the time but intermittent stuttering may occur.
+Work in progress. GravityMark's D3D12, OpenGL and Vulkan benchmarks work, D3D11 lacks a rasterization feature in DXVK. WebGL examples in Edge browser should work. UI should be flawless most of the time (unless you are using spice display).
+
+3DMark Steal Nomad Light benchmark (D3D12) shows score of 6500. Bare metal Windows11 on Strix Halo should show 9000~10000.
  
 ## Thanks
 
