@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: MIT
-// Guest probe: lists DXGI adapters and tries D3D12CreateDevice on each. Plain-text output for the harness.
-//   --debug  enable the D3D12 debug layer (needs the "Graphics Tools" optional feature) and print the runtime's
-//            messages after each attempt.
-//   --copy   on each device created, copy a buffer upload -> default -> readback and check the bytes.
-//   --triangle  on each device created, draw off-screen and check pixels (shaders from tests/shaders).
-//   --textured  on each device created, sample a texture through descriptor heaps and tables, check pixels.
-//   --depth  on each device created, draw with depth/stencil tests and 4x MSAA with a resolve, check pixels.
-//   --compute  on each device created, clear UAVs and dispatch on a compute queue, check the values.
-//   --queries  on each device created, run occlusion, pipeline statistics and timestamp queries, check results.
-//   --indirect  on each device created, ExecuteIndirect draws and dispatches, counted by queries and the shader.
-//   --placed  on each device created, heaps and placed buffers and a texture, mapped and copied through.
-//   --present  on each device created, a flip-model swapchain for a few seconds per phase (watch it): windowed,
-//            ResizeBuffers to other sizes and formats, borderless fullscreen; a screen readback ends each phase.
-#include <windows.h>
+// Direct3D 12 tests, on a device on the VirtIO GPU through the system runtime:
+//   device    D3D12CreateDevice at feature level 11_0, and the highest shader model
+//   copy      a buffer copied upload -> default -> readback, with a fence, and the bytes checked
+//   triangle  an off-screen draw with shaders, root constants and a vertex buffer, pixels checked
+//   textured  a texture sampled through descriptor heaps and tables, a heap and a static sampler, pixels checked
+//   depth     depth/stencil tests and 4x MSAA with a resolve, pixels checked
+//   compute   UAV clears and a dispatch on a compute queue, values checked
+//   queries   occlusion, pipeline statistics and timestamp queries, results checked
+//   indirect  ExecuteIndirect draws and dispatches, counted by queries and the shader
+//   placed    heaps and placed buffers and a texture, mapped and copied through
+//   present   a flip-model swapchain for a few seconds per phase (watch it): windowed, ResizeBuffers to other sizes
+//             and formats, borderless fullscreen; a screen readback ends each phase
+// With /debug the debug layer is on (it needs the "Graphics Tools" optional feature) and the runtime's messages are
+// printed after each step. The shaders are DXIL from shaders/.
+#include "tests.h"
+
 #include <dxgi1_4.h>
 #include <dxgidebug.h>
 #include <directx/d3d12.h>
@@ -33,42 +35,14 @@
 namespace {
 
 IDXGIInfoQueue* g_info = nullptr;
-DWORD g_main_thread = 0;
-
-// Reports where an access violation happened (module + offset, address accessed, thread) before the process dies.
-LONG CALLBACK report_crash(EXCEPTION_POINTERS* e)
-{
-    const EXCEPTION_RECORD* r = e->ExceptionRecord;
-    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
-        return EXCEPTION_CONTINUE_SEARCH;
-    HMODULE mod = nullptr;
-    char name[MAX_PATH] = "?";
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           static_cast<LPCSTR>(r->ExceptionAddress), &mod))
-        GetModuleFileNameA(mod, name, sizeof(name));
-    std::printf("ACCESS VIOLATION in %s+0x%llx (ip %p), %s address 0x%llx, thread %lu%s\n", name,
-                static_cast<unsigned long long>(static_cast<char*>(r->ExceptionAddress) - reinterpret_cast<char*>(mod)),
-                r->ExceptionAddress, r->ExceptionInformation[0] == 1 ? "writing" : r->ExceptionInformation[0] == 8 ? "executing" : "reading",
-                static_cast<unsigned long long>(r->ExceptionInformation[1]), GetCurrentThreadId(),
-                GetCurrentThreadId() == g_main_thread ? " (main)" : "");
-    // A call through a null pointer leaves the caller's return address on top of the stack.
-    void* ret = *reinterpret_cast<void**>(e->ContextRecord->Rsp);
-    HMODULE rmod = nullptr;
-    char rname[MAX_PATH] = "?";
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           static_cast<LPCSTR>(ret), &rmod))
-        GetModuleFileNameA(rmod, rname, sizeof(rname));
-    std::printf("  return address on stack: %s+0x%llx (%p)\n", rname,
-                static_cast<unsigned long long>(static_cast<char*>(ret) - reinterpret_cast<char*>(rmod)), ret);
-    return EXCEPTION_CONTINUE_SEARCH;
-}
 
 void enable_debug_layer()
 {
     ID3D12Debug* debug = nullptr;
     HRESULT hr = D3D12GetDebugInterface(IID_PPV_ARGS(&debug));
     if (FAILED(hr)) {
-        std::printf("debug layer unavailable (0x%08lx): install Graphics Tools, see vgd-test.ps1\n", hr);
+        std::printf("debug layer unavailable (0x%08lx): install Graphics Tools: Add-WindowsCapability -Online "
+                    "-Name Tools.Graphics.DirectX~~~~0.0.1.0\n", hr);
         return;
     }
     debug->EnableDebugLayer();
@@ -2147,86 +2121,73 @@ out:
 
 } // namespace
 
-int main(int argc, char** argv)
+namespace panel {
+
+namespace {
+
+// Runs `test` on a D3D12 device on the VirtIO GPU.
+bool on_device(bool (*test)(ID3D12Device*, IDXGIFactory1*, const wchar_t*))
 {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);   // a crash must not swallow the last lines
-    g_main_thread = GetCurrentThreadId();
-    AddVectoredExceptionHandler(1, report_crash);
-    std::printf("d3dprobe built " __DATE__ " " __TIME__ ", args:");
-    for (int i = 1; i < argc; i++)
-        std::printf(" %s", argv[i]);
-    std::printf("\n");
-    bool copy = false, triangle = false, textured = false, depth = false, compute = false, queries = false,
-         indirect = false, present = false, placed = false;
-    for (int i = 1; i < argc; i++) {
-        if (!std::strcmp(argv[i], "--debug"))
-            enable_debug_layer();
-        else if (!std::strcmp(argv[i], "--copy"))
-            copy = true;
-        else if (!std::strcmp(argv[i], "--triangle"))
-            triangle = true;
-        else if (!std::strcmp(argv[i], "--textured"))
-            textured = true;
-        else if (!std::strcmp(argv[i], "--depth"))
-            depth = true;
-        else if (!std::strcmp(argv[i], "--indirect"))
-            indirect = true;
-        else if (!std::strcmp(argv[i], "--placed"))
-            placed = true;
-        else if (!std::strcmp(argv[i], "--present"))
-            present = true;
-        else if (!std::strcmp(argv[i], "--queries"))
-            queries = true;
-        else if (!std::strcmp(argv[i], "--compute"))
-            compute = true;
+    if (testDebugLayer)
+        enable_debug_layer();
+    IDXGIAdapter1* adapter = findAdapter();
+    if (!adapter) {
+        std::printf("no VirtIO GPU adapter\n");
+        return false;
     }
-
+    DXGI_ADAPTER_DESC1 desc{};
+    adapter->GetDesc1(&desc);
+    std::printf("adapter: %ls (vendor 0x%04x device 0x%04x subsys 0x%08x flags 0x%x)\n", desc.Description,
+                desc.VendorId, desc.DeviceId, desc.SubSysId, desc.Flags);
     IDXGIFactory1* factory = nullptr;
-    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
-    if (FAILED(hr)) {
-        std::printf("CreateDXGIFactory1 failed: 0x%08lx\n", hr);
-        return 1;
-    }
-    int failures = 0;
-    IDXGIAdapter1* adapter = nullptr;
-    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
-        DXGI_ADAPTER_DESC1 desc{};
-        adapter->GetDesc1(&desc);
-        std::printf("adapter %u: %ls (vendor 0x%04x device 0x%04x subsys 0x%08x flags 0x%x)\n", i, desc.Description,
-                    desc.VendorId, desc.DeviceId, desc.SubSysId, desc.Flags);
-
-        ID3D12Device* device = nullptr;
-        hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
-        std::printf("  D3D12CreateDevice(FL 11_0): 0x%08lx %s\n", hr, SUCCEEDED(hr) ? "PASS" : "FAIL");
+    adapter->GetParent(IID_PPV_ARGS(&factory));
+    ID3D12Device* device = nullptr;
+    HRESULT hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+    std::printf("D3D12CreateDevice(FL 11_0): 0x%08lx %s\n", hr, SUCCEEDED(hr) ? "ok" : "FAIL");
+    print_messages();
+    bool ok = false;
+    if (device) {
+        ok = test(device, factory, desc.Description);
         print_messages();
-        if (device) {
-            D3D12_FEATURE_DATA_SHADER_MODEL sm{D3D_SHADER_MODEL_6_0};
-            device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm));
-            std::printf("  highest shader model: 0x%x\n", sm.HighestShaderModel);
-            if (copy && !copy_test(device))
-                failures++;
-            if (triangle && !triangle_test(device))
-                failures++;
-            if (textured && !textured_test(device))
-                failures++;
-            if (depth && !depth_test(device))
-                failures++;
-            if (indirect && !indirect_test(device))
-                failures++;
-            if (queries && !queries_test(device))
-                failures++;
-            if (compute && !compute_test(device))
-                failures++;
-            if (placed && !placed_test(device))
-                failures++;
-            if (present && !present_test(device, factory, desc.Description))
-                failures++;
-            device->Release();
-        } else if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
-            failures++;
-        }
-        adapter->Release();
+        device->Release();
     }
-    factory->Release();
-    return failures ? 1 : 0;
+    if (factory)
+        factory->Release();
+    adapter->Release();
+    return ok;
 }
+
+bool device_test(ID3D12Device* device)
+{
+    D3D12_FEATURE_DATA_SHADER_MODEL sm{D3D_SHADER_MODEL_6_0};
+    device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm));
+    std::printf("highest shader model: 0x%x\n", sm.HighestShaderModel);
+    return true;
+}
+
+template <bool (*F)(ID3D12Device*)>
+bool run()
+{
+    return on_device([](ID3D12Device* d, IDXGIFactory1*, const wchar_t*) { return F(d); });
+}
+
+}  // namespace
+
+TestGroup d3d12Tests()
+{
+    return {"d3d12", L"Direct3D 12", L"vgd's D3D12 driver on vkd3d-proton", {
+        {"device", L"Device", L"Creates a device and reads its shader model", run<device_test>},
+        {"copy", L"Buffer copy", L"Upload, default and readback buffers through a fence", run<copy_test>},
+        {"triangle", L"Triangle", L"Shaders, root constants and a vertex buffer, off screen", run<triangle_test>},
+        {"textured", L"Textures", L"Sampling through descriptor heaps, tables and a static sampler", run<textured_test>},
+        {"depth", L"Depth and MSAA", L"Depth and stencil tests, 4x MSAA and a resolve", run<depth_test>},
+        {"compute", L"Compute", L"UAV clears and a dispatch on a compute queue", run<compute_test>},
+        {"queries", L"Queries", L"Occlusion, pipeline statistics and timestamps", run<queries_test>},
+        {"indirect", L"ExecuteIndirect", L"Indirect draws and dispatches", run<indirect_test>},
+        {"placed", L"Placed resources", L"Heaps with placed buffers and a texture, mapped and copied", run<placed_test>},
+        {"present", L"Swapchain", L"Shows a window for a few seconds per phase, including fullscreen",
+         [] { return on_device(present_test); }},
+    }};
+}
+
+}  // namespace panel

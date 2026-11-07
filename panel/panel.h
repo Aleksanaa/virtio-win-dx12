@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "tests/tests.h"
+
 namespace panel {
 
 // ---- WinUI 3 dark theme tokens (alpha fills are drawn as alpha) ---------------------------------------------------
@@ -74,6 +76,10 @@ public:
                        float iconAlpha = 1);
     void card(D2D1_RECT_F r, bool hover = false);
     void sectionHeader(const std::wstring& s, float x, float& y);
+    // A 32 x 32 subtle button with a glyph: no fill until the pointer is over it.
+    void iconButton(const wchar_t* glyph, float x, float y, int id);
+    // A ProgressRing `size` across: `value` from 0 to 1, or below 0 for the indeterminate one (keep painting frames).
+    void progressRing(float cx, float cy, float size, float value);
 
     // Selectable text (a TextBlock with IsTextSelectionEnabled): drawn like text(), and the window lets the user select
     // in it with the mouse and copy. One text's selection at a time; `id` names the text across frames.
@@ -99,6 +105,8 @@ private:
     IDWriteTextLayout* layout(const std::wstring& s, Font f, D2D1_RECT_F r) const;
     struct Selectable { D2D1_RECT_F r; int id; std::wstring s; Font f; };
     const Selectable* findSelectable(int id) const;
+    void arc(float cx, float cy, float r, float from, float to, float thickness);
+    ID2D1StrokeStyle* round_ = nullptr;  // round caps, for arcs
 
     struct Hot { D2D1_RECT_F r; int id; };
     ID2D1RenderTarget* rt_ = nullptr;
@@ -128,6 +136,8 @@ public:
     // A message the window does not handle itself (kPageMessage.., timers from kPageTimer); true when it was this
     // page's. The window repaints after it.
     virtual bool message(UINT msg, WPARAM wp, LPARAM lp) { return false; }
+    // Something on the page moves (a ProgressRing), so the window paints frame after frame while it is shown.
+    virtual bool animating() const { return false; }
 };
 
 // Messages and timer ids the window passes on to its pages.
@@ -137,7 +147,7 @@ constexpr UINT_PTR kPageTimer = 100;
 std::unique_ptr<Page> makeOverview(HWND window);
 std::unique_ptr<Page> makeSettings();
 std::unique_ptr<Page> makeLogs(HWND window);
-std::unique_ptr<Page> makeTests();
+std::unique_ptr<Page> makeTests(HWND window);
 std::unique_ptr<Page> makeTools();
 
 // ---- what the panel reads about the system (sysinfo.cpp) ----------------------------------------------------------
@@ -182,6 +192,33 @@ using ProbeResult = std::map<std::string, std::wstring>;
 ProbeResult probeNow(DWORD timeoutMs);
 // The same on a thread; posts `msg` to `window` with a ProbeResult* (the receiver deletes it) when it is done.
 void startProbe(HWND window, UINT msg, DWORD timeoutMs);
+
+// Runs this exe again with `args` and collects what it prints. One that runs longer than `timeoutMs`, or until
+// `cancel` is set, is ended, with whatever it started itself.
+struct ChildResult {
+    bool started = false, timedOut = false, cancelled = false;
+    DWORD exitCode = 0;
+    std::string output;
+};
+ChildResult runSelf(const std::wstring& args, DWORD timeoutMs, HANDLE cancel = nullptr);
+
+// ---- the tests (tests/) ------------------------------------------------------------------------------------------
+
+struct TestResult {
+    bool ok = false, stopped = false;
+    float seconds = 0;
+    std::wstring summary;  // why it failed
+    std::wstring output;
+};
+// A test by its full id, "<group>.<test>".
+const Test* findTest(const std::string& id);
+// Expands "all", group ids and full ids into full ids, in the panel's order; false with the first name it does not
+// know in *unknown.
+bool selectTests(const std::vector<std::string>& names, std::vector<std::string>* ids, std::string* unknown);
+// Runs a test in a child process and waits for it.
+TestResult runTest(const std::string& id, HANDLE cancel);
+// The child: `/run-test <id>`.
+int runTestChild(const std::string& id);
 
 // ---- the system report (report.cpp): what the Overview shows and /info prints ---------------------------------------
 

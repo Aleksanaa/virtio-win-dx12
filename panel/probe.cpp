@@ -116,6 +116,8 @@ void probeVulkan()
     out("vk.status", found ? "ok" : "no device");
 }
 
+}  // namespace
+
 // The VirtIO GPU among the DXGI adapters.
 IDXGIAdapter1* findAdapter()
 {
@@ -133,6 +135,8 @@ IDXGIAdapter1* findAdapter()
     factory->Release();
     return adapter;
 }
+
+namespace {
 
 std::string level(UINT fl) { return std::to_string(fl >> 12) + "_" + std::to_string((fl >> 8) & 0xf); }
 
@@ -239,54 +243,24 @@ int runProbe()
 ProbeResult probeNow(DWORD timeoutMs)
 {
     ProbeResult r;
-    SECURITY_ATTRIBUTES sa = {sizeof(sa), nullptr, TRUE};
-    HANDLE read = nullptr, write = nullptr;
-    wchar_t self[MAX_PATH];
-    GetModuleFileNameW(nullptr, self, MAX_PATH);
-    std::wstring cmd = L"\"" + std::wstring(self) + L"\" /probe";
-    STARTUPINFOW si = {sizeof(si)};
-    PROCESS_INFORMATION pi = {};
-    if (CreatePipe(&read, &write, &sa, 1 << 16)) {
-        SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
-        si.dwFlags = STARTF_USESTDHANDLES;
-        si.hStdOutput = write;
-        si.hStdError = write;
-        if (!CreateProcessW(self, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
-                            &pi))
-            r["failed"] = L"1";
-        CloseHandle(write);
+    ChildResult c = runSelf(L"/probe", timeoutMs);
+    if (!c.started)
+        r["failed"] = L"1";
+    if (c.timedOut)
+        r["timeout"] = L"1";
+    char hexCode[16];
+    snprintf(hexCode, sizeof(hexCode), "0x%08lx", c.exitCode);
+    r["exit"] = widen(hexCode);
+    for (size_t start = 0; start < c.output.size();) {
+        size_t end = c.output.find('\n', start);
+        if (end == std::string::npos)
+            end = c.output.size();
+        std::string line = c.output.substr(start, end - start);
+        size_t eq = line.find('=');
+        if (eq != std::string::npos)
+            r[line.substr(0, eq)] = widen(line.substr(eq + 1));
+        start = end + 1;
     }
-    if (pi.hProcess) {
-        // The output fits the pipe's buffer, so the probe never waits on us: wait for it, then read.
-        if (WaitForSingleObject(pi.hProcess, timeoutMs) == WAIT_TIMEOUT) {
-            TerminateProcess(pi.hProcess, 1);
-            r["timeout"] = L"1";
-        }
-        DWORD code = 0;
-        GetExitCodeProcess(pi.hProcess, &code);
-        char hexCode[16];
-        snprintf(hexCode, sizeof(hexCode), "0x%08lx", code);
-        r["exit"] = widen(hexCode);
-        std::string text;
-        char buf[4096];
-        DWORD got;
-        while (ReadFile(read, buf, sizeof(buf), &got, nullptr) && got)
-            text.append(buf, got);
-        for (size_t start = 0; start < text.size();) {
-            size_t end = text.find('\n', start);
-            if (end == std::string::npos)
-                end = text.size();
-            std::string line = text.substr(start, end - start);
-            size_t eq = line.find('=');
-            if (eq != std::string::npos)
-                r[line.substr(0, eq)] = widen(line.substr(eq + 1));
-            start = end + 1;
-        }
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-    }
-    if (read)
-        CloseHandle(read);
     return r;
 }
 

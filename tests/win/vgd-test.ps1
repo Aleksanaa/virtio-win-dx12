@@ -2,14 +2,15 @@
 # Test install of our driver package through the installer the build makes (setup/vgd-setup.exe), plus what tests need.
 #   Install   : run the installer silently (it installs or updates the package and removes the drivers it replaces),
 #               then set the UMDs' logging up (reboot after)
-#   Probe     : run d3dprobe (or d3d11probe with -D3D11) with VGD_LOG set and show the log
+#   Probe     : run the control panel's tests (vgd-panel /test, -Test picks them) with VGD_LOG set and show the log
 #   Uninstall : run the installer's uninstall; the device falls back to Microsoft's basic display driver (reboot after)
 #   Status    : show the adapter, its driver and its UMD slots
 #   Perf      : run uibench's desktop scenarios in the logged-on user's session under a DxgKrnl and DWM ETW trace;
 #               writes the build installed, uibench's report and the trace (etl and csv) to -Out, which
 #               tests/perf/summarize.py reads
 # Run from an elevated PowerShell:  powershell -ExecutionPolicy Bypass -File .\vgd-test.ps1 Install
-# Run it from the build tree (build\win\tests\win): it finds setup\vgd-setup.exe and tests\win\*.exe in build\win.
+# Run it from the build tree (build\win\tests\win): it finds setup\vgd-setup.exe, panel\vgd-panel.exe and
+# tests\win\*.exe in build\win.
 # Needs Secure Boot off and test signing on (vgd-setup.exe /S /testsigning turns it on). The installer logs to
 # C:\ProgramData\vgd\setup.log.
 #
@@ -20,32 +21,15 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [ValidateSet('Install', 'Probe', 'Uninstall', 'Status', 'Perf')]
     [string]$Action,
+    # Probe only: the tests to run, as vgd-panel /test takes them: groups (d3d12, d3d11, d3d9, vulkan), tests
+    # (d3d12.copy) or all; vgd-panel /test lists them
+    [string[]]$Test = @('d3d12'),
     # Probe only: enable the D3D12 debug layer (needs Graphics Tools:
     #   Add-WindowsCapability -Online -Name Tools.Graphics.DirectX~~~~0.0.1.0)
     [switch]$DebugLayer,
     # Probe: VGD_VERBOSE=1, logging every format-support and MSAA answer. Install: the same, and DXVK_LOG_LEVEL=debug,
     # for every process (DWM included) through the registry; Install without it turns that off again.
     [switch]$Trace,
-    # Probe only: also run the buffer copy test (upload -> default -> readback, fence) on each device
-    [switch]$Copy,
-    # Probe only: also draw off-screen and check pixels (render target, shaders, root constants, vertex buffer)
-    [switch]$Triangle,
-    # Probe only: also sample a texture through descriptor heaps, tables, a heap and a static sampler
-    [switch]$Textured,
-    # Probe only: also draw with depth/stencil tests and 4x MSAA with a resolve
-    [switch]$Depth,
-    # Probe only: also clear UAVs and dispatch a compute shader on a compute queue
-    [switch]$Compute,
-    # Probe only: also run occlusion, pipeline statistics and timestamp queries
-    [switch]$Queries,
-    # Probe only: also run ExecuteIndirect draws and dispatches
-    [switch]$Indirect,
-    # Probe only: also present a flip-model swapchain in phases (resizes, 10-bit, FP16, borderless fullscreen)
-    [switch]$Present,
-    # Probe only: also create heaps and placed resources, map and copy through them
-    [switch]$Placed,
-    # Probe only: run d3d11probe (every D3D11 test; with -Present also its swapchains) instead of d3dprobe
-    [switch]$D3D11,
     # Perf only: the uibench scenarios to run (all of them by default)
     [string[]]$Scenario = @(),
     # Perf only: where the results go (default C:\vgd\perf\<date-time>)
@@ -128,34 +112,27 @@ switch ($Action) {
             Set-ItemProperty -Path $settings -Name VGD_SHADER_DUMP -Value $dump
         } else { Remove-ItemProperty -Path $settings -Name VGD_SHADER_DUMP -ErrorAction SilentlyContinue }
 
-        Copy-Item (Find-BuildFile 'tests\win\d3dprobe.exe') (Join-Path $Work 'd3dprobe.exe') -Force
+        foreach ($ext in 'exe', 'com') {
+            Copy-Item (Find-BuildFile "panel\vgd-panel.$ext") (Join-Path $Work "vgd-panel.$ext") -Force
+        }
         Show-Status
         Write-Host ''
-        Write-Host "Installed $ver. Reboot, then run:  .\vgd-test.ps1 Probe -D3D11" -ForegroundColor Green
+        Write-Host "Installed $ver. Reboot, then run:  .\vgd-test.ps1 Probe -Test all" -ForegroundColor Green
     }
 
     'Probe' {
         $log = Join-Path $Work 'vgd.log'
         Remove-Item $log -ErrorAction SilentlyContinue
-        # Prefer the probe next to this script (the fresh build); C:\vgd holds the copy Install made.
+        # Prefer the panel of this build tree; C:\vgd holds the copy Install made. The .com waits and passes the
+        # output on, as a console program.
         $exe = $null
-        $name = if ($D3D11) { 'd3d11probe.exe' } else { 'd3dprobe.exe' }
-        try { $exe = Find-BuildFile "tests\win\$name" } catch { $exe = Join-Path $Work $name }
+        try { $exe = Find-BuildFile 'panel\vgd-panel.com' } catch { $exe = Join-Path $Work 'vgd-panel.com' }
         $env:VGD_LOG = $log
         $env:VGD_VERBOSE = if ($Trace) { '1' } else { '' }
-        Write-Host "== $name ($exe)"
-        $probeArgs = @()
-        if ($DebugLayer) { $probeArgs += '--debug' }
-        if ($Copy) { $probeArgs += '--copy' }
-        if ($Triangle) { $probeArgs += '--triangle' }
-        if ($Textured) { $probeArgs += '--textured' }
-        if ($Depth) { $probeArgs += '--depth' }
-        if ($Compute) { $probeArgs += '--compute' }
-        if ($Queries) { $probeArgs += '--queries' }
-        if ($Indirect) { $probeArgs += '--indirect' }
-        if ($Present) { $probeArgs += '--present' }
-        if ($Placed) { $probeArgs += '--placed' }
-        & $exe @probeArgs
+        Write-Host "== $exe /test $Test"
+        $testArgs = @('/test') + $Test
+        if ($DebugLayer) { $testArgs += '/debug' }
+        & $exe @testArgs
         Write-Host "== exit code $LASTEXITCODE"
         Write-Host "== $log"
         if (Test-Path $log) { Get-Content $log } else { Write-Host '(no log: our UMDs were not loaded)' }

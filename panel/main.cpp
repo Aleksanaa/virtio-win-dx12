@@ -159,6 +159,10 @@ void Window::paint(HDC dc)
     drawPane();
     if (rt_->EndDraw() == D2DERR_RECREATE_TARGET)
         dropTarget();
+    if (pages_[page_]->animating() && !animating_) {
+        animating_ = true;
+        QueryPerformanceCounter(&lastFrame_);
+    }
 
     if (animating_) {
         // the next frame when the compositor takes this one; without DWM, about 120 Hz
@@ -574,7 +578,7 @@ int Window::run(HINSTANCE inst, int show, int page)
     pages_.push_back(makeOverview(hwnd_));
     pages_.push_back(makeSettings());
     pages_.push_back(makeLogs(hwnd_));
-    pages_.push_back(makeTests());
+    pages_.push_back(makeTests(hwnd_));
     pages_.push_back(makeTools());
     page_ = std::clamp<size_t>(page, 0, pages_.size() - 1);
     scroll_.assign(pages_.size(), 0);

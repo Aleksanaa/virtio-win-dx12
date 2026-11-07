@@ -4,6 +4,7 @@
 #include "panel.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace panel {
 
@@ -301,6 +302,77 @@ void Ui::card(D2D1_RECT_F r, bool h)
 {
     fill(r, 4, kWhite, h ? kCardHover : kCardFill);
     stroke(r, 4, kBlack, 0.1f);
+}
+
+void Ui::iconButton(const wchar_t* glyph, float x, float y, int id)
+{
+    D2D1_RECT_F r = {x, y, x + 32, y + 32};
+    bool h = hover == id, p = h && pressed == id;
+    if (h)
+        fill(r, 4, kWhite, p ? kControlPressed : kControlHover);
+    text(glyph, kIcon, r, kWhite, p ? kTextSecondary : kTextPrimary, DWRITE_TEXT_ALIGNMENT_CENTER);
+    hot(r, id);
+}
+
+// An arc of the circle around (cx, cy), from `from` to `to` degrees clockwise from the top.
+void Ui::arc(float cx, float cy, float r, float from, float to, float thickness)
+{
+    if (to - from >= 359.9f) {
+        rt_->DrawEllipse(D2D1::Ellipse({cx, cy}, r, r), brush_, thickness);
+        return;
+    }
+    auto at = [&](float deg) {
+        float a = deg * 3.14159265f / 180;
+        return D2D1::Point2F(cx + r * std::sin(a), cy - r * std::cos(a));
+    };
+    ID2D1Factory* factory;
+    rt_->GetFactory(&factory);
+    if (!round_)
+        factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                                                               D2D1_CAP_STYLE_ROUND),
+                                   nullptr, 0, &round_);
+    ID2D1PathGeometry* path;
+    ID2D1GeometrySink* sink;
+    if (SUCCEEDED(factory->CreatePathGeometry(&path))) {
+        if (SUCCEEDED(path->Open(&sink))) {
+            sink->BeginFigure(at(from), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink->AddArc(D2D1::ArcSegment(at(to), {r, r}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                                          to - from > 180 ? D2D1_ARC_SIZE_LARGE : D2D1_ARC_SIZE_SMALL));
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->Close();
+            sink->Release();
+            rt_->DrawGeometry(path, brush_, thickness, round_);
+        }
+        path->Release();
+    }
+    factory->Release();
+}
+
+// WinUI's ProgressRing: determinate, an accent arc over a faint track; indeterminate, an arc whose head runs ahead
+// and whose tail catches up, round and round.
+void Ui::progressRing(float cx, float cy, float size, float value)
+{
+    float thickness = size / 8, r = (size - thickness) / 2;
+    if (value >= 0) {
+        color(kWhite, 0.16f);
+        arc(cx, cy, r, 0, 360, thickness);
+        color(accent);
+        if (value > 0)
+            arc(cx, cy, r, 0, std::min(value, 1.f) * 360, thickness);
+        return;
+    }
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    double t = double(now.QuadPart) / freq.QuadPart;
+    constexpr double kCycle = 1.4;  // seconds for the head to run ahead and the tail to catch up
+    double cycles = t / kCycle, p = cycles - std::floor(cycles);
+    auto ease = [](double x) { return x * x * (3 - 2 * x); };
+    // each cycle starts where the last ended, and the whole ring turns as well
+    double base = std::fmod(std::floor(cycles) * 270 + t * 120, 360);
+    double head = base + 270 * ease(std::min(1.0, p * 2)), tail = base + 270 * ease(std::max(0.0, p * 2 - 1));
+    color(accent);
+    arc(cx, cy, r, float(tail), float(head + 12), thickness);
 }
 
 float Ui::settingsCard(float x, float y, float w, float h, const wchar_t* icon, const std::wstring& title,

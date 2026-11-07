@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
-// Guest probe for the D3D11 UMD: creates a D3D11 device on each hardware adapter through the system runtime and runs
-// every test on it, printing PASS/FAIL per test. Shaders are compiled in the guest by d3dcompiler_47.dll.
-//   --present  also show swapchains in a window for a few seconds each (watch them): flip model, then the legacy
-//              blt model, then ResizeBuffers.
-//   --present-blt  run the legacy presentation phase without a prior flip swapchain.
-//   --present-check  compare visible colours with a GDI reference. Keep both windows uncovered.
-#include <windows.h>
+// Direct3D 11 tests, on a device on the VirtIO GPU through the system runtime, each printing what it checks and
+// PASS/FAIL. Shaders are compiled in the guest by d3dcompiler_47.dll. The present tests show swapchains in a window
+// for a few seconds each (watch them): flip model, then the legacy blt model, then ResizeBuffers; present-blt runs
+// the legacy model without a flip swapchain before it, present-check compares the colours on screen with a GDI
+// reference window (keep both uncovered).
+#include "tests.h"
+
 #include <d3d11_4.h>
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
@@ -20,45 +20,6 @@
 #include <vector>
 
 namespace {
-
-DWORD g_main_thread = 0;
-
-// Reports where an access violation happened (module + offset, address accessed, thread) before the process dies.
-LONG CALLBACK report_crash(EXCEPTION_POINTERS* e)
-{
-    const EXCEPTION_RECORD* r = e->ExceptionRecord;
-    if (r->ExceptionCode == 0x87a) {
-        std::printf("DirectX exception, %lu parameters:\n", r->NumberParameters);
-        for (DWORD i = 0; i < r->NumberParameters; i++)
-            std::printf("  0x%llx\n", static_cast<unsigned long long>(r->ExceptionInformation[i]));
-        void* frames[32];
-        const USHORT count = CaptureStackBackTrace(0, 32, frames, nullptr);
-        for (USHORT i = 0; i < count; i++) {
-            HMODULE module = nullptr;
-            char path[MAX_PATH] = "?";
-            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                              static_cast<LPCSTR>(frames[i]), &module);
-            if (module)
-                GetModuleFileNameA(module, path, MAX_PATH);
-            std::printf("  %s+0x%llx\n", path, static_cast<unsigned long long>(
-                reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(module)));
-        }
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
-        return EXCEPTION_CONTINUE_SEARCH;
-    HMODULE mod = nullptr;
-    char name[MAX_PATH] = "?";
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           static_cast<LPCSTR>(r->ExceptionAddress), &mod))
-        GetModuleFileNameA(mod, name, sizeof(name));
-    std::printf("ACCESS VIOLATION in %s+0x%llx, %s address 0x%llx, thread %lu%s\n", name,
-                static_cast<unsigned long long>(static_cast<char*>(r->ExceptionAddress) - reinterpret_cast<char*>(mod)),
-                r->ExceptionInformation[0] == 1 ? "writing" : "reading",
-                static_cast<unsigned long long>(r->ExceptionInformation[1]), GetCurrentThreadId(),
-                GetCurrentThreadId() == g_main_thread ? " (main)" : "");
-    return EXCEPTION_CONTINUE_SEARCH;
-}
 
 // The runtime's "Removing Device." debug message, with the stack that removes the device (module + offset).
 LONG CALLBACK report_device_removal(EXCEPTION_POINTERS* e)
@@ -567,7 +528,7 @@ bool run_shared_child(HANDLE handle)
     const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
     if (!length || length >= MAX_PATH)
         return false;
-    std::swprintf(command, std::size(command), L"\"%ls\" --shared-child %llu", path,
+    std::swprintf(command, std::size(command), L"\"%ls\" /shared-child %llu", path,
                   static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(handle)));
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
@@ -945,77 +906,99 @@ bool present_test(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* ada
 
 } // namespace
 
-int main(int argc, char** argv)
-{
-    std::setvbuf(stdout, nullptr, _IONBF, 0);   // a crash must not swallow the last lines
-    g_main_thread = GetCurrentThreadId();
-    AddVectoredExceptionHandler(1, report_crash);
-    AddVectoredExceptionHandler(1, report_device_removal);
-    std::printf("d3d11probe built " __DATE__ " " __TIME__ "\n");
-    bool present = false;
-    bool blt_only = false;
-    bool check_screen = false;
-    HANDLE child_handle = nullptr;
-    for (int i = 1; i < argc; i++)
-        if (!std::strcmp(argv[i], "--present"))
-            present = true;
-        else if (!std::strcmp(argv[i], "--present-blt"))
-            present = blt_only = true;
-        else if (!std::strcmp(argv[i], "--present-check"))
-            present = check_screen = true;
-        else if (!std::strcmp(argv[i], "--shared-child") && i + 1 < argc)
-            child_handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::strtoull(argv[++i], nullptr, 10)));
+namespace panel {
 
-    if (check_screen)
-        SetProcessDPIAware();
+namespace {
+
+HANDLE g_child_handle = nullptr;  // runD3D11SharedChild's
+
+// Runs `test` on a D3D11 device on the VirtIO GPU.
+bool on_device(bool (*test)(ID3D11Device*, ID3D11DeviceContext*, IDXGIAdapter*))
+{
+    AddVectoredExceptionHandler(1, report_device_removal);
     HMODULE compiler = LoadLibraryW(L"d3dcompiler_47.dll");
     g_compile = compiler ? reinterpret_cast<D3DCompileFn>(reinterpret_cast<void*>(GetProcAddress(compiler, "D3DCompile")))
                          : nullptr;
     if (!g_compile) {
         std::printf("d3dcompiler_47.dll not found: shaders cannot be compiled\n");
-        return 1;
+        return false;
     }
-    Ref<IDXGIFactory1> factory;
-    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(factory.put()));
-    if (FAILED(hr)) {
-        std::printf("CreateDXGIFactory1 failed: 0x%08lx\n", hr);
-        return 1;
+    Ref<IDXGIAdapter1> adapter;
+    adapter.p = findAdapter();
+    if (!adapter) {
+        std::printf("no VirtIO GPU adapter\n");
+        return false;
     }
-    int failures = 0;
-    for (UINT i = 0;; i++) {
-        Ref<IDXGIAdapter1> adapter;
-        if (factory->EnumAdapters1(i, adapter.put()) == DXGI_ERROR_NOT_FOUND)
-            break;
-        DXGI_ADAPTER_DESC1 desc{};
-        adapter->GetDesc1(&desc);
-        std::printf("adapter %u: %ls (vendor 0x%04x device 0x%04x flags 0x%x)\n", i, desc.Description, desc.VendorId,
-                    desc.DeviceId, desc.Flags);
-        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
-            continue;
-        Ref<ID3D11Device> dev;
-        Ref<ID3D11DeviceContext> ctx;
-        D3D_FEATURE_LEVEL level{};
-        hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, dev.put(),
-                               &level, ctx.put());
-        std::printf("  D3D11CreateDevice: 0x%08lx, feature level 0x%x, vgd3d11.dll %s: %s\n", hr, level,
-                    GetModuleHandleW(L"vgd3d11.dll") ? "loaded" : "NOT loaded", SUCCEEDED(hr) ? "PASS" : "FAIL");
-        if (FAILED(hr)) {
-            failures++;
-            continue;
-        }
-        if (child_handle)
-            return result("shared child pixels", shared_child(dev, ctx, child_handle)) ? 0 : 1;
-        for (auto test : {clear_test, triangle_test, textured_test, depth_test, compute_test, queries_test,
-                          update_test})
-            failures += !test(dev, ctx);
-        failures += !shared_test(dev, ctx, adapter);
-        failures += !shared_nt_test(dev, ctx, adapter);
-        failures += !shared_updates_test(dev, ctx, adapter);
-        if (present)
-            failures += !present_test(dev, ctx, adapter, blt_only, check_screen);
-    }
-    if (child_handle)
-        return 1;
-    std::printf("%s\n", failures ? "Some tests FAILED" : "All passed!");
-    return failures ? 1 : 0;
+    DXGI_ADAPTER_DESC1 desc{};
+    adapter->GetDesc1(&desc);
+    std::printf("adapter: %ls (vendor 0x%04x device 0x%04x flags 0x%x)\n", desc.Description, desc.VendorId,
+                desc.DeviceId, desc.Flags);
+    Ref<ID3D11Device> dev;
+    Ref<ID3D11DeviceContext> ctx;
+    D3D_FEATURE_LEVEL level{};
+    HRESULT hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
+                                   dev.put(), &level, ctx.put());
+    std::printf("D3D11CreateDevice: 0x%08lx, feature level 0x%x, vgd3d11.dll %s: %s\n", hr, level,
+                GetModuleHandleW(L"vgd3d11.dll") ? "loaded" : "NOT loaded", SUCCEEDED(hr) ? "ok" : "FAIL");
+    return SUCCEEDED(hr) && test(dev, ctx, adapter);
 }
+
+template <bool (*F)(ID3D11Device*, ID3D11DeviceContext*)>
+bool run()
+{
+    return on_device([](ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter*) { return F(dev, ctx); });
+}
+
+template <bool (*F)(ID3D11Device*, ID3D11DeviceContext*, IDXGIAdapter*)>  // the tests that need the adapter
+bool runAdapter()
+{
+    return on_device(F);
+}
+
+bool device_test(ID3D11Device*, ID3D11DeviceContext*) { return true; }
+
+template <bool BltOnly, bool CheckScreen>
+bool present()
+{
+    if (CheckScreen)
+        SetProcessDPIAware();
+    return on_device([](ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter* adapter) {
+        return present_test(dev, ctx, adapter, BltOnly, CheckScreen);
+    });
+}
+
+}  // namespace
+
+TestGroup d3d11Tests()
+{
+    return {"d3d11", L"Direct3D 11", L"vgd's D3D11 driver on DXVK", {
+        {"device", L"Device", L"Creates a device; vgd3d11.dll must load", run<device_test>},
+        {"clear", L"Clear", L"Clears a render target and reads it back", run<clear_test>},
+        {"triangle", L"Triangle", L"Shaders, a constant buffer and a vertex buffer", run<triangle_test>},
+        {"textured", L"Textures", L"Sampling a texture through a shader resource view", run<textured_test>},
+        {"depth", L"Depth and MSAA", L"Depth tests, MSAA and a resolve", run<depth_test>},
+        {"compute", L"Compute", L"A dispatch writing a UAV", run<compute_test>},
+        {"queries", L"Queries", L"An event, an occlusion query and timestamps", run<queries_test>},
+        {"update", L"Updates", L"Dynamic buffers mapped with discard and no-overwrite, UpdateSubresource",
+         run<update_test>},
+        {"shared", L"Shared texture", L"A texture opened by another device and process, as DWM does",
+         runAdapter<shared_test>},
+        {"shared-nt", L"Shared NT handle", L"The same through an NT handle", runAdapter<shared_nt_test>},
+        {"shared-updates", L"Shared updates", L"Updates and dirty rectangles across a keyed mutex, every pixel checked",
+         runAdapter<shared_updates_test>},
+        {"present", L"Swapchains", L"Flip, legacy blt and resized swapchains in a window", present<false, false>},
+        {"present-blt", L"Legacy swapchain", L"The legacy blt model alone", present<true, false>},
+        {"present-check", L"Swapchain colours", L"Screen colours against a GDI reference; keep the windows uncovered",
+         present<false, true>},
+    }};
+}
+
+int runD3D11SharedChild(const wchar_t* handle)
+{
+    g_child_handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(std::wcstoull(handle, nullptr, 10)));
+    return on_device([](ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGIAdapter*) {
+        return result("shared child pixels", shared_child(dev, ctx, g_child_handle));
+    }) ? 0 : 1;
+}
+
+}  // namespace panel

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// The pages that still show the design's mock data: Settings, Logs, Tests and Tools. Each moves to a file of its own
+// The pages that still show the design's mock data: Settings, Logs and Tools. Each moves to a file of its own
 // when it is wired to the driver.
 #include "panel.h"
 
@@ -202,50 +202,6 @@ private:
     DWORD captureStart_ = 0;
 };
 
-// ---- Tests ----------------------------------------------------------------------------------------------------------
-
-struct Test {
-    const wchar_t *name, *desc;
-    int result;  // 0 pass 1 fail 2 not run 3 measured
-    const wchar_t* detail;
-};
-const std::vector<Test> kTests = {
-    {L"Direct3D 12 basics", L"Device, copies, a triangle, textures, depth, compute and queries", 0, L"Passed, 2.4 s"},
-    {L"Direct3D 11 basics", L"Device creation, formats and a rendered frame", 0, L"Passed, 1.1 s"},
-    {L"Direct3D 9 window", L"Draws a red square in a window; you confirm it", 2, L"Not run"},
-    {L"Vulkan device", L"Instance, device, memory types and a submit", 0, L"Passed, 0.6 s"},
-    {L"Vulkan swapchain", L"Presents 300 frames to a window; you confirm them", 1, L"Frame 12 lost"},
-    {L"Desktop smoothness", L"Window drags and scrolling, measured under DWM", 3, L"41.2 ms at p99"},
-};
-
-class Tests : public Page {
-public:
-    const wchar_t* title() const override { return L"Tests"; }
-    const wchar_t* icon() const override { return L"\uE9D5"; }
-
-    void draw(Ui& ui, float x, float w, float& y) override
-    {
-        float cy = ui.settingsCard(x, y, w, kCardH, L"\uE9D5", L"4 passed, 1 failed, 1 not run",
-                                   L"Last run today at 11:32");
-        ui.button(L"Run all", x + w - 16 - ui.buttonWidth(L"Run all"), cy - 16, kPageId, true);
-        y += kCardH;
-        ui.sectionHeader(L"Tests", x, y);
-        for (size_t i = 0; i < kTests.size(); i++) {
-            const Test& t = kTests[i];
-            const wchar_t* glyph = t.result == 0 ? L"\uEC61" : t.result == 1 ? L"\uEB90" : t.result == 3 ? L"\uE9D9"
-                                                                                                          : L"\uE9CE";
-            UINT32 c = t.result == 0 ? kSuccess : t.result == 1 ? kCritical : kWhite;
-            float cy2 = ui.settingsCard(x, y, w, kCardH, glyph, t.name, t.desc, kNoId, c,
-                                        t.result == 2 ? kTextTertiary : 1);
-            float bw = ui.buttonWidth(L"Run");
-            ui.button(L"Run", x + w - 16 - bw, cy2 - 16, kPageId + 1 + int(i), false);
-            ui.text(t.detail, Ui::kBody, {x + w - 16 - bw - 240, cy2 - 12, x + w - 16 - bw - 16, cy2 + 12}, kWhite,
-                    kTextSecondary, DWRITE_TEXT_ALIGNMENT_TRAILING);
-            y += kCardH + kGap;
-        }
-    }
-};
-
 // ---- Tools ----------------------------------------------------------------------------------------------------------
 
 struct Tool {
@@ -286,7 +242,6 @@ public:
 
 std::unique_ptr<Page> makeSettings() { return std::make_unique<Settings>(); }
 std::unique_ptr<Page> makeLogs(HWND window) { return std::make_unique<Logs>(window); }
-std::unique_ptr<Page> makeTests() { return std::make_unique<Tests>(); }
 std::unique_ptr<Page> makeTools() { return std::make_unique<Tools>(); }
 
 }  // namespace panel
