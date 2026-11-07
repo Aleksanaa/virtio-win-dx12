@@ -185,7 +185,7 @@ std::unique_ptr<Page> makeOverview(HWND window);
 std::unique_ptr<Page> makeSettings(HWND window);
 std::unique_ptr<Page> makeLogs(HWND window);
 std::unique_ptr<Page> makeTests(HWND window);
-std::unique_ptr<Page> makeTools();
+std::unique_ptr<Page> makeTools(HWND window);
 
 // ---- what the panel reads about the system (sysinfo.cpp) ----------------------------------------------------------
 
@@ -322,6 +322,12 @@ std::vector<SettingLine> listSettings();
 std::wstring changeSetting(const std::wstring& name, const std::wstring& value, bool* logging);
 // Ends this session's Desktop Window Manager, which Windows starts again with the drivers' current settings.
 void restartDwm();
+
+// The frame rate overlay (fpsoverlay.cpp): runs it in this process until it is closed; returns why it could not start,
+// else empty.
+std::wstring runFpsOverlay();
+// Its window, when one runs in any process.
+HWND findFpsOverlay();
 
 // ---- the system report (report.cpp): what the Overview shows and /info prints ---------------------------------------
 

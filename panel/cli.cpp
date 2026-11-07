@@ -39,6 +39,10 @@ const wchar_t kHelp[] =
     L"  /restart-dwm\n"
     L"             Restart the Desktop Window Manager (as administrator), for the desktop's own drivers to\n"
     L"             take the logging settings.\n"
+    L"  /fps       Show the frame rate overlay (as administrator): frames the screen shows, VSyncs,\n"
+    L"             the longest gap between frames and mouse reports, and below them each program's frame\n"
+    L"             rate, in the top-left corner. Ctrl+Alt+F closes it.\n"
+    L"      off        close it\n"
     L"  /page N    Open the control panel on page N: 0 Overview, 1 Settings, 2 Logs, 3 Tests, 4 Tools.\n"
     L"  /help      Show this help.\n"
     L"\n"
@@ -259,6 +263,27 @@ int runCommandLine(int argc, wchar_t** argv, int* page)
                 args.push_back(a);
             }
             return runSet(args);
+        }
+        if (o == L"fps") {
+            if (i + 1 < argc) {
+                std::wstring a = argv[i + 1];
+                if (_wcsicmp(a.c_str(), L"off")) {
+                    Output(STD_ERROR_HANDLE).print(L"Unknown option: " + a + L"\n\n" + kHelp);
+                    return 2;
+                }
+                if (HWND overlay = findFpsOverlay())
+                    PostMessageW(overlay, WM_CLOSE, 0, 0);
+                return 0;
+            }
+            std::wstring e = runFpsOverlay();
+            if (e.empty())
+                return 0;
+            // Started from the Tools page there is no console to print to.
+            if (AttachConsole(ATTACH_PARENT_PROCESS) || GetLastError() == ERROR_ACCESS_DENIED)
+                Output(STD_ERROR_HANDLE).print(e + L".\n");
+            else
+                MessageBoxW(nullptr, (e + L".").c_str(), L"Frame rate overlay", MB_ICONERROR);
+            return 1;
         }
         if (o == L"restart-dwm") {
             if (!elevated()) {

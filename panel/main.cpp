@@ -599,7 +599,7 @@ int Window::run(HINSTANCE inst, int show, int page)
     pages_.push_back(makeSettings(hwnd_));
     pages_.push_back(makeLogs(hwnd_));
     pages_.push_back(makeTests(hwnd_));
-    pages_.push_back(makeTools());
+    pages_.push_back(makeTools(hwnd_));
     page_ = std::clamp<size_t>(page, 0, pages_.size() - 1);
     scroll_.assign(pages_.size(), 0);
     target_.assign(pages_.size(), 0);

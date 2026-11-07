@@ -3,8 +3,9 @@
 # graphics probe and the tests (tests/), which the window and the command line run as child processes of it.
 # vgd-panel.com (shim.c) is its console face for shells.
 enable_language(RC)
-add_executable(vgd-panel WIN32 main.cpp ui.cpp overview.cpp testspage.cpp logspage.cpp logcapture.cpp settingspage.cpp mockpages.cpp report.cpp sysinfo.cpp
-    probe.cpp cli.cpp tests/runner.cpp tests/d3d12.cpp tests/d3d11.cpp tests/d3d9.cpp tests/vulkan.cpp panel.rc)
+add_executable(vgd-panel WIN32 main.cpp ui.cpp overview.cpp testspage.cpp logspage.cpp logcapture.cpp settingspage.cpp
+    toolspage.cpp fpsoverlay.cpp report.cpp sysinfo.cpp probe.cpp cli.cpp
+    tests/runner.cpp tests/d3d12.cpp tests/d3d11.cpp tests/d3d9.cpp tests/vulkan.cpp panel.rc)
 target_compile_definitions(vgd-panel PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_include_directories(vgd-panel PRIVATE tests/shaders)
 target_link_libraries(vgd-panel PRIVATE vgd-vulkan-headers vgd-directx-headers

@@ -23,8 +23,3 @@ target_link_options(d3d11caps PRIVATE -static -static-libgcc -static-libstdc++)
 add_executable(uibench uibench.cpp)
 target_link_libraries(uibench PRIVATE dwmapi winmm user32 gdi32)
 target_link_options(uibench PRIVATE -static -static-libgcc -static-libstdc++)
-
-enable_language(RC)
-add_executable(fpsmeter WIN32 fpsmeter.cpp fpsmeter.rc)
-target_link_libraries(fpsmeter PRIVATE advapi32 user32 gdi32)
-target_link_options(fpsmeter PRIVATE -municode -static -static-libgcc -static-libstdc++)
