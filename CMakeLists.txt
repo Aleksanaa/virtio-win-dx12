@@ -30,6 +30,8 @@ include(cmake/dxvk.cmake)
 add_subdirectory(umd)
 add_subdirectory(tests/win)
 add_subdirectory(svc)
+# The control panel.
+add_subdirectory(panel)
 
 # The installer, with the driver package (pkg/) inside.
 add_subdirectory(setup)
