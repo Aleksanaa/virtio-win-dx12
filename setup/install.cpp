@@ -12,6 +12,10 @@
 // resolution service, the certificate, the control panel's shortcuts and the Apps & features entry. At that boot the
 // cleanup removes our packages, the control panel and the uninstaller.
 //
+// An update from the earlier vgd builds (the product's name before Venera) removes what they left: Program Files\vgd,
+// ProgramData\vgd, their Apps & features entry and settings, their certificate and their scheduled cleanup. Their
+// driver package goes with the other packages the cleanup removes at the next boot.
+//
 // The kernel loads viogpu3d.sys on its own test signature (test signing on), whoever made it; the catalog's signature
 // only serves PnP, which wants a publisher it trusts. That is why the certificate can be local: its private key is
 // created on this computer, cannot be exported, and nobody else holds one that Windows here trusts.
@@ -40,6 +44,9 @@ namespace {
 
 constexpr wchar_t kKeyName[] = L"venera-test-signing";
 constexpr wchar_t kSetupName[] = L"venera-setup.exe";
+// Earlier builds called the product vgd; an update from one removes what it left (remove_old_vgd).
+constexpr wchar_t kOldCertSubject[] = L"vgd test signing";
+constexpr wchar_t kOldCleanupTask[] = L"vgd cleanup";
 
 std::wstring staging_dir()
 {
@@ -107,10 +114,10 @@ HCERTSTORE open_store(const wchar_t* name)
     return store;
 }
 
-// Our certificate in `store` (any certificate with our subject), or null.
-PCCERT_CONTEXT find_cert(HCERTSTORE store, PCCERT_CONTEXT prev = nullptr)
+// The certificate with `subject` in `store` (any one), or null.
+PCCERT_CONTEXT find_cert(HCERTSTORE store, const wchar_t* subject, PCCERT_CONTEXT prev = nullptr)
 {
-    return CertFindCertificateInStore(store, X509_ASN_ENCODING, 0, CERT_FIND_SUBJECT_STR_W, kCertSubject, prev);
+    return CertFindCertificateInStore(store, X509_ASN_ENCODING, 0, CERT_FIND_SUBJECT_STR_W, subject, prev);
 }
 
 bool usable(PCCERT_CONTEXT cert)
@@ -196,7 +203,7 @@ PCCERT_CONTEXT signing_cert()
 {
     HCERTSTORE my = open_store(L"My");
     PCCERT_CONTEXT cert = nullptr;
-    while ((cert = find_cert(my, cert)) && !usable(cert)) {
+    while ((cert = find_cert(my, kCertSubject, cert)) && !usable(cert)) {
     }
     if (!cert) {
         PCCERT_CONTEXT created = create_cert();
@@ -216,11 +223,11 @@ PCCERT_CONTEXT signing_cert()
     return cert;
 }
 
-void remove_certs()
+void remove_certs(const wchar_t* subject)
 {
     for (const wchar_t* name : {L"My", L"Root", L"TrustedPublisher"}) {
         HCERTSTORE store = open_store(name);
-        while (PCCERT_CONTEXT cert = find_cert(store)) {
+        while (PCCERT_CONTEXT cert = find_cert(store, subject)) {
             // The private key goes with the certificate.
             HCRYPTPROV_OR_NCRYPT_KEY_HANDLE key = 0;
             DWORD spec = 0;
@@ -231,7 +238,7 @@ void remove_certs()
                     NCryptFreeObject(key);
             }
             CertDeleteCertificateFromStore(cert);  // frees cert
-            log(format(L"Removed the signing certificate from %ls", name));
+            log(format(L"Removed the certificate %ls from %ls", subject, name));
         }
         CertCloseStore(store, 0);
     }
@@ -328,6 +335,26 @@ void delete_file(const std::wstring& path)
         log(L"Could not delete " + path + L": " + error_text(GetLastError()));
 }
 
+// Deletes a directory and what is in it now, or at the next restart what is in use.
+void remove_dir(const std::wstring& dir)
+{
+    std::error_code ec;
+    if (!fs::exists(dir, ec))
+        return;
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        if (entry.is_directory(ec))
+            remove_dir(entry.path().wstring());
+        else
+            delete_file(entry.path().wstring());
+    }
+    if (RemoveDirectoryW(dir.c_str())) {
+        log(L"Removed " + dir);
+    } else {
+        MoveFileExW(dir.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+        log(L"Removing " + dir + L" at the next restart");
+    }
+}
+
 // What yttrium's package leaves once it is gone: the user-mode drivers its INF copied to System32 and SysWOW64 (our
 // package has its own viogpu_wgl.dll in the DriverStore; its opengl32.dll is left alone, that name is Windows' own),
 // and its Vulkan ICD registrations.
@@ -386,6 +413,35 @@ void delete_our_service(const wchar_t* name)
     }
     if (scm)
         CloseServiceHandle(scm);
+}
+
+// Earlier builds called the product vgd (and its settings key vgd3d12). Installing over one removes its uninstaller,
+// its Apps & features entry, its settings, log and staging directory, its certificate, and a cleanup it scheduled, so
+// that only Venera is left. Its driver package goes with the other packages the cleanup removes at the next boot.
+void remove_old_vgd()
+{
+    std::wstring old_install = known_folder(FOLDERID_ProgramFiles) + L"\\vgd";
+    std::wstring old_data = known_folder(FOLDERID_ProgramData) + L"\\vgd";
+    std::error_code ec;
+    bool present = fs::exists(old_install, ec) || fs::exists(old_data, ec);
+    for (const wchar_t* key : {L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\vgd", L"SOFTWARE\\vgd3d12"}) {
+        HKEY probe;
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, key, 0, KEY_READ, &probe) == ERROR_SUCCESS) {
+            present = true;
+            RegCloseKey(probe);
+        }
+        RegDeleteTreeW(HKEY_LOCAL_MACHINE, key);
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, key);
+    }
+    // The old certificate goes even if the rest was deleted by hand: nothing can use it any more.
+    remove_certs(kOldCertSubject);
+    if (!present)
+        return;
+    // A cleanup an old install scheduled would run its uninstaller from the directory removed below.
+    run(L"schtasks.exe", format(L"/delete /f /tn \"%ls\"", kOldCleanupTask));
+    remove_dir(old_install);
+    remove_dir(old_data);
+    log(L"Removed what vgd left: its uninstaller, Apps & features entry, settings, log and certificate");
 }
 
 // --- Apps & features
@@ -561,15 +617,7 @@ void remove_shortcuts()
 
 void remove_install_dir()
 {
-    std::wstring dir = install_dir();
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(dir, ec)) {
-        std::wstring path = entry.path().wstring();
-        if (!DeleteFileW(path.c_str()))
-            MoveFileExW(path.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);  // the running uninstaller
-    }
-    if (!RemoveDirectoryW(dir.c_str()))
-        MoveFileExW(dir.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+    remove_dir(install_dir());  // the running uninstaller goes at the next restart
 }
 
 // --- The device and the boot after
@@ -675,6 +723,8 @@ bool install(const SystemState& state, const std::wstring& version, const Progre
 
     progress(80, L"Registering in Apps & features");
     register_product(version, size_kb);
+    progress(82, L"Removing what earlier vgd builds left");
+    remove_old_vgd();
     progress(85, L"Installing the control panel");
     install_panel(dir);
     progress(90, L"Adding the control panel to the Start menu and the desktop's menu");
@@ -718,7 +768,7 @@ bool uninstall(const Progress& progress)
     progress(40, L"Removing the resolution service");
     delete_our_service(L"vgpusrv");
     progress(55, L"Removing the signing certificate");
-    remove_certs();
+    remove_certs(kCertSubject);
     progress(70, L"Removing the Apps & features entry");
     unregister_product();
     progress(75, L"Removing the control panel's shortcuts");
