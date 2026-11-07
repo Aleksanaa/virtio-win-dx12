@@ -41,7 +41,7 @@ std::wstring system_dir();
 std::wstring self_path();
 // Runs a program from System32 hidden, waits for it, and returns its exit code; its output goes to the log.
 DWORD run(const std::wstring& exe, const std::wstring& args);
-// Compares dotted versions ("0.1.0.85") numerically.
+// Compares the four numbers of dotted versions ("0.1.0.85.1a2b3c4"); the commit hash after them does not rank.
 int compare_versions(const std::wstring& a, const std::wstring& b);
 
 // A third-party driver package in the driver store (%windir%\INF\oem*.inf).

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Builds everything the guest needs and packs it into the installer (vgd-setup-<version>.exe), as README's build
 # steps do. A tag v<x.y.z> also publishes it as a release; the tag has to match the project's VERSION
-# (CMakeLists.txt), to which the build appends the commit count.
+# (CMakeLists.txt), to which the build appends the commit count and hash.
 name: build
 
 on:

@@ -386,15 +386,13 @@ DWORD run(const std::wstring& exe, const std::wstring& args)
 int compare_versions(const std::wstring& a, const std::wstring& b)
 {
     const wchar_t *pa = a.c_str(), *pb = b.c_str();
-    while (*pa || *pb) {
+    for (int i = 0; i < 4; i++) {
         wchar_t *ea, *eb;
         unsigned long va = wcstoul(pa, &ea, 10), vb = wcstoul(pb, &eb, 10);
         if (va != vb)
             return va < vb ? -1 : 1;
         pa = *ea == L'.' ? ea + 1 : ea;
         pb = *eb == L'.' ? eb + 1 : eb;
-        if (ea == pa && eb == pb)
-            break;
     }
     return 0;
 }
