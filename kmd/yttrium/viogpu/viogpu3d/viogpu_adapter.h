@@ -49,7 +49,8 @@ typedef struct
     UINT VgaDevice : 1;
     UINT FlexResolution : 1;
     UINT UsePhysicalMemory : 1;
-    UINT Unused : 26;
+    UINT CursorSwapRB : 1;
+    UINT Unused : 25;
 } DRIVER_STATUS_FLAG;
 
 #pragma pack(pop)
@@ -204,6 +205,14 @@ class VioGpuAdapter : IVioGpuPCI, public IVioGpuQueueSync
     void SetUsePhysicalMemory(BOOLEAN enable)
     {
         m_Flags.UsePhysicalMemory = enable;
+    }
+    BOOLEAN IsCursorSwapRB() const
+    {
+        return m_Flags.CursorSwapRB;
+    }
+    void SetCursorSwapRB(BOOLEAN enable)
+    {
+        m_Flags.CursorSwapRB = enable;
     }
 #pragma code_seg(pop)
 

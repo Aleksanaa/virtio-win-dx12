@@ -1429,25 +1429,37 @@ BOOLEAN VioGpuAdapter::UploadCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
     if (!pSetPointerShape->Flags.Color)
     {
         ConvertMaskedCursor(pSetPointerShape, (UINT32 *)m_pCursorBuf->GetVirtualAddress());
-        return NT_SUCCESS(ctrlQueue.TransferToHost2DSync(m_pCursorBuf->GetId(), POINTER_SIZE, POINTER_SIZE));
     }
-    RECT rect = {0, 0, (LONG)pSetPointerShape->Width, (LONG)pSetPointerShape->Height};
-    BLT_INFO dst = {};
-    dst.pBits = m_pCursorBuf->GetVirtualAddress();
-    dst.Pitch = POINTER_SIZE * 4;
-    dst.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
-    dst.Rotation = D3DKMDT_VPPR_IDENTITY;
-    dst.Width = POINTER_SIZE;
-    dst.Height = POINTER_SIZE;
-    BLT_INFO src = {};
-    src.pBits = (PVOID)pSetPointerShape->pPixels;
-    src.Pitch = pSetPointerShape->Pitch;
-    src.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
-    src.Rotation = vidpn.GetCurrentMode(0)->Rotation;
-    src.Width = pSetPointerShape->Width;
-    src.Height = pSetPointerShape->Height;
-    BltBits(&dst, &src, &rect);
-
+    else
+    {
+        RECT rect = {0, 0, (LONG)pSetPointerShape->Width, (LONG)pSetPointerShape->Height};
+        BLT_INFO dst = {};
+        dst.pBits = m_pCursorBuf->GetVirtualAddress();
+        dst.Pitch = POINTER_SIZE * 4;
+        dst.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
+        dst.Rotation = D3DKMDT_VPPR_IDENTITY;
+        dst.Width = POINTER_SIZE;
+        dst.Height = POINTER_SIZE;
+        BLT_INFO src = {};
+        src.pBits = (PVOID)pSetPointerShape->pPixels;
+        src.Pitch = pSetPointerShape->Pitch;
+        src.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
+        src.Rotation = vidpn.GetCurrentMode(0)->Rotation;
+        src.Width = pSetPointerShape->Width;
+        src.Height = pSetPointerShape->Height;
+        BltBits(&dst, &src, &rect);
+    }
+    if (IsCursorSwapRB())
+    {
+        // HWCursorSwapRB: QEMU's GTK front end takes the cursor's pixels as RGBA bytes, which virglrenderer reads in
+        // the resource's format, BGRA bytes, unless patched to read RGBA: red and blue change places, and this changes
+        // them back.
+        UINT32 *bits = (UINT32 *)m_pCursorBuf->GetVirtualAddress();
+        for (UINT i = 0; i < POINTER_SIZE * POINTER_SIZE; i++)
+        {
+            bits[i] = (bits[i] & 0xFF00FF00) | (bits[i] >> 16 & 0xFF) | (bits[i] & 0xFF) << 16;
+        }
+    }
     return NT_SUCCESS(ctrlQueue.TransferToHost2DSync(m_pCursorBuf->GetId(), POINTER_SIZE, POINTER_SIZE));
 }
 
@@ -2759,6 +2771,13 @@ NTSTATUS VioGpuAdapter::GetRegisterInfo(void)
     if (NT_SUCCESS(Status))
     {
         SetUsePhysicalMemory(!!value);
+    }
+
+    value = 0;
+    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"HWCursorSwapRB", &value);
+    if (NT_SUCCESS(Status))
+    {
+        SetCursorSwapRB(!!value);
     }
 
     ZwClose(DevInstRegKeyHandle);
