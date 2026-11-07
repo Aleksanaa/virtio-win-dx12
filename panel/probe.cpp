@@ -35,6 +35,20 @@ std::string hex(HRESULT hr)
     return buf;
 }
 
+bool hasExtension(PFN_vkGetInstanceProcAddr gipa, VkInstance instance, VkPhysicalDevice d, const char* name)
+{
+    auto enumerate = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+        gipa(instance, "vkEnumerateDeviceExtensionProperties"));
+    uint32_t n = 0;
+    enumerate(d, nullptr, &n, nullptr);
+    std::vector<VkExtensionProperties> exts(n);
+    enumerate(d, nullptr, &n, exts.data());
+    for (const VkExtensionProperties& e : exts)
+        if (!strcmp(e.extensionName, name))
+            return true;
+    return false;
+}
+
 void probeVulkan()
 {
     out("vk.status", "checking");
@@ -76,6 +90,25 @@ void probeVulkan()
                           std::to_string(VK_API_VERSION_PATCH(v)));
         out("vk.driver", driver.driverName);
         out("vk.driver_info", driver.driverInfo);
+        // The host's driver, as Venus keeps it for VK_KHR_maintenance7's layered API: e.g. radv, "Mesa 25.2.4".
+        VkPhysicalDeviceDriverProperties hostDriver = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceLayeredApiVulkanPropertiesKHR hostVk = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_VULKAN_PROPERTIES_KHR};
+        hostVk.properties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &hostDriver};
+        VkPhysicalDeviceLayeredApiPropertiesKHR layer = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_PROPERTIES_KHR,
+                                                         &hostVk};
+        VkPhysicalDeviceLayeredApiPropertiesListKHR layers = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_PROPERTIES_LIST_KHR};
+        layers.layeredApiCount = 1;
+        layers.pLayeredApis = &layer;
+        if (hasExtension(gipa, instance, d, VK_KHR_MAINTENANCE_7_EXTENSION_NAME)) {
+            VkPhysicalDeviceProperties2 q = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &layers};
+            properties2(d, &q);
+            if (layers.layeredApiCount && hostDriver.driverInfo[0]) {
+                out("vk.host_driver", hostDriver.driverName);
+                out("vk.host_driver_info", hostDriver.driverInfo);
+            }
+        }
         found = true;
         break;
     }

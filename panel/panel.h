@@ -158,7 +158,14 @@ struct SystemInfo {
     // vgd as Apps & features lists it.
     std::wstring productVersion, installDate;
     bool testSigning = false;
-    std::wstring machine;         // SMBIOS: manufacturer, product and version of the (virtual) machine
+    // The guest. SMBIOS names the virtual machine (manufacturer and product) and its machine type, e.g. QEMU's
+    // pc-q35-11.1: QEMU's own version is not visible to a guest, the machine type's is the nearest.
+    std::wstring machine, machineType;
+    std::wstring windows;  // edition, release and build
+    std::wstring cpu;
+    DWORD sockets = 0, cores = 0, threads = 0;
+    ULONGLONG memory = 0, usableMemory = 0, swap = 0;  // bytes
+    std::vector<std::wstring> mice, keyboards;
     std::vector<Display> displays;
 };
 SystemInfo readSystemInfo();

@@ -41,6 +41,14 @@ InfoRow api(const ProbeResult* probe, const wchar_t* name, const char* prefix, c
     return {name, L"Failed (" + s + L")", true};
 }
 
+std::wstring gigabytes(ULONGLONG bytes)
+{
+    wchar_t buf[32];
+    double gb = bytes / double(1ull << 30);
+    swprintf(buf, 32, gb == double(ULONGLONG(gb)) ? L"%.0f GB" : L"%.1f GB", gb);
+    return buf;
+}
+
 }  // namespace
 
 void hostGpu(const ProbeResult* probe, std::wstring& gpu, std::wstring& driver)
@@ -88,13 +96,53 @@ std::vector<InfoSection> describe(const SystemInfo& info, const ProbeResult* pro
         host.rows.push_back({L"GPU", L"Checking…"});
     else if (!gpu.empty()) {
         host.rows.push_back({L"GPU", gpu});
+        // "RADV STRIX_HALO" from the device name, and the driver's own "Mesa 25.2.4" where Venus passes it on
+        std::wstring info = probed(probe, "vk.host_driver_info");
+        if (vkDriver.empty())
+            vkDriver = probed(probe, "vk.host_driver");
+        if (!info.empty())
+            vkDriver += (vkDriver.empty() ? L"" : L", ") + info;
         if (!vkDriver.empty())
             host.rows.push_back({L"Vulkan driver", vkDriver});
     } else
         host.rows.push_back({L"GPU", L"Unknown: Venus did not answer", true});
-    if (!info.machine.empty())
-        host.rows.push_back({L"Virtual machine", info.machine});
     out.push_back(host);
+
+    InfoSection guest{L"", L"Guest"};
+    if (!info.machine.empty())
+        guest.rows.push_back({L"Virtual machine", info.machine});
+    if (!info.machineType.empty())
+        guest.rows.push_back({L"Machine type", info.machineType});
+    if (!info.windows.empty())
+        guest.rows.push_back({L"Windows", info.windows});
+    if (!info.cpu.empty())
+        guest.rows.push_back({L"Processor", info.cpu});
+    if (info.threads) {
+        auto count = [](DWORD n, const wchar_t* one) {
+            return std::to_wstring(n) + L" " + one + (n == 1 ? L"" : L"s");
+        };
+        guest.rows.push_back({L"Topology", count(info.sockets, L"socket") + L", " + count(info.cores, L"core") +
+                                                 L", " + count(info.threads, L"thread")});
+    }
+    if (info.memory)
+        guest.rows.push_back(
+            {L"Memory", gigabytes(info.memory) + L" (" + gigabytes(info.usableMemory) + L" usable)"});
+    guest.rows.push_back({L"Swap", info.swap ? gigabytes(info.swap) : L"None"});
+    for (size_t i = 0; i < info.displays.size(); i++) {
+        const Display& d = info.displays[i];
+        wchar_t buf[96];
+        swprintf(buf, 96, L"%lu × %lu at %lu Hz, %u%% scale", d.width, d.height, d.hz, d.scale);
+        guest.rows.push_back({info.displays.size() > 1 ? L"Display " + std::to_wstring(i + 1) : L"Display", buf});
+    }
+    if (info.displays.empty())
+        guest.rows.push_back({L"Display", L"None attached"});
+    for (const std::wstring& m : info.mice)
+        guest.rows.push_back({L"Mouse", m});
+    for (const std::wstring& k : info.keyboards)
+        guest.rows.push_back({L"Keyboard", k});
+    if (info.mice.empty() && info.keyboards.empty())
+        guest.rows.push_back({L"Input", L"No mouse or keyboard found"});
+    out.push_back(guest);
 
     InfoSection apis{L"", L"Graphics APIs"};
     apis.rows.push_back(api(probe, L"Direct3D 12", "d3d12",
@@ -124,17 +172,6 @@ std::vector<InfoSection> describe(const SystemInfo& info, const ProbeResult* pro
     }
     apis.rows.push_back(gl);
     out.push_back(apis);
-
-    InfoSection displays{L"", L"Displays"};
-    for (size_t i = 0; i < info.displays.size(); i++) {
-        const Display& d = info.displays[i];
-        wchar_t buf[96];
-        swprintf(buf, 96, L"%lu × %lu at %lu Hz, %u%% scale", d.width, d.height, d.hz, d.scale);
-        displays.rows.push_back({info.displays.size() > 1 ? L"Display " + std::to_wstring(i + 1) : L"Display", buf});
-    }
-    if (displays.rows.empty())
-        displays.rows.push_back({L"Display", L"None attached"});
-    out.push_back(displays);
     return out;
 }
 
