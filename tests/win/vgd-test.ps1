@@ -71,14 +71,15 @@ function Assert-Admin {
     }
 }
 
-# The VirtIO GPU's display adapter key, whichever package drives it.
+# The display adapter key of the VirtIO GPU present now, whichever package drives it. A guest also booted with the
+# GPU at another PCI slot (libvirt's and run-win11-gtk.sh's) has a key for each.
 function Get-AdapterKey {
-    $keys = @(Get-ChildItem $DisplayClass -ErrorAction SilentlyContinue | Where-Object {
-        $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-        $p -and ($p.MatchingDeviceId -match '^pci\\ven_1af4&dev_1050')
-    })
-    if ($keys.Count -ne 1) { throw "Expected one VirtIO GPU adapter key, found $($keys.Count)." }
-    return $keys[0]
+    $gpus = @(Get-PnpDevice -PresentOnly -Class Display -ErrorAction SilentlyContinue |
+        Where-Object { $_.InstanceId -match '^PCI\\VEN_1AF4&DEV_1050' })
+    if ($gpus.Count -ne 1) { throw "Expected one present VirtIO GPU, found $($gpus.Count)." }
+    # "{class guid}\0001": the key under the display class.
+    $driver = (Get-PnpDeviceProperty -InstanceId $gpus[0].InstanceId -KeyName DEVPKEY_Device_Driver).Data
+    return Get-Item (Join-Path $DisplayClass (Split-Path $driver -Leaf))
 }
 
 function Show-Status {
