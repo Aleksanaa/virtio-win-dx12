@@ -61,8 +61,11 @@ HRESULT create_presentable(Device& d, const D3D12_RESOURCE_DESC& desc, const DXG
         return E_OUTOFMEMORY;
     }
 
+    // A present copy (no runtime resource) is the source of a windowed Blt present, which the KMD copies into the
+    // window with the CPU: memory it can map.
     int fd = -1;
-    HRESULT hr = SharedImage::create_exported(d.engine, desc, castable, castable_count, &out.shared, &fd);
+    HRESULT hr = SharedImage::create_exported(d.engine, desc, castable, castable_count, !rt_resource.handle,
+                                              &out.shared, &fd);
     if (FAILED(hr)) {
         VGD_WARN("present: presentable texture failed: 0x%08lx", hr);
         return E_OUTOFMEMORY;

@@ -69,7 +69,7 @@ HRESULT SharedImage::lend(const D3D12_RESOURCE_DESC& desc)
 }
 
 HRESULT SharedImage::create_exported(const std::shared_ptr<Engine>& engine, const D3D12_RESOURCE_DESC& desc,
-                                     const DXGI_FORMAT* castable, UINT castable_count,
+                                     const DXGI_FORMAT* castable, UINT castable_count, bool host_visible,
                                      std::unique_ptr<SharedImage>* out, int* fd)
 {
     *fd = -1;
@@ -77,6 +77,7 @@ HRESULT SharedImage::create_exported(const std::shared_ptr<Engine>& engine, cons
     HRESULT hr = describe(desc, castable, castable_count, &ld);
     if (FAILED(hr))
         return hr;
+    ld.host_visible = host_visible;
     std::unique_ptr<SharedImage> s(new SharedImage);
     s->engine_ = engine;
     int exported = -1;

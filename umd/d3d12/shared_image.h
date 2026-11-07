@@ -15,10 +15,11 @@ class SharedImage {
 public:
     ~SharedImage();
 
-    // A single-mip 2D colour texture of `desc` on newly exported memory; *fd as LinearImage::create_exported.
+    // A single-mip 2D colour texture of `desc` on newly exported memory, host-visible if asked; *fd as
+    // LinearImage::create_exported.
     static HRESULT create_exported(const std::shared_ptr<Engine>& engine, const D3D12_RESOURCE_DESC& desc,
-                                   const DXGI_FORMAT* castable, UINT castable_count, std::unique_ptr<SharedImage>* out,
-                                   int* fd);
+                                   const DXGI_FORMAT* castable, UINT castable_count, bool host_visible,
+                                   std::unique_ptr<SharedImage>* out, int* fd);
     // The reverse: a texture of `desc` on `size` bytes another process exported; fd and *consumed as
     // LinearImage::create_imported. The contents are kept in practice (see lend()).
     static HRESULT create_imported(const std::shared_ptr<Engine>& engine, const D3D12_RESOURCE_DESC& desc,
